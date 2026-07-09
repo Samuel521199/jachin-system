@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.102] - 2026-07-09
+
+### Added / Changed
+
+- 换云端 API 初调：云端 TTS/STT 服务接入、陪伴态 cue 音频与 turn 诊断、语音管线 benchmark 与 L3 turn debug 增强。
+- **Version**: Desktop **0.9.102**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
 ## [v0.9.101] - 2026-07-08
 
 ### Added / Changed

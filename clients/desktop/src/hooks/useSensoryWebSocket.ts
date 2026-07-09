@@ -683,6 +683,7 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
           base64: string;
         }>;
         implicit_signals?: Record<string, unknown>;
+        voice_diagnostics?: Record<string, unknown>;
       },
     ) => {
       dropL3StreamUntilTerminalRef.current = false;
@@ -704,6 +705,9 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
       }
       if (extras?.implicit_signals && Object.keys(extras.implicit_signals).length > 0) {
         payload.implicit_signals = extras.implicit_signals;
+      }
+      if (extras?.voice_diagnostics && Object.keys(extras.voice_diagnostics).length > 0) {
+        payload.voice_diagnostics = extras.voice_diagnostics;
       }
       if (larkChatId) {
         payload.chat_id = larkChatId;
@@ -727,6 +731,25 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
       return true;
     },
     [larkChatId, desktopSessionIdRef],
+  );
+
+  const sendVoiceDiagnosticsAppend = useCallback(
+    (runId: string | undefined, diagnostics: Record<string, unknown> | null | undefined) => {
+      if (!diagnostics || wsRef.current?.readyState !== WebSocket.OPEN) return false;
+      const payload: Record<string, unknown> = {
+        type: "voice_diagnostics_append",
+        run_id: runId || "",
+        voice_diagnostics: diagnostics,
+      };
+      const sid = desktopSessionIdRef?.current?.trim() ?? "";
+      if (sid) {
+        payload.chat_id = sid;
+        payload.session_id = sid;
+      }
+      wsRef.current.send(JSON.stringify(payload));
+      return true;
+    },
+    [desktopSessionIdRef],
   );
 
   /**
@@ -806,6 +829,8 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     reconnect: connect,
     /** 发送聊天输入到 Layer 3 */
     sendInput,
+    /** 追加本轮语音链路诊断到同一个 terminal_turn 日志 */
+    sendVoiceDiagnosticsAppend,
     /** 生成式 UI 工具参数 → L3 Native 执行 */
     sendToolUiResult,
     /** 通知 L3 清空 WS 会话缓冲（控制帧，非用户 intent） */

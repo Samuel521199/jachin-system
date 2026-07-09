@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import csv
 import io
 import json
@@ -34,6 +35,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = _SCRIPT_DIR.parent
 if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
@@ -56,6 +58,9 @@ DEFAULT_L3 = os.getenv("JACHIN_L3_HTTP_BASE", "http://127.0.0.1:18991").rstrip("
 DEFAULT_L3_WS = os.getenv("JACHIN_L3_WS_URL", "ws://127.0.0.1:18981/sensory").rstrip("/")
 DEFAULT_OUT_DIR = Path("data/voice_latency_bench")
 DEFAULT_VOICE = "zm_053"
+DEFAULT_COMPANION_CUE_MANIFEST = (
+    PROJECT_ROOT / "clients" / "desktop" / "public" / "audio" / "companion_cues" / "manifest.json"
+)
 
 SENSEVOICE_TAG_RE = re.compile(r"<\|.*?\|>")
 
@@ -84,6 +89,129 @@ def _http_post_json(url: str, payload: dict[str, Any], timeout: float) -> bytes:
         return resp.read()
 
 
+def _jvs_ws_base(jvs_base: str) -> str:
+    base = (jvs_base or DEFAULT_JVS).rstrip("/")
+    if base.startswith("https://"):
+        return "wss://" + base[len("https://") :]
+    if base.startswith("http://"):
+        return "ws://" + base[len("http://") :]
+    if base.startswith("ws://") or base.startswith("wss://"):
+        return base
+    return "ws://127.0.0.1:18982"
+
+
+def _pcm_duration_ms(byte_count: int, sample_rate: int, channels: int) -> int:
+    denom = max(1, int(sample_rate or 24000) * max(1, int(channels or 1)) * 2)
+    return int(round(max(0, int(byte_count)) * 1000 / denom))
+
+
+def _stream_tts_by_jvs(
+    *,
+    jvs_base: str,
+    text: str,
+    voice: str,
+    session_id: str,
+    timeout: float,
+) -> dict[str, Any]:
+    try:
+        from websockets.sync.client import connect
+    except ImportError as e:
+        raise RuntimeError("websockets.sync client is required for JVS TTS stream") from e
+
+    url = f"{_jvs_ws_base(jvs_base)}/v1/tts/stream"
+    started = _perf_ms()
+    first_audio_ms = 0.0
+    chunks = 0
+    audio_bytes = 0
+    sample_rate = 24000
+    channels = 1
+    request_id = ""
+    with connect(
+        url,
+        open_timeout=max(0.5, min(5.0, timeout)),
+        close_timeout=1,
+        ping_interval=None,
+        max_size=16 * 1024 * 1024,
+    ) as ws:
+        ws.send(
+            json.dumps(
+                {
+                    "text": text,
+                    "voice": voice,
+                    "session_id": session_id,
+                    "speed": 1.0,
+                    "kind": "content",
+                },
+                ensure_ascii=False,
+            )
+        )
+        deadline = time.monotonic() + max(0.5, timeout)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("JVS TTS stream timed out")
+            raw = ws.recv(timeout=remaining)
+            try:
+                msg = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
+            except Exception:
+                continue
+            typ = str(msg.get("type") or "")
+            if typ == "meta":
+                try:
+                    sample_rate = int(msg.get("sample_rate") or sample_rate)
+                except Exception:
+                    pass
+                try:
+                    channels = int(msg.get("channels") or channels)
+                except Exception:
+                    pass
+                continue
+            if typ == "audio":
+                b64 = str(msg.get("audio_b64") or "")
+                if not b64:
+                    continue
+                data = base64.b64decode(b64)
+                if data:
+                    chunks += 1
+                    audio_bytes += len(data)
+                    if first_audio_ms <= 0:
+                        first_audio_ms = _perf_ms() - started
+                continue
+            if typ == "done":
+                request_id = str(msg.get("request_id") or "")
+                total_ms = _perf_ms() - started
+                return {
+                    "ok": True,
+                    "unsupported": False,
+                    "first_audio_ms": first_audio_ms,
+                    "total_ms": total_ms,
+                    "chunks": chunks,
+                    "bytes": audio_bytes,
+                    "audio_ms": _pcm_duration_ms(audio_bytes, sample_rate, channels),
+                    "sample_rate": sample_rate,
+                    "channels": channels,
+                    "request_id": request_id,
+                }
+            if typ == "error":
+                code = str(msg.get("code") or "")
+                message = str(msg.get("message") or "")
+                if code in {"stream_unsupported", "tts_not_ready"}:
+                    return {
+                        "ok": False,
+                        "unsupported": True,
+                        "first_audio_ms": first_audio_ms,
+                        "total_ms": _perf_ms() - started,
+                        "chunks": chunks,
+                        "bytes": audio_bytes,
+                        "audio_ms": _pcm_duration_ms(audio_bytes, sample_rate, channels),
+                        "sample_rate": sample_rate,
+                        "channels": channels,
+                        "request_id": request_id,
+                        "error": f"{code}: {message}",
+                    }
+                raise RuntimeError(message or code or "JVS TTS stream error")
+
+
 async def _l3_ws_run_async(
     ws_url: str,
     payload: dict[str, Any],
@@ -108,7 +236,7 @@ async def _l3_ws_run_async(
         max_size=16 * 1024 * 1024,
     ) as ws:
         session_id = str(payload.get("session_id") or payload.get("chat_id") or "").strip()
-        lark_chat_id = str(payload.get("chat_id") or "").strip()
+        lark_chat_id = str(payload.get("lark_chat_id") or "").strip()
         await ws.send(json.dumps({"type": "manifest", "caps": ["voice_latency_bench"]}, ensure_ascii=False))
         if session_id:
             prep = {
@@ -124,8 +252,7 @@ async def _l3_ws_run_async(
                     "voice_benchmark": True,
                 },
             }
-            if lark_chat_id:
-                prep["chat_id"] = lark_chat_id
+            prep["chat_id"] = lark_chat_id or session_id
             await ws.send(json.dumps(prep, ensure_ascii=False))
         sent_at = _perf_ms()
         await ws.send(json.dumps(payload, ensure_ascii=False))
@@ -219,8 +346,7 @@ class L3WsClient:
                 "voice_benchmark": True,
             },
         }
-        if lark_cid:
-            prep["chat_id"] = lark_cid
+        prep["chat_id"] = lark_cid or sid
         ws.send(json.dumps(prep, ensure_ascii=False))
 
     def run(self, payload: dict[str, Any], timeout: float) -> tuple[str, float, float, dict[str, Any]]:
@@ -294,6 +420,44 @@ def _wav_duration_ms(wav_bytes: bytes) -> int:
             return int(frames / float(rate) * 1000)
     except Exception:
         return 0
+
+
+def _normalize_companion_cue_text(text: str) -> str:
+    s = re.sub(r"[\s\u3000]+", "", text or "")
+    s = re.sub(r"[。！？!?，,、；;：:\"“”‘’'（）()\[\]【】]+$", "", s)
+    return s.strip()
+
+
+_COMPANION_CUE_CACHE: dict[str, Path] | None = None
+
+
+def _load_companion_cue_cache() -> dict[str, Path]:
+    global _COMPANION_CUE_CACHE
+    if _COMPANION_CUE_CACHE is not None:
+        return _COMPANION_CUE_CACHE
+    out: dict[str, Path] = {}
+    manifest_path = DEFAULT_COMPANION_CUE_MANIFEST
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for item in manifest.get("items") or []:
+            key = _normalize_companion_cue_text(str(item.get("text") or ""))
+            filename = str(item.get("file") or "").strip()
+            if not key or not filename:
+                continue
+            wav_path = manifest_path.parent / filename
+            if wav_path.is_file() and wav_path.stat().st_size > 44:
+                out[key] = wav_path
+    except Exception:
+        out = {}
+    _COMPANION_CUE_CACHE = out
+    return out
+
+
+def _find_companion_cue_wav(text: str) -> Path | None:
+    key = _normalize_companion_cue_text(text)
+    if not key:
+        return None
+    return _load_companion_cue_cache().get(key)
 
 
 def _first_sentence(text: str) -> str:
@@ -470,12 +634,17 @@ class RunMetric:
     l3_server_append_final_ms: float
     l3_latency_trace: str
     tts_ms: float
+    tts_first_audio_ms: float
     total_ms: float
     recognized_text: str
     answer_preview: str
     tts_input: str
     tts_calls: int
+    tts_stream_chunks: int
+    tts_stream_bytes: int
     tts_audio_ms: int
+    tts_transport: str
+    tts_fallback_reason: str
     routed_text: str
     voice_dispatch_tier: str
     voice_intent_class: str
@@ -504,6 +673,7 @@ def run_once(
     t_tts: float,
     chat_prefix: str,
     play_audio: bool,
+    tts_stream: bool,
     tts_mode: str,
     max_speak_sentences: int,
     fast_lane_max_speak_sentences: int,
@@ -514,6 +684,7 @@ def run_once(
     started = _perf_ms()
     stamp = _now_ms()
     stt_ms = l3_ms = tts_ms = 0.0
+    tts_first_audio_ms = 0.0
     l3_first_chunk_ms = 0.0
     l3_answer_ms = 0.0
     l3_server_session_save_ms = 0.0
@@ -525,7 +696,11 @@ def run_once(
     answer = ""
     tts_input = ""
     tts_calls = 0
+    tts_stream_chunks = 0
+    tts_stream_bytes = 0
     tts_audio_ms = 0
+    tts_transport = ""
+    tts_fallback_reason = ""
     routed_text = ""
     voice_dispatch_tier = ""
     voice_intent_class = ""
@@ -585,12 +760,13 @@ def run_once(
         voice_route_notes = "|".join(notes) if isinstance(notes, list) else str(notes)
         l3_payload = {
             "intent": routed_text,
-            "session_id": chat_id,
+            "chat_id": lark_chat_id or chat_id,
+            "session_id": lark_chat_id or chat_id,
             "origin": "terminal" if lark_chat_id else "desktop_voice_companion",
             "implicit_signals": implicit_signals,
         }
         if lark_chat_id:
-            l3_payload["chat_id"] = lark_chat_id
+            l3_payload["lark_chat_id"] = lark_chat_id
         http_payload = {
             "user_input": routed_text,
             "chat_id": lark_chat_id or chat_id,
@@ -655,16 +831,49 @@ def run_once(
             if progress:
                 progress(f"TTS 合成中... ({idx}/{len(tts_inputs)})")
             st = _perf_ms()
-            tts_wav = _http_post_json(
-                f"{jvs_base}/v1/tts/synthesize",
-                {"text": one, "voice": voice, "session_id": chat_id},
-                timeout=t_tts,
-            )
+            cue_wav_path = _find_companion_cue_wav(one)
+            if cue_wav_path is not None:
+                tts_wav = cue_wav_path.read_bytes()
+                tts_transport = "local_cue_cache" if not tts_transport else f"{tts_transport}|local_cue_cache"
+                tts_audio_ms += _wav_duration_ms(tts_wav)
+                if play_audio:
+                    _play_wav_bytes(tts_wav)
+            else:
+                stream_ok = False
+                if tts_stream:
+                    try:
+                        stream_result = _stream_tts_by_jvs(
+                            jvs_base=jvs_base,
+                            text=one,
+                            voice=voice,
+                            session_id=chat_id,
+                            timeout=t_tts,
+                        )
+                        if stream_result.get("ok") and int(stream_result.get("chunks") or 0) > 0:
+                            stream_ok = True
+                            tts_transport = "jvs_cloud_stream" if not tts_transport else f"{tts_transport}|jvs_cloud_stream"
+                            tts_stream_chunks += int(stream_result.get("chunks") or 0)
+                            tts_stream_bytes += int(stream_result.get("bytes") or 0)
+                            tts_audio_ms += int(stream_result.get("audio_ms") or 0)
+                            fa = float(stream_result.get("first_audio_ms") or 0.0)
+                            if fa > 0 and (tts_first_audio_ms <= 0 or fa < tts_first_audio_ms):
+                                tts_first_audio_ms = fa
+                        elif stream_result.get("unsupported"):
+                            tts_fallback_reason = str(stream_result.get("error") or "stream_unsupported")[:300]
+                    except Exception as stream_error:  # noqa: BLE001
+                        tts_fallback_reason = str(stream_error)[:300]
+                if not stream_ok:
+                    tts_wav = _http_post_json(
+                        f"{jvs_base}/v1/tts/synthesize",
+                        {"text": one, "voice": voice, "session_id": chat_id},
+                        timeout=t_tts,
+                    )
+                    tts_transport = "jvs_http_wav" if not tts_transport else f"{tts_transport}|jvs_http_wav"
+                    tts_calls += 1
+                    tts_audio_ms += _wav_duration_ms(tts_wav)
+                    if play_audio:
+                        _play_wav_bytes(tts_wav)
             tts_ms += _perf_ms() - st
-            tts_calls += 1
-            tts_audio_ms += _wav_duration_ms(tts_wav)
-            if play_audio:
-                _play_wav_bytes(tts_wav)
 
         return RunMetric(
             run_id=i,
@@ -680,12 +889,17 @@ def run_once(
             l3_server_append_final_ms=l3_server_append_final_ms,
             l3_latency_trace=l3_latency_trace,
             tts_ms=tts_ms,
+            tts_first_audio_ms=tts_first_audio_ms,
             total_ms=_perf_ms() - started,
             recognized_text=recognized,
             answer_preview=answer[:220],
             tts_input=tts_input,
             tts_calls=tts_calls,
+            tts_stream_chunks=tts_stream_chunks,
+            tts_stream_bytes=tts_stream_bytes,
             tts_audio_ms=tts_audio_ms,
+            tts_transport=tts_transport,
+            tts_fallback_reason=tts_fallback_reason,
             routed_text=routed_text,
             voice_dispatch_tier=voice_dispatch_tier,
             voice_intent_class=voice_intent_class,
@@ -710,12 +924,17 @@ def run_once(
             l3_server_append_final_ms=l3_server_append_final_ms,
             l3_latency_trace=l3_latency_trace,
             tts_ms=tts_ms,
+            tts_first_audio_ms=tts_first_audio_ms,
             total_ms=_perf_ms() - started,
             recognized_text=recognized,
             answer_preview=answer[:220],
             tts_input=tts_input,
             tts_calls=tts_calls,
+            tts_stream_chunks=tts_stream_chunks,
+            tts_stream_bytes=tts_stream_bytes,
             tts_audio_ms=tts_audio_ms,
+            tts_transport=tts_transport,
+            tts_fallback_reason=tts_fallback_reason,
             routed_text=routed_text,
             voice_dispatch_tier=voice_dispatch_tier,
             voice_intent_class=voice_intent_class,
@@ -750,13 +969,14 @@ def print_live_summary(rows: list[RunMetric]) -> None:
     stt = [r.stt_ms for r in ok_rows if r.stt_ms > 0]
     l3 = [r.l3_ms for r in ok_rows if r.l3_ms > 0]
     ans = [r.l3_answer_ms for r in ok_rows if r.l3_answer_ms > 0]
+    tfa = [r.tts_first_audio_ms for r in ok_rows if r.tts_first_audio_ms > 0]
     tts = [r.tts_ms for r in ok_rows if r.tts_ms > 0]
     total = [r.total_ms for r in ok_rows]
     def _s(name: str, arr: list[float]) -> str:
         if not arr:
             return f"{name}: -"
         return f"{name}: p50={_percentile(arr,0.5):.0f}ms p90={_percentile(arr,0.9):.0f}ms avg={statistics.mean(arr):.0f}ms"
-    print("  " + " | ".join([_s("STT", stt), _s("L3", l3), _s("ANS", ans), _s("TTS", tts), _s("TOTAL", total)]))
+    print("  " + " | ".join([_s("STT", stt), _s("L3", l3), _s("ANS", ans), _s("TFA", tfa), _s("TTS", tts), _s("TOTAL", total)]))
 
 
 def parse_args() -> argparse.Namespace:
@@ -799,6 +1019,7 @@ def parse_args() -> argparse.Namespace:
         help="L3 transport: ws matches desktop companion; auto uses WebSocket first then HTTP fallback",
     )
     p.add_argument("--timeout-tts", type=float, default=120.0)
+    p.add_argument("--no-tts-stream", action="store_true", help="Disable JVS streaming TTS and force legacy full WAV synthesis")
     p.add_argument("--chat-prefix", default="voice-latency-bench")
     p.add_argument(
         "--lark-chat-id",
@@ -846,6 +1067,7 @@ def main() -> int:
         f"transport={args.l3_transport}  voice={args.voice}  tts_mode={args.tts_mode}  "
         f"max_speak_sentences={args.max_speak_sentences}  "
         f"fast_lane_max_speak_sentences={args.fast_lane_max_speak_sentences}  "
+        f"tts_stream={not args.no_tts_stream}  "
         f"chat_session_mode={args.chat_session_mode}  ws_reuse={not args.no_ws_reuse}  "
         f"ws_preflight={not args.no_ws_preflight}  "
         f"local_voice_session={not bool((args.lark_chat_id or '').strip())}"
@@ -908,12 +1130,17 @@ def main() -> int:
                                 l3_server_append_final_ms=0,
                                 l3_latency_trace="",
                                 tts_ms=0,
+                                tts_first_audio_ms=0,
                                 total_ms=0,
                                 recognized_text="",
                                 answer_preview="",
                                 tts_input="",
                                 tts_calls=0,
+                                tts_stream_chunks=0,
+                                tts_stream_bytes=0,
                                 tts_audio_ms=0,
+                                tts_transport="",
+                                tts_fallback_reason="",
                                 routed_text="",
                                 voice_dispatch_tier="",
                                 voice_intent_class="",
@@ -949,6 +1176,7 @@ def main() -> int:
                 t_tts=args.timeout_tts,
                 chat_prefix=args.chat_prefix,
                 play_audio=args.play,
+                tts_stream=not args.no_tts_stream,
                 tts_mode=args.tts_mode,
                 max_speak_sentences=max(1, int(args.max_speak_sentences)),
                 fast_lane_max_speak_sentences=max(1, int(args.fast_lane_max_speak_sentences)),
@@ -963,7 +1191,8 @@ def main() -> int:
                 print(
                     f"[{i}/{args.runs}] OK  STT={metric.stt_ms:.0f}ms  L3={metric.l3_ms:.0f}ms  "
                     f"TTS={metric.tts_ms:.0f}ms  TOTAL={metric.total_ms:.0f}ms  "
-                    f"AUDIO={metric.tts_audio_ms}ms  CALLS={metric.tts_calls}  "
+                    f"TFA={metric.tts_first_audio_ms:.0f}ms  AUDIO={metric.tts_audio_ms}ms  "
+                    f"CALLS={metric.tts_calls} STREAM_CHUNKS={metric.tts_stream_chunks}  "
                     f"VIA={metric.l3_transport or '-'} FC={metric.l3_first_chunk_ms:.0f}ms  "
                     f"ANS={metric.l3_answer_ms:.0f}ms  "
                     f"TIER={metric.voice_dispatch_tier or '-'} FAST={int(metric.voice_fast_lane)} "
@@ -975,6 +1204,10 @@ def main() -> int:
                     print(f"         l3_trace={metric.l3_latency_trace[:160]}")
                 if metric.l3_fallback_reason:
                     print(f"         l3_fallback={metric.l3_fallback_reason[:160]}")
+                if metric.tts_transport:
+                    print(f"         tts_transport={metric.tts_transport[:160]}")
+                if metric.tts_fallback_reason:
+                    print(f"         tts_fallback={metric.tts_fallback_reason[:160]}")
             else:
                 print(f"[{i}/{args.runs}] FAIL {metric.error}")
             print_live_summary(rows)

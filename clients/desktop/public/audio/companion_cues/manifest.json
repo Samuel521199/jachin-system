@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "basePath": "/audio/companion_cues/",
+  "items": [
+    { "id": "available_zai_ne", "text": "在呢", "file": "available_zai_ne.wav" },
+    { "id": "available_wo_zai", "text": "我在", "file": "available_wo_zai.wav" },
+    { "id": "available_ting_zhe_ne", "text": "听着呢", "file": "available_ting_zhe_ne.wav" },
+    { "id": "available_zen_me_la", "text": "怎么啦", "file": "available_zen_me_la.wav" },
+    { "id": "available_sui_shi_dai_ming", "text": "随时待命", "file": "available_sui_shi_dai_ming.wav" },
+    { "id": "can_hear_ting_dao_le", "text": "听到了", "file": "can_hear_ting_dao_le.wav" },
+    { "id": "can_hear_ting_de_hen_qing_chu", "text": "听得很清楚", "file": "can_hear_ting_de_hen_qing_chu.wav" },
+    { "id": "can_hear_zai_ting", "text": "在听", "file": "can_hear_zai_ting.wav" },
+    { "id": "can_hear_wo_ting_jian_le", "text": "我听见了", "file": "can_hear_wo_ting_jian_le.wav" },
+    { "id": "thanks_bu_ke_qi", "text": "不客气", "file": "thanks_bu_ke_qi.wav" },
+    { "id": "thanks_hao_de", "text": "好的", "file": "thanks_hao_de.wav" },
+    { "id": "thanks_xiao_shi", "text": "小事", "file": "thanks_xiao_shi.wav" },
+    { "id": "thanks_shou_dao", "text": "收到", "file": "thanks_shou_dao.wav" },
+    { "id": "cancel_hao_ting_ni_de", "text": "好，听你的", "file": "cancel_hao_ting_ni_de.wav" },
+    { "id": "cancel_fang_yi_fang", "text": "那就先放一放", "file": "cancel_fang_yi_fang.wav" },
+    { "id": "cancel_bu_mian_qiang", "text": "好，不勉强", "file": "cancel_bu_mian_qiang.wav" },
+    { "id": "cancel_xian_ting_xia", "text": "收到，我先停下", "file": "cancel_xian_ting_xia.wav" },
+    { "id": "cancel_ming_bai_le", "text": "好，我明白了", "file": "cancel_ming_bai_le.wav" },
+    { "id": "thinking_wo_xiang_xiang", "text": "我想想", "file": "thinking_wo_xiang_xiang.wav" },
+    { "id": "thinking_shao_deng", "text": "稍等", "file": "thinking_shao_deng.wav" }
+  ]
+}

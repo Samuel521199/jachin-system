@@ -3,10 +3,13 @@ from __future__ import annotations
 import io
 import logging
 import os
+import queue
+import struct
+import threading
 import time
 import wave
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterator
 
 import requests
 
@@ -36,8 +39,8 @@ class CloudTtsService:
         self,
         api_key: str,
         http_api_base: str,
-        model: str = "cosyvoice-v3.5-plus",
-        fast_model: str = "cosyvoice-v3.5-flash",
+        model: str = "cosyvoice-v3-plus",
+        fast_model: str = "cosyvoice-v3-flash",
         default_voice: str = "longanhuan",
         default_speed: float = 1.0,
         audio_format: str = "wav",
@@ -45,8 +48,8 @@ class CloudTtsService:
     ) -> None:
         self.api_key = api_key.strip()
         self.http_api_base = http_api_base.rstrip("/")
-        self.model_name = model.strip() or "cosyvoice-v3.5-plus"
-        self.fast_model = fast_model.strip() or "cosyvoice-v3.5-flash"
+        self.model_name = model.strip() or "cosyvoice-v3-plus"
+        self.fast_model = fast_model.strip() or "cosyvoice-v3-flash"
         self.default_voice = default_voice.strip() or "longanhuan"
         self.default_speed = float(default_speed or 1.0)
         self.audio_format = (audio_format or "wav").strip().lower()
@@ -123,6 +126,7 @@ class CloudTtsService:
                     logger.warning("DashScope TTS model failed model=%s voice=%s err=%s", candidate_model, selected_voice, e)
             if not audio:
                 raise last_error or RuntimeError("DashScope TTS returned empty audio")
+            audio = self._normalize_wav_header(audio)
             synth_ms = int((time.perf_counter() - started) * 1000)
             duration_ms = self._estimate_wav_duration_ms(audio)
             logger.info(
@@ -161,6 +165,11 @@ class CloudTtsService:
             if "http_tts" not in str(e):
                 raise
             logger.info("DashScope http_tts SDK unavailable; fallback to tts_v2")
+        except Exception as e:
+            msg = str(e)
+            if "does not support http call" not in msg and "Model not exist" not in msg:
+                raise
+            logger.info("DashScope http_tts unavailable for model=%s; fallback to tts_v2: %s", model, e)
         return self._synthesize_with_tts_v2(text, model, voice, rate)
 
     def _synthesize_with_http_tts(self, text: str, model: str, voice: str, rate: float) -> bytes:
@@ -209,6 +218,116 @@ class CloudTtsService:
             raise RuntimeError(f"DashScope tts_v2 returned empty audio: {response!r}")
         return bytes(audio)
 
+    def stream_synthesize(
+        self,
+        text: str,
+        voice: str | None = None,
+        session_id: str | None = None,
+        speed: float | None = None,
+        kind: str | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Yield PCM chunks from DashScope CosyVoice streaming TTS."""
+        if not text.strip():
+            raise ValueError("text is empty")
+        if not self._load_engine():
+            raise RuntimeError(self._load_error or "DashScope TTS not ready")
+
+        import dashscope  # type: ignore
+        from dashscope.audio.tts_v2 import AudioFormat, ResultCallback, SpeechSynthesizer  # type: ignore
+
+        dashscope.api_key = self.api_key
+        ws_url = self._tts_v2_ws_url()
+        if ws_url:
+            try:
+                dashscope.base_websocket_api_url = ws_url
+            except Exception:
+                pass
+
+        selected_model = self._select_model(kind)
+        selected_voice = self._select_voice(voice)
+        selected_rate = self._normalize_rate(speed)
+        fmt = self._tts_v2_pcm_format(AudioFormat)
+        events: "queue.Queue[dict[str, Any] | None]" = queue.Queue()
+        started = time.perf_counter()
+        first_packet_ms = 0
+
+        class _Callback(ResultCallback):  # type: ignore[misc, valid-type]
+            def on_open(self) -> None:
+                events.put({"type": "open"})
+
+            def on_complete(self) -> None:
+                events.put(
+                    {
+                        "type": "complete",
+                        "first_packet_ms": first_packet_ms,
+                        "request_id": _safe_request_id(),
+                    }
+                )
+
+            def on_error(self, message: str) -> None:
+                events.put({"type": "error", "message": str(message)})
+                events.put(None)
+
+            def on_close(self) -> None:
+                events.put({"type": "close"})
+                events.put(None)
+
+            def on_event(self, message: Any) -> None:
+                events.put({"type": "event", "message": message})
+
+            def on_data(self, data: bytes) -> None:
+                nonlocal first_packet_ms
+                if not data:
+                    return
+                if first_packet_ms <= 0:
+                    first_packet_ms = int((time.perf_counter() - started) * 1000)
+                events.put({"type": "audio", "data": bytes(data), "elapsed_ms": int((time.perf_counter() - started) * 1000)})
+
+        callback = _Callback()
+        synthesizer = SpeechSynthesizer(
+            model=selected_model,
+            voice=selected_voice,
+            format=fmt,
+            speech_rate=selected_rate,
+            language_hints=self._language_hints(text),
+            callback=callback,
+            url=ws_url,
+        )
+
+        def _safe_request_id() -> str:
+            try:
+                return str(synthesizer.get_last_request_id() or "")
+            except Exception:
+                return ""
+
+        def _run() -> None:
+            try:
+                synthesizer.call(text, timeout_millis=int(self._timeout_seconds() * 1000))
+            except Exception as exc:  # noqa: BLE001
+                events.put({"type": "error", "message": str(exc)})
+                events.put(None)
+
+        threading.Thread(target=_run, name="dashscope-tts-stream", daemon=True).start()
+        yield {
+            "type": "meta",
+            "backend": "dashscope-cosyvoice-stream",
+            "model": selected_model,
+            "voice": selected_voice,
+            "format": "pcm_s16le",
+            "sample_rate": self.sample_rate,
+            "channels": 1,
+            "session_id": session_id or "",
+        }
+        while True:
+            try:
+                event = events.get(timeout=self._timeout_seconds())
+            except queue.Empty:
+                yield {"type": "error", "message": "DashScope TTS stream timeout"}
+                break
+            if event is None:
+                break
+            yield event
+
     def _tts_v2_ws_url(self) -> str | None:
         explicit = os.getenv("JACHIN_TTS_WS_API_BASE", "").strip()
         if explicit:
@@ -228,6 +347,9 @@ class CloudTtsService:
         if self.audio_format == "pcm":
             return getattr(audio_format_enum, f"PCM_{self.sample_rate}HZ_MONO_16BIT", audio_format_enum.PCM_24000HZ_MONO_16BIT)
         return getattr(audio_format_enum, f"WAV_{self.sample_rate}HZ_MONO_16BIT", audio_format_enum.WAV_24000HZ_MONO_16BIT)
+
+    def _tts_v2_pcm_format(self, audio_format_enum: Any) -> Any:
+        return getattr(audio_format_enum, f"PCM_{self.sample_rate}HZ_MONO_16BIT", audio_format_enum.PCM_24000HZ_MONO_16BIT)
 
     def _download_audio(self, url: str) -> bytes:
         resp = requests.get(url, timeout=self._timeout_seconds())
@@ -277,6 +399,44 @@ class CloudTtsService:
         if has_en and not has_zh:
             return ["en"]
         return None
+
+    @staticmethod
+    def _normalize_wav_header(audio: bytes) -> bytes:
+        if not audio.startswith(b"RIFF") or audio[8:12] != b"WAVE":
+            return audio
+        try:
+            offset = 12
+            fmt_payload = b""
+            data_payload = b""
+            while offset + 8 <= len(audio):
+                chunk_id = audio[offset : offset + 4]
+                chunk_size = struct.unpack_from("<I", audio, offset + 4)[0]
+                payload_start = offset + 8
+                if chunk_id == b"fmt ":
+                    fmt_payload = audio[payload_start : min(payload_start + chunk_size, len(audio))]
+                if chunk_id == b"data":
+                    data_payload = audio[payload_start:]
+                    break
+                offset = payload_start + chunk_size + (chunk_size % 2)
+            if len(fmt_payload) < 16 or not data_payload:
+                return audio
+            audio_format, channels, sample_rate, byte_rate, block_align, bits_per_sample = struct.unpack(
+                "<HHIIHH", fmt_payload[:16]
+            )
+            if audio_format != 1 or channels <= 0 or sample_rate <= 0 or block_align <= 0:
+                return audio
+            data_len = len(data_payload)
+            header = (
+                b"RIFF"
+                + struct.pack("<I", 36 + data_len)
+                + b"WAVEfmt "
+                + struct.pack("<IHHIIHH", 16, audio_format, channels, sample_rate, byte_rate, block_align, bits_per_sample)
+                + b"data"
+                + struct.pack("<I", data_len)
+            )
+            return header + data_payload
+        except Exception:
+            return audio
 
     @staticmethod
     def _estimate_wav_duration_ms(audio: bytes) -> int:

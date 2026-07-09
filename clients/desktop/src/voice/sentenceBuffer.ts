@@ -1,6 +1,6 @@
 ﻿const HARD_TTS_BREAK_PUNCTUATIONS = /[。！？.!?]/;
 const SOFT_TTS_BREAK_PUNCTUATIONS = /[，,、]/;
-const MIN_SOFT_BREAK_CHARS = 8;
+const MIN_SOFT_BREAK_CHARS = 32;
 
 export type SentenceSplit = {
   complete: string[];
@@ -14,11 +14,12 @@ export function splitSentences(buffer: string, incoming: string): SentenceSplit 
 
   for (const ch of merged) {
     acc += ch;
+    const trimmedAcc = acc.trim();
     const shouldBreak =
       HARD_TTS_BREAK_PUNCTUATIONS.test(ch) ||
-      (SOFT_TTS_BREAK_PUNCTUATIONS.test(ch) && acc.trim().length >= MIN_SOFT_BREAK_CHARS);
+      (SOFT_TTS_BREAK_PUNCTUATIONS.test(ch) && trimmedAcc.length >= MIN_SOFT_BREAK_CHARS);
     if (shouldBreak) {
-      const s = acc.trim();
+      const s = trimmedAcc;
       if (s) complete.push(s);
       acc = "";
     }

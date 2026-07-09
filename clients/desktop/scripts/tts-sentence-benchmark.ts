@@ -173,7 +173,7 @@ async function synthesizeByEngine(engine: TtsEngine, text: string, voice: string
       text,
       voice,
       language: "zh-CN",
-      speed: 1.4,
+      speed: 1.0,
       pitch: 1.0,
     }),
   });
@@ -387,4 +387,3 @@ void main().catch((e) => {
   console.error("[tts-benchmark] failed:", e);
   process.exit(1);
 });
-

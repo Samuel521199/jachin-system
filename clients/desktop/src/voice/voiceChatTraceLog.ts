@@ -7,6 +7,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { VoiceUxProfile } from "./voiceProfiles";
+import {
+  beginVoiceTurnDiagnostics,
+  endVoiceTurnDiagnostics,
+  recordVoiceTurnDiagnosticEvent,
+  snapshotVoiceTurnDiagnostics,
+} from "./voiceTurnDiagnostics";
 
 export type VoiceChatUiState = {
   machineState?: string;
@@ -69,6 +75,7 @@ export function beginVoiceChatTrace(profile: VoiceUxProfile, ui?: VoiceChatUiSta
   const id = newTraceId();
   const now = Date.now();
   activeTrace = { id, profile, startedAt: now, lastAt: now, webview: webviewLabel };
+  beginVoiceTurnDiagnostics(id, profile);
   voiceChatTrace("turn.begin", {
     profile,
     ui,
@@ -102,6 +109,7 @@ export function endVoiceChatTrace(
     ...extra,
     msg: `${outcome} ${elapsedMs}ms`,
   });
+  endVoiceTurnDiagnostics(outcome, extra);
   activeTrace = null;
 }
 
@@ -127,6 +135,7 @@ export function voiceChatTrace(
   if (activeTrace) {
     activeTrace.lastAt = now;
   }
+  recordVoiceTurnDiagnosticEvent(stage, payload, elapsedMs, sincePrevMs);
   console.debug(`[voice_chat][${traceId}][${stage}]`, payload);
   void invoke("voice_chat_trace_log", {
     traceId,
@@ -142,4 +151,8 @@ export function voiceChatTrace(
 export function voiceChatTraceIfActive(stage: string, payload: Record<string, unknown> = {}): void {
   if (!activeTrace) return;
   voiceChatTrace(stage, payload);
+}
+
+export function getVoiceTurnDiagnosticsSnapshot(): ReturnType<typeof snapshotVoiceTurnDiagnostics> {
+  return snapshotVoiceTurnDiagnostics();
 }

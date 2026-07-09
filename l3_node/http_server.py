@@ -2602,6 +2602,9 @@ async def _handle_agent_run(request) -> "aiohttp.web.Response":
         _iatt = _iatt if isinstance(_iatt, dict) else None
         if _iatt is None:
             _iatt = {"channel": "http_agent_run"}
+        _voice_diagnostics = body.get("voice_diagnostics")
+        if isinstance(_voice_diagnostics, dict) and _voice_diagnostics:
+            _iatt = {**_iatt, "voice_diagnostics": _voice_diagnostics}
         _ch = body.get("chat_id") or body.get("session_id") or ""
         _ch_s = str(_ch).strip() if _ch else ""
         if _ch_s:
@@ -2769,6 +2772,31 @@ async def _handle_voice_reply_compose(request) -> "aiohttp.web.Response":
     except Exception as e:
         logger.warning("[L3 HTTP] voice reply compose failed: %s", e, exc_info=True)
         return _json_response({"ok": False, "reply": fallback_text, "error": str(e)}, status=500)
+
+
+async def _handle_voice_diagnostics_append(request) -> "aiohttp.web.Response":
+    """POST /api/v3/agent/voice-diagnostics-append - append desktop voice diagnostics to a turn log."""
+    try:
+        body = await request.json() if request.body_exists else {}
+    except Exception as e:
+        return _json_response({"ok": False, "error": f"request body parse failed: {e}"}, status=400)
+    diagnostics = body.get("voice_diagnostics")
+    if not isinstance(diagnostics, dict) or not diagnostics:
+        return _json_response({"ok": False, "error": "voice_diagnostics must be a non-empty object"}, status=400)
+    try:
+        from l3_node.terminal_turn_debug_log import append_voice_diagnostics
+
+        append_voice_diagnostics(
+            diagnostics,
+            run_id=str(body.get("run_id") or ""),
+            lark_chat_id=str(body.get("lark_chat_id") or body.get("chat_id") or ""),
+        )
+        return _json_response({"ok": True})
+    except Exception as e:
+        logger.warning("[L3 HTTP] voice diagnostics append failed: %s", e, exc_info=True)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
 async def _handle_l3_setup_page(request) -> "aiohttp.web.Response":
     """GET /l3/setup — 浏览器内选择 L1 工作区并写入 l2_gateway_config（需 edge token）。"""
     import aiohttp.web
@@ -3428,6 +3456,7 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.router.add_get("/api/v3/mcp/tools", _handle_mcp_tools_list)
     app.router.add_post("/api/v3/mcp/execute", _handle_mcp_execute)
     app.router.add_post("/api/v3/voice/reply-compose", _handle_voice_reply_compose)
+    app.router.add_post("/api/v3/agent/voice-diagnostics-append", _handle_voice_diagnostics_append)
     app.router.add_post("/api/v3/agent/run", _handle_agent_run)
     app.router.add_get("/l3/setup", _handle_l3_setup_page)
     app.router.add_post("/api/v3/setup/workspaces", _handle_setup_workspaces)

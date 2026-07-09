@@ -580,6 +580,88 @@ def tts_synthesize(req: TtsRequest) -> Response:
     )
 
 
+@app.websocket("/v1/tts/stream")
+async def tts_stream(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        raw = await websocket.receive_json()
+        req = TtsRequest(**raw)
+        if not req.text.strip():
+            await websocket.send_json({"type": "error", "code": "bad_request", "message": "text is empty"})
+            return
+        if not tts_service.ready:
+            await websocket.send_json({"type": "error", "code": "tts_not_ready", "message": f"TTS backend not ready: {tts_service.model_path}"})
+            return
+        if not hasattr(tts_service, "stream_synthesize"):
+            await websocket.send_json({"type": "error", "code": "stream_unsupported", "message": "current TTS backend does not support streaming"})
+            return
+
+        stream_iter = tts_service.stream_synthesize(
+            req.text,
+            voice=req.voice,
+            session_id=req.session_id,
+            speed=req.speed if req.speed is not None else cfg.tts_speed,
+            kind=req.kind,
+        )
+
+        def _next_event():
+            try:
+                return next(stream_iter)
+            except StopIteration:
+                return None
+
+        while True:
+            event = await asyncio.to_thread(_next_event)
+            if event is None:
+                break
+            event_type = event.get("type")
+            if event_type == "audio":
+                data = event.get("data") or b""
+                await websocket.send_json(
+                    {
+                        "type": "audio",
+                        "audio_b64": base64.b64encode(data).decode("ascii"),
+                        "elapsed_ms": event.get("elapsed_ms", 0),
+                    }
+                )
+            elif event_type == "complete":
+                await websocket.send_json(
+                    {
+                        "type": "done",
+                        "first_packet_ms": event.get("first_packet_ms", 0),
+                        "request_id": event.get("request_id", ""),
+                    }
+                )
+            elif event_type == "error":
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "code": "stream_error",
+                        "message": str(event.get("message") or ""),
+                    }
+                )
+                break
+            elif event_type == "meta":
+                await websocket.send_json({k: v for k, v in event.items() if k != "data"})
+            elif event_type in {"open", "close"}:
+                await websocket.send_json({"type": event_type})
+            else:
+                await websocket.send_json({"type": "event", "message": str(event.get("message") or "")[:1000]})
+    except WebSocketDisconnect:
+        return
+    except Exception as e:
+        logger.exception("TTS stream failed")
+        try:
+            await websocket.send_json({"type": "error", "code": "server_error", "message": str(e)})
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
 @app.get("/v1/tts/voices")
 def tts_voices() -> dict:
     voices = tts_service.list_voices()

@@ -815,6 +815,9 @@ async def _ws_execute_intent_turn(
             asyncio.create_task(_push_reply_to_lark(lark_chat_id, test_reply))
         return
 
+    _voice_diagnostics = msg.get("voice_diagnostics")
+    _voice_diagnostics = _voice_diagnostics if isinstance(_voice_diagnostics, dict) else None
+
     try:
         from l3_node.terminal_turn_debug_log import begin_turn
 
@@ -838,6 +841,7 @@ async def _ws_execute_intent_turn(
                 "intent_chars": len(intent),
                 "history_msgs_before_turn": len(messages),
                 "default_engine_model": getattr(_engine, "model_name", ""),
+                **({"voice_diagnostics": _voice_diagnostics} if _voice_diagnostics else {}),
             },
         )
     except Exception:
@@ -1189,6 +1193,8 @@ async def _ws_execute_intent_turn(
         "session_id": chat_id or "",
         "local_voice_session": local_voice_session,
     }
+    if _voice_diagnostics:
+        _imp_attr["voice_diagnostics"] = _voice_diagnostics
     if lark_chat_id:
         _imp_attr["lark_chat_id"] = lark_chat_id
     _att_meta = attachments_metadata
@@ -1397,6 +1403,22 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
                     _running = _prepare_tasks.get(cid)
                     if _running is None or _running.done():
                         _prepare_tasks[cid] = asyncio.create_task(_preflight_prepare_session(cid))
+                continue
+
+            if msg_type == "voice_diagnostics_append":
+                diagnostics = msg.get("voice_diagnostics")
+                if isinstance(diagnostics, dict) and diagnostics:
+                    try:
+                        from l3_node.terminal_turn_debug_log import append_voice_diagnostics
+
+                        session_key = _ws_msg_session_key(msg) or _my_lark_chat_id or ""
+                        append_voice_diagnostics(
+                            diagnostics,
+                            run_id=str(msg.get("run_id") or ""),
+                            lark_chat_id=_ws_msg_lark_chat_id(msg, session_key),
+                        )
+                    except Exception as e:
+                        logger.debug("[L3 WS] voice diagnostics append skipped: %s", e)
                 continue
 
             # 终端「停止生成」：取消当前 run_agent 任务，主循环可继续收包（避免与含 intent 的误触 action 混淆）

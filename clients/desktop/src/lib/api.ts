@@ -847,6 +847,7 @@ export async function tryL3AgentForIntent(
       base64: string;
     }>;
     implicit_signals?: Record<string, unknown>;
+    voice_diagnostics?: Record<string, unknown>;
   },
 ): Promise<string | null> {
   const t = (userInput || "").trim();
@@ -856,6 +857,9 @@ export async function tryL3AgentForIntent(
   if (extras?.attachments_metadata?.length) body.attachments_metadata = extras.attachments_metadata;
   if (extras?.implicit_signals && Object.keys(extras.implicit_signals).length > 0) {
     body.implicit_signals = extras.implicit_signals;
+  }
+  if (extras?.voice_diagnostics && Object.keys(extras.voice_diagnostics).length > 0) {
+    body.voice_diagnostics = extras.voice_diagnostics;
   }
   const options: RequestInit = {
     method: "POST",
@@ -897,6 +901,35 @@ export async function tryL3AgentForIntent(
     }
   }
   return null;
+}
+
+export async function appendL3VoiceDiagnostics(
+  runId: string | undefined,
+  diagnostics: Record<string, unknown> | null | undefined,
+  sessionId?: string,
+): Promise<boolean> {
+  if (!diagnostics || Object.keys(diagnostics).length === 0) return false;
+  const path = "/api/v3/agent/voice-diagnostics-append";
+  const sid = (sessionId || "").trim();
+  const body: Record<string, unknown> = {
+    run_id: runId || "",
+    voice_diagnostics: diagnostics,
+  };
+  if (sid) {
+    body.chat_id = sid;
+    body.session_id = sid;
+  }
+  try {
+    const base = await getL3SkillsBaseUrl();
+    const res = await fetch(`${base}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 export interface VoiceReplyComposeRequest {

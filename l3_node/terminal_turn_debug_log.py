@@ -169,6 +169,7 @@ class _HumanJournal:
     tools_used: list[str] = field(default_factory=list)
     final_answer: str = ""
     end_tag: str = ""
+    voice_diagnostics: dict[str, Any] = field(default_factory=dict)
     file_started: bool = False
     recap_written: bool = False
     config_logged: bool = False
@@ -579,7 +580,79 @@ def _write_human_session_intro(j: _HumanJournal) -> None:
         ]
     )
     _append_human_block(lines)
+    if j.voice_diagnostics:
+        _write_voice_diagnostics_human(j.voice_diagnostics, title="【本轮语音链路（进入 L3 前）】")
     j.file_started = True
+
+
+def _fmt_voice_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list, tuple)):
+        try:
+            return json.dumps(value, ensure_ascii=False, default=str)
+        except Exception:
+            return str(value)
+    return str(value)
+
+
+def _voice_line(label: str, data: dict[str, Any], *keys: str) -> str | None:
+    bits: list[str] = []
+    for key in keys:
+        if key in data and data.get(key) not in (None, ""):
+            bits.append(f"{key}={_fmt_voice_value(data.get(key))}")
+    if not bits:
+        return None
+    return f"  · {label}：" + "；".join(bits)
+
+
+def _write_voice_diagnostics_human(diag: dict[str, Any] | None, *, title: str = "【本轮语音链路】") -> None:
+    lines = _voice_diagnostics_human_lines(diag, title=title)
+    if lines:
+        _append_human_block(lines)
+
+
+def _voice_diagnostics_human_lines(diag: dict[str, Any] | None, *, title: str = "【本轮语音链路】") -> list[str]:
+    if not isinstance(diag, dict) or not diag:
+        return []
+    lines = [
+        title,
+        f"  trace_id={diag.get('traceId') or diag.get('trace_id') or '（未记录）'}；profile={diag.get('profile') or '（未记录）'}；elapsed_ms={diag.get('elapsedMs') or diag.get('elapsed_ms') or '（未记录）'}；events={diag.get('eventCount') or len(diag.get('events') or [])}",
+    ]
+    stt = diag.get("stt") if isinstance(diag.get("stt"), dict) else {}
+    sv = diag.get("sv") if isinstance(diag.get("sv"), dict) else {}
+    tts = diag.get("tts") if isinstance(diag.get("tts"), dict) else {}
+    l3 = diag.get("l3") if isinstance(diag.get("l3"), dict) else {}
+    for line in [
+        _voice_line("STT 识别", stt, "last_stage", "text", "rawText", "correctedText", "confidence", "backend", "durationMs", "latencyMs", "pipelineMs", "source", "hotwordStatus", "hotwordCount", "hotwordDominated"),
+        _voice_line("SV 声纹/主人声道", sv, "last_stage", "accepted", "usedOwnerTrack", "reason", "ownerDurationMs", "skippedSegmentsCount", "latencyMs", "error"),
+        _voice_line("L3 发送/路由", l3, "last_stage", "recognizedText", "wireText", "intentPreview", "answerPreview", "answerLen", "latencyMs", "sessionId", "sensoryConnected", "l2Available"),
+        _voice_line("TTS 合成/播放", tts, "last_stage", "sentence", "text", "kind", "reason", "voice", "status", "ok", "latencyMs", "serverSynthMs", "audioDurationMs", "quality", "ttsKind", "styleIndex", "styleMode", "rawDurationMs", "trimLeadingMs", "trimTrailingMs", "bytes", "totalMs", "err"),
+    ]:
+        if line:
+            lines.append(line)
+    errors = diag.get("errors") if isinstance(diag.get("errors"), list) else []
+    if errors:
+        lines.append("  · 语音错误/异常：")
+        for item in errors[-8:]:
+            if isinstance(item, dict):
+                lines.append("    - " + _truncate(json.dumps(item, ensure_ascii=False, default=str), 1000))
+            else:
+                lines.append(f"    - {item}")
+    events = diag.get("events") if isinstance(diag.get("events"), list) else []
+    if events:
+        lines.append("  · 关键时间线（最近事件）：")
+        for ev in events[-16:]:
+            if not isinstance(ev, dict):
+                continue
+            payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
+            preview_keys = ("latencyMs", "pipelineMs", "durationMs", "audioDurationMs", "serverSynthMs", "status", "ok", "error", "err", "text", "sentence")
+            preview = {k: payload.get(k) for k in preview_keys if k in payload and payload.get(k) not in (None, "")}
+            lines.append(
+                f"    - {ev.get('stage')} elapsed={ev.get('elapsedMs')}ms since_prev={ev.get('sincePrevMs')}ms "
+                + (_truncate(json.dumps(preview, ensure_ascii=False, default=str), 500) if preview else "")
+            )
+    return lines
 
 
 def _write_human_round_header(iteration: int, *, max_iterations: int = 0) -> None:
@@ -683,6 +756,8 @@ def ensure_turn_started(user_text: str, *, extra: dict[str, Any] | None = None) 
     j.user_message = (user_text or j.user_message or "").strip()
     j.run_id = str(ex.get("run_id") or j.run_id or "")
     j.channel = str(ex.get("channel") or j.channel or "")
+    if isinstance(ex.get("voice_diagnostics"), dict):
+        j.voice_diagnostics = dict(ex.get("voice_diagnostics") or {})
     _apply_lark_chat_id_to_journal(j, ex)
     try:
         j.max_iterations = int(ex.get("max_iterations") or j.max_iterations or 0)
@@ -772,6 +847,8 @@ def begin_turn(user_text: str, *, extra: dict[str, Any] | None = None) -> None:
     j.user_message = (user_text or "").strip()
     j.run_id = str(ex.get("run_id") or "")
     j.channel = str(ex.get("channel") or "")
+    if isinstance(ex.get("voice_diagnostics"), dict):
+        j.voice_diagnostics = dict(ex.get("voice_diagnostics") or {})
     _apply_lark_chat_id_to_journal(j, ex)
     try:
         j.max_iterations = int(ex.get("max_iterations") or 0)
@@ -1205,6 +1282,9 @@ def append_final(tag: str, text: str, *, extra: dict[str, Any] | None = None) ->
         j.end_tag = tag
         if extra:
             _apply_lark_chat_id_to_journal(j, extra)
+            if isinstance(extra.get("voice_diagnostics"), dict):
+                j.voice_diagnostics = dict(extra.get("voice_diagnostics") or {})
+                _write_voice_diagnostics_human(j.voice_diagnostics, title="【本轮语音链路（结束快照）】")
         if not j.recap_written:
             try:
                 _write_human_session_recap(j)
@@ -1228,3 +1308,35 @@ def append_final(tag: str, text: str, *, extra: dict[str, Any] | None = None) ->
             _turn_log_path_settled.set(p)
         _turn_log_path.set(None)
         _human_journal.set(None)
+
+
+def append_voice_diagnostics(
+    diagnostics: dict[str, Any],
+    *,
+    run_id: str = "",
+    lark_chat_id: str = "",
+    title: str = "[voice] 本轮语音链路追加快照",
+) -> None:
+    """前端在 TTS/播放结束后追加同一语音 turn 的诊断信息。"""
+    if not _enabled() or not isinstance(diagnostics, dict) or not diagnostics:
+        return
+    try:
+        body = json.dumps(diagnostics, ensure_ascii=False, indent=2, default=str)
+    except Exception:
+        body = repr(diagnostics)
+    human_lines = _voice_diagnostics_human_lines(diagnostics, title="【本轮语音链路（追加快照）】")
+    human_body = "\n".join(human_lines)
+    if run_id or lark_chat_id:
+        append_section_cross_thread(title, body, run_id=run_id, lark_chat_id=lark_chat_id)
+        if human_body:
+            append_section_cross_thread(
+                "[voice] 人类可读语音链路追加快照",
+                human_body,
+                run_id=run_id,
+                lark_chat_id=lark_chat_id,
+            )
+        return
+    else:
+        append_section(title, body)
+    if human_body:
+        _append_human_block(human_lines)

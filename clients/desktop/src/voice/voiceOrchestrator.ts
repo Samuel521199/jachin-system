@@ -1,4 +1,4 @@
-import { cancelJvsSession, synthesizeByJvs } from "./voiceBridge";
+import { cancelJvsSession, streamSynthesizeByJvs, synthesizeByJvs } from "./voiceBridge";
 import { splitSentences } from "./sentenceBuffer";
 import { prepareSentenceForTts } from "./speakableText";
 import { voicePlaybackController } from "./voicePlaybackController";
@@ -8,6 +8,7 @@ import { voiceChatTraceIfActive } from "./voiceChatTraceLog";
 import { notifyCompanionVoicePhase } from "./voiceNativeBridge";
 import { synthesizeSpeechL2Only } from "../lib/api";
 import { DEFAULT_KOKORO_TTS_VOICE } from "./voiceDefaults";
+import { loadCompanionCueAudio } from "./voiceCueAudioCache";
 
 type ChunkConsumer = (text: string) => void;
 
@@ -259,9 +260,80 @@ export class VoiceOrchestrator {
     });
     try {
       const synthStartedAt = Date.now();
-      const blob = useMandarinNeuralVoice
-        ? await synthesizeSpeechL2Only(speakable, ttsVoice)
-        : await synthesizeByJvs(speakable, ttsVoice, sessionId, job.kind);
+      const cachedCue = await loadCompanionCueAudio(speakable);
+      if (!cachedCue && !useMandarinNeuralVoice && job.kind === "content") {
+        let streamStarted = false;
+        try {
+          voicePlaybackController.beginPcmStream(jobGeneration);
+          streamStarted = true;
+          let firstStreamChunk = true;
+          const streamResult = await streamSynthesizeByJvs(
+            speakable,
+            ttsVoice,
+            sessionId,
+            job.kind,
+            async (chunk, meta) => {
+              if (jobGeneration !== voicePlaybackController.getGeneration()) return;
+              if (firstStreamChunk) {
+                firstStreamChunk = false;
+                if (job.companionUi) {
+                  voiceSessionStore.setState("speaking");
+                  void notifyCompanionVoicePhase("speaking");
+                }
+              }
+              await voicePlaybackController.enqueuePcm16Chunk(chunk, {
+                sampleRate: meta.sampleRate,
+                channels: meta.channels,
+                generation: jobGeneration,
+              });
+            },
+          );
+          await voicePlaybackController.endPcmStream(jobGeneration);
+          if (streamResult.ok && streamResult.chunks > 0) {
+            const synthMs = Date.now() - synthStartedAt;
+            voiceCompanionDebug("orchestrator.tts_ok", {
+              bytes: streamResult.bytes,
+              sentence: truncVoiceLog(speakable, 80),
+              generation: jobGeneration,
+              engine: "jvs_cloud_stream",
+              voice: ttsVoice ?? "",
+              synthMs,
+              queueWaitMs,
+              firstAudioMs: streamResult.firstAudioMs,
+              chunks: streamResult.chunks,
+            });
+            voiceChatTraceIfActive("tts.orchestrator.ok", {
+              bytes: streamResult.bytes,
+              sentence: truncVoiceLog(speakable, 120),
+              latencyMs: synthMs,
+              queueWaitMs,
+              engine: "jvs_cloud_stream",
+              voice: ttsVoice ?? "",
+              firstAudioMs: streamResult.firstAudioMs,
+              chunks: streamResult.chunks,
+            });
+            return;
+          }
+        } catch (e) {
+          voiceCompanionDebug("orchestrator.tts_stream_fallback", {
+            err: String(e),
+            sentence: truncVoiceLog(speakable, 80),
+          });
+          voiceChatTraceIfActive("tts.orchestrator.stream_fallback", {
+            err: String(e),
+            sentence: truncVoiceLog(speakable, 120),
+          });
+        } finally {
+          if (streamStarted) {
+            await voicePlaybackController.endPcmStream(jobGeneration).catch(() => undefined);
+          }
+        }
+      }
+      const blob = cachedCue?.blob ?? (
+        useMandarinNeuralVoice
+          ? await synthesizeSpeechL2Only(speakable, ttsVoice)
+          : await synthesizeByJvs(speakable, ttsVoice, sessionId, job.kind)
+      );
       const synthMs = Date.now() - synthStartedAt;
       if (jobGeneration !== voicePlaybackController.getGeneration()) {
         voiceCompanionDebug("orchestrator.tts_skip_stale", {
@@ -275,18 +347,20 @@ export class VoiceOrchestrator {
         bytes: blob.size,
         sentence: truncVoiceLog(speakable, 80),
         generation: jobGeneration,
-        engine: useMandarinNeuralVoice ? "l2_edge" : "jvs_kokoro",
+        engine: cachedCue ? "local_cue_cache" : (useMandarinNeuralVoice ? "l2_edge" : "jvs_kokoro"),
         voice: ttsVoice ?? "",
         synthMs,
         queueWaitMs,
+        cueId: cachedCue?.id ?? "",
       });
       voiceChatTraceIfActive("tts.orchestrator.ok", {
         bytes: blob.size,
         sentence: truncVoiceLog(speakable, 120),
         latencyMs: synthMs,
         queueWaitMs,
-        engine: useMandarinNeuralVoice ? "l2_edge" : "jvs_kokoro",
+        engine: cachedCue ? "local_cue_cache" : (useMandarinNeuralVoice ? "l2_edge" : "jvs_kokoro"),
         voice: ttsVoice ?? "",
+        cueId: cachedCue?.id ?? "",
       });
       if (job.companionUi) {
         voiceSessionStore.setState("speaking");

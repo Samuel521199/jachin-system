@@ -47,16 +47,23 @@ if sys.platform == "win32":
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Trace Kokoro TTS pipeline: normalize -> sentence split -> g2p -> tokens -> synthesize."
+        description="Trace the current L3 TTS output by default, or the local Kokoro pipeline when requested."
     )
     p.add_argument("--text", default="", help="One-shot input text. If empty, enters interactive mode.")
     p.add_argument("--voice", default=None, help="Voice id override (default from voice_server config).")
     p.add_argument(
         "--speed",
         type=float,
-        default=1.4,
-        help="TTS speed override (default: 1.4, matching system voice output).",
+        default=None,
+        help="Kokoro-only speed override. L3 mode always follows voice_server config.",
     )
+    p.add_argument(
+        "--backend",
+        choices=("l3", "kokoro"),
+        default="l3",
+        help="TTS backend to trace. Default l3 matches the current voice companion runtime.",
+    )
+    p.add_argument("--kind", choices=("content", "cue"), default="content", help="L3 TTS kind for model/style routing.")
     p.add_argument("--model-dir", type=Path, default=None, help="Override model dir.")
     p.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Output directory for reports.")
     p.add_argument(
@@ -135,7 +142,9 @@ def play_wav(path: Path) -> None:
         try:
             import winsound
 
+            print(f"[INFO] Playing audio: {path}")
             winsound.PlaySound(str(path), winsound.SND_FILENAME)
+            print("[INFO] Playback finished.")
             return
         except Exception as e:
             print(f"[WARN] play_wav failed: {e}")
@@ -235,6 +244,200 @@ def build_html_report(report: dict[str, Any]) -> str:
 </body>
 </html>
 """
+
+
+def build_l3_html_report(report: dict[str, Any]) -> str:
+    synth = report["synthesis"]
+    trace = synth.get("actual_trace", {}) or {}
+    wav_name = Path(str(synth.get("wav_path") or "")).name
+    audio_html = f'<audio controls preload="none" src="{html_escape(wav_name)}"></audio>' if wav_name else "<p>Audio synthesis skipped.</p>"
+    ignored = report["legacy_args"]["ignored"]
+    ignored_rows = "".join(
+        f"<tr><td>{html_escape(k)}</td><td>{html_escape(v)}</td></tr>"
+        for k, v in ignored.items()
+    ) or "<tr><td colspan='2'>none</td></tr>"
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>L3 TTS Trace</title>
+  <style>
+    body {{ font-family: Segoe UI, system-ui, Arial; background:#0b1020; color:#d8e8ff; margin:0; padding:18px; }}
+    h1,h2 {{ margin:14px 0 8px; }}
+    .card {{ border:1px solid #2a3c66; border-radius:10px; padding:12px; margin-bottom:12px; background:#111a30; }}
+    table {{ border-collapse:collapse; width:100%; font-size:13px; }}
+    th,td {{ border:1px solid #24365a; padding:6px 8px; vertical-align:top; }}
+    th {{ background:#162449; }}
+    code, pre {{ background:#0f1830; color:#d5f0ff; border:1px solid #2a3c66; border-radius:8px; padding:8px; display:block; white-space:pre-wrap; }}
+    .meta span {{ display:inline-block; margin-right:16px; }}
+    audio {{ width: 420px; max-width: 100%; }}
+  </style>
+</head>
+<body>
+  <h1>L3 Voice Companion TTS Trace</h1>
+  <div class="card meta">
+    <span><b>time:</b> {html_escape(report["meta"]["time"])}</span>
+    <span><b>backend:</b> {html_escape(report["meta"]["tts_backend"])}</span>
+    <span><b>model:</b> {html_escape(report["meta"]["selected_model"])}</span>
+    <span><b>voice:</b> {html_escape(report["meta"]["selected_voice"])}</span>
+    <span><b>speed:</b> {html_escape(report["meta"]["selected_speed"])}</span>
+    <span><b>kind:</b> {html_escape(report["meta"]["kind"])}</span>
+  </div>
+
+  <div class="card">
+    <h2>Audio</h2>
+    {audio_html}
+    <p><b>text:</b> {html_escape(report["text"])}</p>
+  </div>
+
+  <div class="card">
+    <h2>L3 Runtime Config</h2>
+    <pre>{html_escape(json.dumps(report["runtime_config"], ensure_ascii=False, indent=2))}</pre>
+  </div>
+
+  <div class="card">
+    <h2>Synthesis</h2>
+    <pre>{html_escape(json.dumps(synth, ensure_ascii=False, indent=2))}</pre>
+    <pre>{html_escape(json.dumps(trace, ensure_ascii=False, indent=2))}</pre>
+  </div>
+
+  <div class="card">
+    <h2>Ignored Legacy Kokoro Args</h2>
+    <table><thead><tr><th>arg</th><th>value</th></tr></thead><tbody>{ignored_rows}</tbody></table>
+  </div>
+</body>
+</html>
+"""
+
+
+def create_l3_tts_service(cfg: Any) -> Any:
+    if cfg.tts_backend == "cloud":
+        from voice_server.services.cloud_tts_service import CloudTtsService  # pylint: disable=import-outside-toplevel
+
+        return CloudTtsService(
+            api_key=cfg.dashscope_api_key,
+            http_api_base=cfg.dashscope_http_api_base,
+            model=cfg.tts_model,
+            fast_model=cfg.tts_fast_model,
+            default_voice=cfg.tts_cloud_voice,
+            default_speed=cfg.tts_speed,
+            audio_format=cfg.tts_format,
+            sample_rate=cfg.tts_sample_rate,
+        )
+
+    from voice_server.services.tts_service import TtsService  # pylint: disable=import-outside-toplevel
+
+    return TtsService(cfg.tts_dir, default_voice=cfg.tts_voice, default_speed=cfg.tts_speed)
+
+
+def run_l3_trace(
+    *,
+    raw_text: str,
+    tts: Any,
+    cfg: Any,
+    legacy_voice: str | None,
+    legacy_speed: float | None,
+    kind: str,
+    out_dir: Path,
+    no_synthesize: bool,
+    no_play: bool,
+) -> Path:
+    selected_speed = float(cfg.tts_speed)
+    requested_voice = cfg.tts_cloud_voice if cfg.tts_backend == "cloud" else cfg.tts_voice
+    if cfg.tts_backend == "cloud" and hasattr(tts, "_select_voice"):
+        selected_voice = tts._select_voice(requested_voice)
+    else:
+        selected_voice = requested_voice
+    if cfg.tts_backend == "cloud" and hasattr(tts, "_select_model"):
+        selected_model = tts._select_model(kind)
+    else:
+        selected_model = getattr(tts, "model_name", "unknown")
+
+    synth_info: dict[str, Any] = {"ran": False}
+    if not no_synthesize:
+        ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        wav_path = out_dir / f"l3_tts_trace_{ts}.wav"
+        result = tts.synthesize(
+            raw_text,
+            voice=selected_voice,
+            session_id=f"l3-tts-trace-{ts}",
+            speed=selected_speed,
+            kind=kind,
+        )
+        wav_path.write_bytes(result.wav_bytes)
+        synth_info = {
+            "ran": True,
+            "duration_ms": result.duration_ms,
+            "synth_ms": getattr(result, "synth_ms", 0),
+            "sample_rate": result.sample_rate,
+            "quality": getattr(result, "quality_status", ""),
+            "wav_path": str(wav_path),
+            "wav_bytes": len(result.wav_bytes),
+            "actual_trace": result.trace or {},
+        }
+        if not no_play:
+            play_wav(wav_path)
+
+    ignored: dict[str, Any] = {}
+    if legacy_voice:
+        ignored["--voice"] = legacy_voice
+    if legacy_speed is not None:
+        ignored["--speed"] = legacy_speed
+
+    report = {
+        "meta": {
+            "time": dt.datetime.now().isoformat(timespec="seconds"),
+            "trace_mode": "l3",
+            "tts_backend": cfg.tts_backend,
+            "selected_model": selected_model,
+            "selected_voice": selected_voice,
+            "selected_speed": selected_speed,
+            "kind": kind,
+        },
+        "text": raw_text,
+        "runtime_config": {
+            "voice_backend": cfg.voice_backend,
+            "tts_backend": cfg.tts_backend,
+            "tts_model": cfg.tts_model,
+            "tts_fast_model": cfg.tts_fast_model,
+            "tts_cloud_voice": cfg.tts_cloud_voice,
+            "tts_voice": cfg.tts_voice,
+            "tts_speed": cfg.tts_speed,
+            "tts_format": cfg.tts_format,
+            "tts_sample_rate": cfg.tts_sample_rate,
+            "tts_dir": str(cfg.tts_dir),
+        },
+        "legacy_args": {
+            "ignored": ignored,
+            "reason": "L3 mode follows the current voice_server config so this page matches the voice companion runtime.",
+        },
+        "synthesis": synth_info,
+    }
+
+    ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    json_path = out_dir / f"l3_tts_trace_{ts}.json"
+    html_path = out_dir / f"l3_tts_trace_{ts}.html"
+    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    html_path.write_text(build_l3_html_report(report), encoding="utf-8")
+
+    print("\n=== L3 Voice Companion TTS Trace ===")
+    print(f"text      : {safe_console_text(raw_text)}")
+    print(f"backend   : {cfg.tts_backend}")
+    print(f"model     : {selected_model}")
+    print(f"voice     : {selected_voice}")
+    print(f"speed     : {selected_speed}")
+    print(f"kind      : {kind}")
+    if ignored:
+        print(f"ignored   : {ignored}")
+    if synth_info["ran"]:
+        actual = synth_info.get("actual_trace", {}) or {}
+        print(f"actual    : model={actual.get('model', '')} voice={actual.get('voice', '')} backend={actual.get('backend', '')}")
+        print(f"synth     : duration={synth_info['duration_ms']}ms synth={synth_info['synth_ms']}ms quality={synth_info['quality']}")
+        print(f"wav       : {synth_info['wav_path']}")
+    print(f"report    : {json_path}")
+    print(f"visualize : {html_path}")
+    print("========================\n")
+    return json_path
 
 
 def run_trace(
@@ -839,12 +1042,71 @@ def main() -> None:
         sys.path.insert(0, str(PROJECT_ROOT))
 
     from voice_server.config import load_config  # pylint: disable=import-outside-toplevel
-    from voice_server.services.tts_service import TtsService  # pylint: disable=import-outside-toplevel
 
     cfg = load_config()
+    if args.backend == "l3":
+        tts = create_l3_tts_service(cfg)
+        if not tts.ready:
+            raise RuntimeError(f"L3 TTS backend not ready: {getattr(tts, 'model_path', 'unknown')}")
+        if args.suite:
+            suite_dir = out_dir / f"l3_tts_suite_{args.suite}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            suite_dir.mkdir(parents=True, exist_ok=True)
+            for case in TTS_SCENARIO_SUITES[args.suite]:
+                run_l3_trace(
+                    raw_text=str(case["text"]),
+                    tts=tts,
+                    cfg=cfg,
+                    legacy_voice=args.voice,
+                    legacy_speed=args.speed,
+                    kind=str(case.get("expected_kind") or args.kind),
+                    out_dir=suite_dir,
+                    no_synthesize=args.no_synthesize,
+                    no_play=args.no_play,
+                )
+            return
+        if args.text.strip():
+            run_l3_trace(
+                raw_text=args.text.strip(),
+                tts=tts,
+                cfg=cfg,
+                legacy_voice=args.voice,
+                legacy_speed=args.speed,
+                kind=args.kind,
+                out_dir=out_dir,
+                no_synthesize=args.no_synthesize,
+                no_play=args.no_play,
+            )
+            return
+
+        print("Interactive L3 TTS trace mode is ready.")
+        print(f"backend={cfg.tts_backend} model={cfg.tts_model} fast={cfg.tts_fast_model}")
+        print(f"voice={cfg.tts_cloud_voice if cfg.tts_backend == 'cloud' else cfg.tts_voice} speed={cfg.tts_speed}")
+        print("Type text and press Enter. Type 'q' to quit.")
+        while True:
+            raw = input("\nInput text> ").strip()
+            if raw.lower() in {"q", "quit", "exit"}:
+                print("Bye.")
+                return
+            if not raw:
+                continue
+            run_l3_trace(
+                raw_text=raw,
+                tts=tts,
+                cfg=cfg,
+                legacy_voice=args.voice,
+                legacy_speed=args.speed,
+                kind=args.kind,
+                out_dir=out_dir,
+                no_synthesize=args.no_synthesize,
+                no_play=args.no_play,
+            )
+        return
+
+    from voice_server.services.tts_service import TtsService  # pylint: disable=import-outside-toplevel
+
     model_dir = Path(args.model_dir) if args.model_dir else Path(cfg.tts_dir)
     voice = (args.voice or cfg.tts_voice or "zm_053").strip() or "zm_053"
-    speed = float(args.speed)
+    speed = float(args.speed if args.speed is not None else cfg.tts_speed)
 
     tts = TtsService(model_dir, default_voice=voice, default_speed=speed)
     if not tts.ready:
@@ -902,4 +1164,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

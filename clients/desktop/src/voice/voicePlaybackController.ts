@@ -61,6 +61,10 @@ export class VoicePlaybackController {
   private isStopping = false;
   private autoplayPrimed = false;
   private idleWaiters: Array<() => void> = [];
+  private streamAudioContext: AudioContext | null = null;
+  private streamNextTime = 0;
+  private streamSources = new Set<AudioBufferSourceNode>();
+  private streamActiveCount = 0;
   /** 陪伴态默认走 Rust 系统扬声器，WebView audio 作回退 */
   private preferNativePlayback = true;
 
@@ -118,6 +122,7 @@ export class VoicePlaybackController {
   async stopAndReset(): Promise<void> {
     this.generation += 1;
     this.queue = [];
+    this.resetStreamAudio();
     voiceCompanionDebug("playback.stop_invalidate", { generation: this.generation });
     this.resolveIdleIfDone();
     if (this.isStopping) return;
@@ -194,9 +199,100 @@ export class VoicePlaybackController {
   }
 
   private resolveIdleIfDone(): void {
-    if (this.playing || this.queue.length > 0 || this.idleWaiters.length === 0) return;
+    if (this.playing || this.queue.length > 0 || this.streamActiveCount > 0 || this.streamSources.size > 0 || this.idleWaiters.length === 0) return;
     const waiters = this.idleWaiters.splice(0);
     for (const resolve of waiters) resolve();
+  }
+
+  private getStreamAudioContext(): AudioContext {
+    if (this.streamAudioContext && this.streamAudioContext.state !== "closed") {
+      return this.streamAudioContext;
+    }
+    const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
+    this.streamAudioContext = new AudioContextCtor();
+    this.streamNextTime = 0;
+    return this.streamAudioContext;
+  }
+
+  private resetStreamAudio(): void {
+    for (const source of Array.from(this.streamSources)) {
+      try {
+        source.stop();
+      } catch {
+        // ignore
+      }
+    }
+    this.streamSources.clear();
+    this.streamActiveCount = 0;
+    this.streamNextTime = 0;
+    this.resolveIdleIfDone();
+  }
+
+  beginPcmStream(generation: number): void {
+    if (generation !== this.generation) return;
+    this.streamActiveCount += 1;
+    voiceCompanionDebug("playback.pcm_stream_begin", { generation, active: this.streamActiveCount });
+    voiceChatTraceIfActive("tts.playback_pcm_stream_begin", { generation, active: this.streamActiveCount });
+  }
+
+  async enqueuePcm16Chunk(
+    pcmBytes: ArrayBuffer,
+    opts: { sampleRate: number; channels?: number; generation: number },
+  ): Promise<void> {
+    const generation = opts.generation;
+    if (generation !== this.generation || !pcmBytes.byteLength) return;
+    const channels = Math.max(1, Math.min(2, Number(opts.channels || 1)));
+    const sampleRate = Math.max(8000, Number(opts.sampleRate || 24000));
+    const ctx = this.getStreamAudioContext();
+    if (ctx.state === "suspended") {
+      await ctx.resume().catch(() => undefined);
+    }
+
+    const view = new DataView(pcmBytes);
+    const totalSamples = Math.floor(view.byteLength / 2);
+    const frames = Math.floor(totalSamples / channels);
+    if (frames <= 0) return;
+    const buffer = ctx.createBuffer(channels, frames, sampleRate);
+    for (let ch = 0; ch < channels; ch += 1) {
+      const channel = buffer.getChannelData(ch);
+      for (let i = 0; i < frames; i += 1) {
+        const sampleIndex = i * channels + ch;
+        channel[i] = view.getInt16(sampleIndex * 2, true) / 32768;
+      }
+    }
+
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    const startAt = Math.max(ctx.currentTime + 0.03, this.streamNextTime || 0);
+    this.streamNextTime = startAt + buffer.duration;
+    this.streamSources.add(source);
+    source.onended = () => {
+      this.streamSources.delete(source);
+      this.resolveIdleIfDone();
+    };
+    source.start(startAt);
+    voiceChatTraceIfActive("tts.playback_pcm_chunk", {
+      bytes: pcmBytes.byteLength,
+      generation,
+      sampleRate,
+      channels,
+      durationMs: Math.round(buffer.duration * 1000),
+      scheduledMs: Math.round(Math.max(0, startAt - ctx.currentTime) * 1000),
+    });
+  }
+
+  async endPcmStream(generation: number): Promise<void> {
+    if (generation !== this.generation) return;
+    const ctx = this.streamAudioContext;
+    const waitMs = ctx && ctx.state !== "closed" ? Math.max(0, (this.streamNextTime - ctx.currentTime) * 1000) : 0;
+    if (waitMs > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, waitMs + 30));
+    }
+    this.streamActiveCount = Math.max(0, this.streamActiveCount - 1);
+    voiceCompanionDebug("playback.pcm_stream_end", { generation, active: this.streamActiveCount });
+    voiceChatTraceIfActive("tts.playback_pcm_stream_end", { generation, active: this.streamActiveCount, waitMs });
+    this.resolveIdleIfDone();
   }
 
   private async playOneBlob(blob: Blob, generation: number): Promise<void> {

@@ -7855,11 +7855,14 @@ async def run_agent(
     _mem_shard_tok = None
     _lark_cid = ""
     _bg_channel = ""
+    _voice_diagnostics = None
     if implicit_attribution and isinstance(implicit_attribution, dict):
         _lark_cid = str(
             implicit_attribution.get("lark_chat_id") or implicit_attribution.get("chat_id") or ""
         ).strip()
         _bg_channel = str(implicit_attribution.get("channel") or "").strip()
+        _vd = implicit_attribution.get("voice_diagnostics")
+        _voice_diagnostics = _vd if isinstance(_vd, dict) else None
     _desktop_companion_ctx: dict[str, Any] = {}
     if implicit_signals and isinstance(implicit_signals, dict):
         for _ck in ("just_interrupted", "barge_in", "just_barged_in", "wake_triggered_recently"):
@@ -8026,6 +8029,7 @@ async def run_agent(
                     if _lark_cid
                     else {}
                 ),
+                **({"voice_diagnostics": _voice_diagnostics} if _voice_diagnostics else {}),
             },
         )
     except Exception:

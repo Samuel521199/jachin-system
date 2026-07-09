@@ -12,7 +12,14 @@ import ReactDOM from "react-dom/client";
 import { listen, emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
-import { composeVoiceReply, synthesizeSpeech, streamChatMessage, tryL3AgentForIntent, checkHealth } from "./lib/api";
+import {
+  appendL3VoiceDiagnostics,
+  composeVoiceReply,
+  synthesizeSpeech,
+  streamChatMessage,
+  tryL3AgentForIntent,
+  checkHealth,
+} from "./lib/api";
 import { useSpriteStore } from "./store/spriteStore";
 import { useSttAudioReady } from "./hooks/useSttAudioReady";
 import {
@@ -70,6 +77,7 @@ import {
   beginVoiceChatTrace,
   endVoiceChatTrace,
   getActiveVoiceChatTraceId,
+  getVoiceTurnDiagnosticsSnapshot,
   initVoiceChatTraceLog,
   truncChatTrace,
   voiceChatTrace,
@@ -232,6 +240,7 @@ function ChatApp() {
     registerMirrorInputHandler,
     registerBackgroundTaskHandler,
     sendInput,
+    sendVoiceDiagnosticsAppend,
     sendToolUiResult,
     sendSessionClearControl,
     sendPrepareContextControl,
@@ -1388,6 +1397,11 @@ function ChatApp() {
       const endTraceAfterVoiceDrain = () => {
         void voiceOrchestrator.finishStream().finally(() => {
           if (getActiveVoiceChatTraceId()) {
+            const diagnostics = getVoiceTurnDiagnosticsSnapshot();
+            const appendedOverWs = sendVoiceDiagnosticsAppend(rid, diagnostics);
+            if (!appendedOverWs) {
+              void appendL3VoiceDiagnostics(rid, diagnostics, currentSessionIdRef.current);
+            }
             endVoiceChatTrace(voiceTraceOutcome, {
               source: "L3",
               finalLen: safeAnswerContent.length,
@@ -1490,11 +1504,15 @@ function ChatApp() {
     }
     justBargedInRef.current = false;
     const hasImplicitSignals = Object.keys(implicitSignals).length > 0;
+    const voiceDiagnostics = voiceCompanionActiveRef.current || chatJvsVoiceActiveRef.current
+      ? getVoiceTurnDiagnosticsSnapshot()
+      : null;
     const attExtras =
-      attBuilt.items.length > 0 || hasImplicitSignals
+      attBuilt.items.length > 0 || hasImplicitSignals || voiceDiagnostics
         ? {
             attachments_metadata: attBuilt.items.length > 0 ? attBuilt.items : undefined,
             implicit_signals: hasImplicitSignals ? implicitSignals : undefined,
+            voice_diagnostics: voiceDiagnostics ?? undefined,
           }
         : undefined;
     voiceChatTraceIfActive("l3.route_decision", {
