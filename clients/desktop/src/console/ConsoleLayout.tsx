@@ -98,7 +98,7 @@ export function ConsoleLayout() {
             className="relative z-[99] h-px w-full flex-shrink-0 bg-gradient-to-r from-transparent via-cyan-100/18 to-transparent"
             aria-hidden
           />
-          <div className="flex-1 min-h-0 overflow-auto flex flex-col">
+          <div className="console-page-skin flex-1 min-h-0 overflow-auto flex flex-col">
             <Outlet />
           </div>
         </main>

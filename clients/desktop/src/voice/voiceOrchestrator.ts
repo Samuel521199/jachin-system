@@ -22,7 +22,17 @@ type SpeechJobContext = {
   queuedAt: number;
   kind: SpeechJobKind;
   reason?: string;
+  sentenceUnits: number;
 };
+
+type PendingContentSegment = {
+  text: string;
+  onSentence?: ChunkConsumer;
+  units: number;
+};
+
+const CONTENT_COALESCE_MAX_CHARS = 72;
+const CONTENT_COALESCE_DELAY_MS = 700;
 
 export type VoiceOrchestratorSessionOpts = {
   /** 0 = 不朗读 */
@@ -51,6 +61,8 @@ export class VoiceOrchestrator {
   private maxSpeakSentences = 3;
   private companionUi = true;
   private ttsVoice?: string;
+  private pendingContentSegments: PendingContentSegment[] = [];
+  private pendingContentFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * 仅把“完整句”计入 maxSpeakSentences。
@@ -61,6 +73,11 @@ export class VoiceOrchestrator {
     if (!t) return false;
     const last = t[t.length - 1] || "";
     return /[。！？.!?]/.test(last);
+  }
+
+  private countHardSentenceUnits(text: string): number {
+    const count = (text.match(/[\u3002\uff01\uff1f.!?]/g) ?? []).length;
+    return Math.max(1, count);
   }
 
   private preferMandarinNeuralVoice(): boolean {
@@ -82,6 +99,8 @@ export class VoiceOrchestrator {
     this.lastChunkIn = "";
     this.spokenSentenceCount = 0;
     this.spokenOrQueuedSentenceKeys.clear();
+    this.clearPendingContentFlushTimer();
+    this.pendingContentSegments = [];
     this.maxSpeakSentences = opts?.maxSpeakSentences ?? 3;
     this.companionUi = opts?.companionUi ?? true;
     this.ttsVoice = (opts?.ttsVoice || DEFAULT_KOKORO_TTS_VOICE).trim() || DEFAULT_KOKORO_TTS_VOICE;
@@ -167,6 +186,7 @@ export class VoiceOrchestrator {
     onSentence?: ChunkConsumer,
     kind: SpeechJobKind = "content",
     reason?: string,
+    sentenceUnits = this.countHardSentenceUnits(sentence),
   ): void {
     const job: SpeechJobContext = {
       generation: this.generation,
@@ -176,6 +196,7 @@ export class VoiceOrchestrator {
       queuedAt: Date.now(),
       kind,
       reason,
+      sentenceUnits,
     };
     this.ttsChain = this.ttsChain
       .then(() => this.speakSentence(sentence, onSentence, job))
@@ -240,19 +261,21 @@ export class VoiceOrchestrator {
     const useMandarinNeuralVoice = false;
     onSentence?.(speakable);
     if (job.kind === "content" && this.isHardSentenceBoundary(speakable)) {
-      this.spokenSentenceCount += 1;
+      this.spokenSentenceCount += Math.max(1, job.sentenceUnits);
     }
     voiceCompanionDebug("orchestrator.tts_request", {
       sentence: truncVoiceLog(speakable, 120),
       sessionId,
       generation: jobGeneration,
       spoken: this.spokenSentenceCount,
+      sentenceUnits: job.sentenceUnits,
       kind: job.kind,
       reason: job.reason ?? "",
     });
     voiceChatTraceIfActive("tts.orchestrator.request", {
       sentence: truncVoiceLog(speakable, 200),
       spokenIndex: this.spokenSentenceCount + 1,
+      sentenceUnits: job.sentenceUnits,
       sessionId,
       queueWaitMs,
       kind: job.kind,
@@ -396,7 +419,7 @@ export class VoiceOrchestrator {
     const split = splitSentences(this.sentenceRemainder, chunk);
     this.sentenceRemainder = split.remainder;
     for (const sentence of split.complete) {
-      this.scheduleSpeakSentence(sentence, onSentence);
+      this.queueContentSentence(sentence, onSentence);
     }
   }
 
@@ -405,8 +428,9 @@ export class VoiceOrchestrator {
     this.sentenceRemainder = "";
     const finishGeneration = this.generation;
     if (tail) {
-      this.scheduleSpeakSentence(tail, onSentence);
+      this.queueContentSentence(tail, onSentence);
     }
+    this.flushPendingContentSegments();
     await this.waitForSpeechDrain();
     if (this.companionUi && finishGeneration === voicePlaybackController.getGeneration()) {
       voiceSessionStore.setState("idle");
@@ -420,6 +444,8 @@ export class VoiceOrchestrator {
     voiceCompanionDebug("orchestrator.barge_in", { sessionId: this.sessionId });
     await voicePlaybackController.stopAndReset();
     voicePlaybackController.clearQueue();
+    this.clearPendingContentFlushTimer();
+    this.pendingContentSegments = [];
     this.generation = voicePlaybackController.bumpGeneration();
     this.ttsChain = Promise.resolve();
     void cancelJvsSession(this.sessionId).catch((e) => {
@@ -429,6 +455,50 @@ export class VoiceOrchestrator {
       voiceSessionStore.setState("listening");
       void notifyCompanionVoicePhase("listening");
     }
+  }
+
+  private queueContentSentence(sentence: string, onSentence?: ChunkConsumer): void {
+    const text = sentence.trim();
+    if (!text) return;
+    this.pendingContentSegments.push({
+      text,
+      onSentence,
+      units: this.countHardSentenceUnits(text),
+    });
+    const merged = this.pendingContentSegments.map((item) => item.text).join("");
+    const units = this.pendingContentSegments.reduce((sum, item) => sum + item.units, 0);
+    if (merged.length >= CONTENT_COALESCE_MAX_CHARS || units >= this.maxSpeakSentences) {
+      this.flushPendingContentSegments();
+      return;
+    }
+    if (!this.pendingContentFlushTimer) {
+      this.pendingContentFlushTimer = setTimeout(() => {
+        this.pendingContentFlushTimer = null;
+        this.flushPendingContentSegments();
+      }, CONTENT_COALESCE_DELAY_MS);
+    }
+  }
+
+  private flushPendingContentSegments(): void {
+    if (this.pendingContentSegments.length === 0) return;
+    this.clearPendingContentFlushTimer();
+    const segments = this.pendingContentSegments.splice(0);
+    const merged = segments.map((item) => item.text).join("");
+    const units = segments.reduce((sum, item) => sum + item.units, 0);
+    const onSentence = segments[segments.length - 1]?.onSentence;
+    voiceChatTraceIfActive("tts.orchestrator.coalesce", {
+      segments: segments.length,
+      units,
+      chars: merged.length,
+      text: truncVoiceLog(merged, 200),
+    });
+    this.scheduleSpeakSentence(merged, onSentence, "content", "coalesced_content", units);
+  }
+
+  private clearPendingContentFlushTimer(): void {
+    if (!this.pendingContentFlushTimer) return;
+    clearTimeout(this.pendingContentFlushTimer);
+    this.pendingContentFlushTimer = null;
   }
 }
 

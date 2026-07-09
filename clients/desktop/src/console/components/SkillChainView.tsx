@@ -1,10 +1,5 @@
-/**
- * Skill Chain View - 技能组合视图：展示最近一次 AI 组合多技能完成任务的链条
- * 设计愿景 5.3：过程可见。当前为占位 + 自然语言执行后的简化链，后端可扩展返回 chain 数组
- */
-
 import { motion } from "framer-motion";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, CircleDot, Route } from "lucide-react";
 import { cn } from "../../utils/cn";
 
 export interface ChainStep {
@@ -13,55 +8,63 @@ export interface ChainStep {
   type?: "input" | "intent" | "skill" | "done";
 }
 
+const toneByType: Record<NonNullable<ChainStep["type"]>, string> = {
+  input: "border-cyan-200/[0.18] bg-cyan-300/[0.05] text-cyan-50",
+  intent: "border-violet-200/[0.17] bg-violet-300/[0.045] text-violet-100",
+  skill: "border-rose-200/[0.18] bg-rose-300/[0.055] text-rose-100",
+  done: "border-emerald-200/[0.18] bg-emerald-300/[0.05] text-emerald-100",
+};
+
 export function SkillChainView({
   steps,
   className,
 }: {
-  /** 链条步骤；空则显示占位。可由自然语言执行结果或后端 metadata.chain 填充 */
   steps: ChainStep[];
   className?: string;
 }) {
   const hasSteps = steps.length > 0;
 
   return (
-    <div
-      className={cn(
-        "glass-panel rounded-xl p-4 flex flex-col min-h-0",
-        className
-      )}
-    >
-      <h2 className="font-mono text-xs uppercase tracking-wider text-slate-500 mb-3 flex-shrink-0">
-        最近执行链 (Chain View)
-      </h2>
-      <div className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden py-2 custom-scrollbar">
+    <div className={cn("jarvis-panel relative flex min-h-0 flex-col overflow-hidden rounded-[8px] border border-cyan-200/[0.08] bg-cyan-300/[0.018] p-4", className)}>
+      <div className="relative z-10 mb-3 flex flex-shrink-0 items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className="flex h-8 w-8 items-center justify-center rounded-[7px] border border-cyan-200/[0.09] bg-cyan-300/[0.035] text-cyan-100/90">
+            <Route className="h-4 w-4" />
+          </span>
+          <div>
+            <h2 className="font-mono text-[11px] uppercase tracking-[0.16em] text-cyan-100/80">Chain View</h2>
+            <p className="mt-0.5 text-xs text-slate-500">最近一次 AI 组合执行路径</p>
+          </div>
+        </div>
+        <span className="rounded-full border border-cyan-200/[0.08] bg-cyan-300/[0.025] px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-slate-500">
+          {steps.length || 0} nodes
+        </span>
+      </div>
+
+      <div className="relative z-10 min-h-0 flex-1 overflow-x-auto overflow-y-hidden py-1 custom-scrollbar">
         {!hasSteps ? (
-          <p className="text-slate-500 text-sm font-mono py-2">
-            暂无最近执行链。使用上方「自然语言执行」后将在此展示。
-          </p>
+          <div className="rounded-[8px] border border-cyan-200/[0.055] bg-slate-950/28 px-4 py-4 text-sm text-slate-500">
+            暂无最近执行链。使用上方命令模块后将在这里显示。
+          </div>
         ) : (
           <motion.div
-            className="flex items-center gap-1 flex-wrap"
+            className="flex min-w-max items-center gap-2"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.25 }}
           >
             {steps.map((step, i) => (
-              <span key={step.id} className="flex items-center gap-1 flex-shrink-0">
+              <span key={step.id} className="flex flex-shrink-0 items-center gap-2">
                 <span
                   className={cn(
-                    "px-2.5 py-1 rounded font-mono text-xs border",
-                    step.type === "input" && "bg-cyan-500/10 border-cyan-500/30 text-cyan-300/90",
-                    step.type === "intent" && "bg-violet-500/10 border-violet-500/30 text-violet-300/90",
-                    step.type === "skill" && "bg-rose-500/10 border-rose-500/30 text-rose-300/90",
-                    step.type === "done" && "bg-emerald-500/10 border-emerald-500/30 text-emerald-300/90",
-                    !step.type && "bg-white/5 border-white/10 text-slate-300"
+                    "inline-flex items-center gap-2 rounded-[8px] border px-3 py-2 font-mono text-xs shadow-[inset_0_0_18px_rgba(56,189,248,0.025)]",
+                    step.type ? toneByType[step.type] : "border-cyan-200/[0.08] bg-cyan-300/[0.025] text-slate-300"
                   )}
                 >
+                  <CircleDot className="h-3.5 w-3.5" />
                   {step.label}
                 </span>
-                {i < steps.length - 1 && (
-                  <ChevronRight className="w-4 h-4 text-slate-500 flex-shrink-0" aria-hidden />
-                )}
+                {i < steps.length - 1 && <ChevronRight className="h-4 w-4 text-cyan-100/28" aria-hidden />}
               </span>
             ))}
           </motion.div>

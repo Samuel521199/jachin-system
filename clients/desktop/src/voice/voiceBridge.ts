@@ -262,7 +262,15 @@ export async function streamSynthesizeByJvs(
         if (msg.type === "meta") {
           sampleRate = Number(msg.sample_rate || sampleRate);
           channels = Number(msg.channels || channels);
-          voiceChatTraceIfActive("tts.jvs_stream_meta", { sampleRate, channels, backend: msg.backend, model: msg.model, voice: msg.voice });
+          voiceChatTraceIfActive("tts.jvs_stream_meta", {
+            sampleRate,
+            channels,
+            backend: msg.backend,
+            model: msg.model,
+            voice: msg.voice,
+            synthesisText: typeof msg.synthesis_text === "string" ? truncVoiceLog(msg.synthesis_text, 160) : "",
+            textNormalized: Boolean(msg.text_normalized),
+          });
           return;
         }
         if (msg.type === "audio" && msg.audio_b64) {

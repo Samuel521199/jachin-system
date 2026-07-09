@@ -4,6 +4,7 @@ import io
 import logging
 import os
 import queue
+import re
 import struct
 import threading
 import time
@@ -108,6 +109,7 @@ class CloudTtsService:
         if not self._load_engine():
             raise RuntimeError(self._load_error or "DashScope TTS not ready")
 
+        synthesis_text = self._normalize_text_for_stable_style(text)
         selected_model = self._select_model(kind)
         selected_voice = self._select_voice(voice)
         selected_rate = self._normalize_rate(speed)
@@ -119,7 +121,7 @@ class CloudTtsService:
             for candidate_model in self._model_candidates(selected_model):
                 actual_model = candidate_model
                 try:
-                    audio = self._synthesize_with_dashscope(text, candidate_model, selected_voice, selected_rate)
+                    audio = self._synthesize_with_dashscope(synthesis_text, candidate_model, selected_voice, selected_rate)
                     break
                 except Exception as e:
                     last_error = e
@@ -151,6 +153,9 @@ class CloudTtsService:
                     "voice": selected_voice,
                     "backend": "dashscope-cosyvoice",
                     "session_id": session_id or "",
+                    "input_text": text,
+                    "synthesis_text": synthesis_text,
+                    "text_normalized": synthesis_text != text,
                 },
             )
         except Exception as e:
@@ -232,6 +237,7 @@ class CloudTtsService:
         if not self._load_engine():
             raise RuntimeError(self._load_error or "DashScope TTS not ready")
 
+        synthesis_text = self._normalize_text_for_stable_style(text)
         import dashscope  # type: ignore
         from dashscope.audio.tts_v2 import AudioFormat, ResultCallback, SpeechSynthesizer  # type: ignore
 
@@ -302,7 +308,7 @@ class CloudTtsService:
 
         def _run() -> None:
             try:
-                synthesizer.call(text, timeout_millis=int(self._timeout_seconds() * 1000))
+                synthesizer.call(synthesis_text, timeout_millis=int(self._timeout_seconds() * 1000))
             except Exception as exc:  # noqa: BLE001
                 events.put({"type": "error", "message": str(exc)})
                 events.put(None)
@@ -317,6 +323,9 @@ class CloudTtsService:
             "sample_rate": self.sample_rate,
             "channels": 1,
             "session_id": session_id or "",
+            "input_text": text,
+            "synthesis_text": synthesis_text,
+            "text_normalized": synthesis_text != text,
         }
         while True:
             try:
@@ -382,6 +391,25 @@ class CloudTtsService:
         if not v or v.startswith("zm_") or v.lower().startswith("kokoro"):
             return self.default_voice
         return v
+
+    @staticmethod
+    def _normalize_text_for_stable_style(text: str) -> str:
+        """Normalize assistant-facing TTS text to reduce CosyVoice style jumps."""
+        s = str(text or "")
+        s = re.sub(r"\s+", " ", s).strip()
+        if not s:
+            return s
+        s = re.sub(r"^\s*(你好|您好)\s*主人\s*[，,、]?\s*", r"\1，", s)
+        s = re.sub(r"^\s*主人\s*[，,、]?\s*", "", s)
+        s = re.sub(r"\s*主人\s*", "", s)
+        s = re.sub(r"\bLark\b", "飞书", s, flags=re.IGNORECASE)
+        s = re.sub(r"\s*飞书\s*", "飞书", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        s = re.sub(r"([，。！？；：、])\s+", r"\1", s)
+        body_without_final_period = s[:-1] if s.endswith("。") else s
+        if len(s) <= 60 and body_without_final_period.count("。") == 1 and "？" not in s and "！" not in s:
+            s = s.replace("。", "，", 1)
+        return s
 
     @staticmethod
     def _normalize_rate(speed: float | None) -> float:

@@ -1756,6 +1756,7 @@ function ChatApp() {
       JSON.stringify(replyPlan, null, 2),
     ].join("\n");
   }, []);
+
   const deliverVoiceReplyComposerResult = useCallback(
     async (args: {
       userText: string;
@@ -2298,20 +2299,24 @@ function ChatApp() {
         const msg = e instanceof VoiceServiceError ? e.message : VOICE_UNAVAILABLE_HINT;
         if (e instanceof VoiceServiceError && e.code === "clarification") {
           const details = (e.details || {}) as Record<string, unknown>;
-          const rawText = String(details.rawText || details.correctedText || msg || "").trim();
-          const composerPrompt = buildVoiceReplyComposerPrompt(details, rawText);
+          const rawText = String(details.rawText || "").trim();
+          const correctedText = String(details.correctedText || rawText || msg || "").trim();
+          const displayText = correctedText || rawText || msg;
           voiceChatTrace("stt.clarification_required", {
             profile,
             question: msg,
             replyPlan: details.replyPlan,
             userMessageSource: details.userMessageSource,
+            rawText,
+            correctedText,
+            displayText,
           });
           const clarificationCompanionUi = companionModeRef.current || voiceCompanionActiveRef.current;
           chatJvsVoiceActiveRef.current = true;
           voiceCompanionActiveRef.current = clarificationCompanionUi || voiceCompanionActiveRef.current;
           startCompanionJvsIfNeeded();
-          if (clarificationCompanionUi && rawText) {
-            void emitCompanionUserToHud(rawText);
+          if (clarificationCompanionUi && displayText) {
+            void emitCompanionUserToHud(displayText);
           }
           setRecordingStatus("");
           const replyPlan = details.replyPlan && typeof details.replyPlan === "object"
@@ -2321,7 +2326,7 @@ function ChatApp() {
             const fastStarted = Date.now();
             const fastComposer = await composeVoiceReply({
               reply_plan: replyPlan,
-              user_text: rawText,
+              user_text: displayText,
               fallback_text: msg,
               timeout_sec: 5,
               max_tokens: 80,
@@ -2345,7 +2350,7 @@ function ChatApp() {
                 latencyMs: Date.now() - fastStarted,
               });
               await deliverVoiceReplyComposerResult({
-                userText: rawText || msg,
+                userText: displayText || msg,
                 reply: fastComposer.reply,
                 companionUi: clarificationCompanionUi,
                 source: fastComposer.source,
@@ -2366,17 +2371,35 @@ function ChatApp() {
               latencyMs: Date.now() - fastStarted,
             });
           }
+          if (msg) {
+            await deliverVoiceReplyComposerResult({
+              userText: displayText || msg,
+              reply: msg,
+              companionUi: clarificationCompanionUi,
+              source: Object.keys(replyPlan).length
+                ? "stt_clarification_question_after_composer_miss"
+                : "stt_clarification_question",
+            });
+            endVoiceChatTrace("clarification_required", {
+              question: msg,
+              source: Object.keys(replyPlan).length
+                ? "stt_clarification_question_after_composer_miss"
+                : "stt_clarification_question",
+            });
+            return;
+          }
+          const composerPrompt = buildVoiceReplyComposerPrompt(details, displayText);
           await doActualSend(composerPrompt, [], {
-            displayContent: rawText || msg,
+            displayContent: displayText || msg,
             extraImplicitSignals: {
               desktop_companion: true,
               source: "desktop_voice_reply_composer",
               voice_reply_composer: true,
               voice_reply_plan: details.replyPlan || {},
-              voice_raw_stt_text: rawText,
-              voice_asr_raw_text: details.rawText || rawText,
-              voice_corrected_text: details.correctedText || rawText,
-              voice_final_text: rawText,
+              voice_raw_stt_text: rawText || displayText,
+              voice_asr_raw_text: details.rawText || rawText || displayText,
+              voice_corrected_text: correctedText || displayText,
+              voice_final_text: displayText,
               voice_stt_user_message: msg,
               voice_stt_user_message_source: details.userMessageSource || "",
               voice_stt_understanding: details.understanding,
@@ -2923,9 +2946,6 @@ if (rootEl) {
     </React.StrictMode>
   );
 }
-
-
-
 
 
 

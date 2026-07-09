@@ -51,20 +51,26 @@ def _make_stt_service():
         from services.cloud_stt_service import CloudSttService
 
         logger.info(
-            "JVS STT backend=cloud model=%s realtime=%s hotword=%s file=%s base=%s",
+            "JVS STT backend=cloud model=%s realtime=%s hotword=%s file=%s vocab=%s base=%s",
             cfg.stt_model,
             cfg.stt_realtime_model,
             cfg.stt_hotword_model,
             cfg.stt_file_model,
+            "set" if cfg.stt_vocabulary_id else "unset",
             cfg.dashscope_api_base,
         )
         return CloudSttService(
             api_key=cfg.dashscope_api_key,
             api_base=cfg.dashscope_api_base,
+            ws_api_base=cfg.dashscope_ws_api_base,
             model=cfg.stt_model,
             realtime_model=cfg.stt_realtime_model,
             hotword_model=cfg.stt_hotword_model,
             file_model=cfg.stt_file_model,
+            vocabulary_id=cfg.stt_vocabulary_id,
+            vocabulary_prefix=cfg.stt_vocabulary_prefix,
+            auto_sync_vocabulary=cfg.stt_auto_sync_vocabulary,
+            workspace=cfg.dashscope_workspace_id,
             language=cfg.stt_language,
         )
     from services.stt_service import SttService
@@ -195,6 +201,8 @@ def health() -> dict:
         "stt_realtime_model": cfg.stt_realtime_model,
         "stt_hotword_model": cfg.stt_hotword_model,
         "stt_file_model": cfg.stt_file_model,
+        "stt_vocabulary_id_configured": bool(cfg.stt_vocabulary_id),
+        "stt_auto_sync_vocabulary": cfg.stt_auto_sync_vocabulary,
         "tts_fast_model": cfg.tts_fast_model,
         "sv_model": sv_service.backend,
         "sv_load_error": sv_service.load_error,

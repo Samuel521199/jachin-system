@@ -21,10 +21,15 @@ class VoiceServerConfig:
     dashscope_api_key: str
     dashscope_api_base: str
     dashscope_http_api_base: str
+    dashscope_ws_api_base: str
+    dashscope_workspace_id: str
     stt_model: str
     stt_realtime_model: str
     stt_hotword_model: str
     stt_file_model: str
+    stt_vocabulary_id: str
+    stt_vocabulary_prefix: str
+    stt_auto_sync_vocabulary: bool
     stt_language: str
     tts_model: str
     tts_fast_model: str
@@ -58,6 +63,13 @@ def _env_float(name: str, default: float) -> float:
         return float(raw)
     except ValueError:
         return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "y", "on"}
 
 
 def _project_root() -> Path:
@@ -131,6 +143,25 @@ def _dashscope_http_api_base(compatible_base: str) -> str:
     return base.rstrip("/") + "/api/v1"
 
 
+def _dashscope_ws_api_base(compatible_base: str) -> str:
+    explicit = _first_env(("JACHIN_ASR_WS_API_BASE", "DASHSCOPE_WS_API_BASE", "DASHSCOPE_WEBSOCKET_API_BASE"))
+    if explicit:
+        return explicit.rstrip("/")
+    base = compatible_base.rstrip("/")
+    if base.endswith("/compatible-mode/v1"):
+        host = base[: -len("/compatible-mode/v1")]
+        if host.startswith("https://"):
+            host = "wss://" + host[len("https://") :]
+        elif host.startswith("http://"):
+            host = "ws://" + host[len("http://") :]
+        return host + "/api-ws/v1/inference"
+    if base.startswith("https://"):
+        base = "wss://" + base[len("https://") :]
+    elif base.startswith("http://"):
+        base = "ws://" + base[len("http://") :]
+    return base.rstrip("/") + "/api-ws/v1/inference"
+
+
 def load_config() -> VoiceServerConfig:
     _merge_dotenv_into_environ()
     model_root = Path(
@@ -160,10 +191,15 @@ def load_config() -> VoiceServerConfig:
         dashscope_api_key=_dashscope_api_key(),
         dashscope_api_base=dashscope_api_base,
         dashscope_http_api_base=_dashscope_http_api_base(dashscope_api_base),
-        stt_model=os.getenv("JACHIN_STT_MODEL", "qwen3-asr-flash").strip() or "qwen3-asr-flash",
-        stt_realtime_model=os.getenv("JACHIN_STT_REALTIME_MODEL", "qwen3-asr-flash-realtime").strip() or "qwen3-asr-flash-realtime",
+        dashscope_ws_api_base=_dashscope_ws_api_base(dashscope_api_base),
+        dashscope_workspace_id=_first_env(("JACHIN_DASHSCOPE_WORKSPACE_ID", "DASHSCOPE_WORKSPACE_ID", "DASHSCOPE_WORKSPACE")),
+        stt_model=os.getenv("JACHIN_STT_MODEL", "fun-asr-realtime").strip() or "fun-asr-realtime",
+        stt_realtime_model=os.getenv("JACHIN_STT_REALTIME_MODEL", "fun-asr-realtime").strip() or "fun-asr-realtime",
         stt_hotword_model=os.getenv("JACHIN_STT_HOTWORD_MODEL", "fun-asr-realtime").strip() or "fun-asr-realtime",
         stt_file_model=os.getenv("JACHIN_STT_FILE_MODEL", "fun-asr").strip() or "fun-asr",
+        stt_vocabulary_id=_first_env(("JACHIN_STT_VOCABULARY_ID", "JACHIN_ASR_VOCABULARY_ID", "DASHSCOPE_ASR_VOCABULARY_ID")),
+        stt_vocabulary_prefix=os.getenv("JACHIN_STT_VOCABULARY_PREFIX", "jachin").strip() or "jachin",
+        stt_auto_sync_vocabulary=_env_bool("JACHIN_STT_AUTO_SYNC_VOCABULARY", True),
         stt_language=os.getenv("JACHIN_STT_LANGUAGE", "").strip(),
         tts_model=os.getenv("JACHIN_TTS_MODEL", "cosyvoice-v3-plus").strip() or "cosyvoice-v3-plus",
         tts_fast_model=os.getenv("JACHIN_TTS_FAST_MODEL", "cosyvoice-v3-flash").strip() or "cosyvoice-v3-flash",

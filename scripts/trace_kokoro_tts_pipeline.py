@@ -25,8 +25,8 @@ TTS_SCENARIO_SUITES: dict[str, list[dict[str, Any]]] = {
         {"id": "background_ack", "category": "latency_masking", "text": "\u6536\u5230\uff0c\u6211\u6765\u5904\u7406", "expected_kind": "cue", "max_duration_ms": 2400, "note": "background task acknowledgment"},
         {"id": "done_short", "category": "task_done", "text": "\u5b8c\u6210\u4e86", "expected_kind": "cue", "max_duration_ms": 1500, "note": "short completion cue"},
         {"id": "lark_done_viian", "category": "task_done", "text": "\u5df2\u7ecf\u5e2e\u4f60\u53d1\u7ed9 viian \u4e86", "expected_kind": "content", "max_duration_ms": 2600, "note": "Lark send completion with recipient"},
-        {"id": "lark_done_owner_sample", "category": "task_done", "text": "\u4f60\u597d\u4e3b\u4eba\uff0c\u6211\u5df2\u7ecf\u5e2e\u4f60\u5b8c\u6210\u4e86 Lark \u53d1\u9001", "expected_kind": "content", "max_duration_ms": 3600, "note": "owner-style Lark completion sample"},
-        {"id": "lark_done_generic", "category": "task_done", "text": "\u5df2\u7ecf\u5e2e\u4f60\u5b8c\u6210 Lark \u53d1\u9001", "expected_kind": "content", "max_duration_ms": 2800, "note": "generic Lark completion"},
+        {"id": "lark_done_owner_sample", "category": "task_done", "text": "\u4f60\u597d\uff0c\u6211\u5df2\u7ecf\u5e2e\u4f60\u5b8c\u6210\u4e86\u98de\u4e66\u53d1\u9001", "expected_kind": "content", "max_duration_ms": 3600, "note": "stable Lark completion sample"},
+        {"id": "lark_done_generic", "category": "task_done", "text": "\u5df2\u7ecf\u5e2e\u4f60\u5b8c\u6210\u98de\u4e66\u53d1\u9001", "expected_kind": "content", "max_duration_ms": 2800, "note": "generic Lark completion"},
         {"id": "reminder_done", "category": "task_done", "text": "\u597d\uff0c\u6211\u4f1a\u63d0\u9192\u4f60", "expected_kind": "content", "max_duration_ms": 2300, "note": "reminder confirmation"},
         {"id": "meeting_reminder_done", "category": "task_done", "text": "\u597d\uff0c\u4e0b\u5348\u5f00\u4f1a\u524d\u6211\u63d0\u9192\u4f60", "expected_kind": "content", "max_duration_ms": 3000, "note": "meeting reminder confirmation"},
         {"id": "ask_recipient", "category": "clarify", "text": "\u4f60\u60f3\u53d1\u7ed9\u8c01", "expected_kind": "content", "max_duration_ms": 2200, "note": "missing recipient clarification"},
@@ -432,6 +432,8 @@ def run_l3_trace(
     if synth_info["ran"]:
         actual = synth_info.get("actual_trace", {}) or {}
         print(f"actual    : model={actual.get('model', '')} voice={actual.get('voice', '')} backend={actual.get('backend', '')}")
+        if actual.get("text_normalized"):
+            print(f"synthesis : {safe_console_text(actual.get('synthesis_text', ''))}")
         print(f"synth     : duration={synth_info['duration_ms']}ms synth={synth_info['synth_ms']}ms quality={synth_info['quality']}")
         print(f"wav       : {synth_info['wav_path']}")
     print(f"report    : {json_path}")
@@ -829,7 +831,7 @@ def _suite_row_status(row: dict[str, Any]) -> tuple[str, str]:
         reasons.append(f"missing actual kind, expected {expected_kind}")
     if max_duration_ms and duration_ms and duration_ms > max_duration_ms:
         reasons.append(f"duration {duration_ms}ms > max {max_duration_ms}ms")
-    if quality and quality != "ok":
+    if quality and quality not in {"ok", "cloud"}:
         reasons.append(f"quality={quality}")
     if tone_loss_risk in {"medium", "high"}:
         reasons.append(f"tone_loss_risk={tone_loss_risk}")
@@ -863,7 +865,7 @@ def build_suite_html_report(summary: dict[str, Any]) -> str:
                 idx=html_escape(row.get("idx", "")),
                 case_id=html_escape(row.get("id", "")),
                 category=html_escape(row.get("category", "")),
-                text=html_escape(row.get("text", "")),
+                text=html_escape(row.get("synthesis_text") or row.get("text", "")),
                 audio=audio_html,
                 actual_kind=html_escape(row.get("actual_kind", "")),
                 expected_kind=html_escape(row.get("expected_kind", "")),
@@ -887,7 +889,7 @@ def build_suite_html_report(summary: dict[str, Any]) -> str:
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <title>Kokoro TTS Scenario Suite</title>
+  <title>{html_escape(meta.get('title', 'TTS Scenario Suite'))}</title>
   <style>
     body {{ font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 24px; color: #172026; background: #f6f7f9; }}
     h1 {{ margin: 0 0 8px; font-size: 26px; }}
@@ -905,8 +907,8 @@ def build_suite_html_report(summary: dict[str, Any]) -> str:
   </style>
 </head>
 <body>
-  <h1>Kokoro TTS Scenario Suite: {html_escape(meta['suite'])}</h1>
-  <p class="meta">voice={html_escape(meta['voice'])} speed={html_escape(meta['speed'])} cases={html_escape(meta['case_count'])} pass={html_escape(meta['pass_count'])} warn={html_escape(meta['warn_count'])} time={html_escape(meta['time'])}</p>
+  <h1>{html_escape(meta.get('title', 'TTS Scenario Suite'))}: {html_escape(meta['suite'])}</h1>
+  <p class="meta">backend={html_escape(meta.get('backend', ''))} model={html_escape(meta.get('model', ''))} voice={html_escape(meta['voice'])} speed={html_escape(meta['speed'])} cases={html_escape(meta['case_count'])} pass={html_escape(meta['pass_count'])} warn={html_escape(meta['warn_count'])} time={html_escape(meta['time'])}</p>
   <table>
     <thead>
       <tr><th>Status</th><th>#</th><th>Case</th><th>Text</th><th>Audio</th><th>Kind</th><th>Duration ms</th><th>Style</th><th>Trim raw<br><small>lead/trail</small></th><th>Tokens</th><th>Reasons</th><th>Trace</th></tr>
@@ -1033,6 +1035,126 @@ def run_suite(
     print(f"listen    : {html_path}")
 
 
+def run_l3_suite(
+    *,
+    suite_name: str,
+    tts: Any,
+    cfg: Any,
+    legacy_voice: str | None,
+    legacy_speed: float | None,
+    out_dir: Path,
+    no_synthesize: bool,
+    no_play: bool,
+) -> None:
+    cases = TTS_SCENARIO_SUITES[suite_name]
+    ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    suite_dir = out_dir / f"l3_tts_suite_{suite_name}_{ts}"
+    suite_dir.mkdir(parents=True, exist_ok=True)
+
+    selected_voice = cfg.tts_cloud_voice if cfg.tts_backend == "cloud" else cfg.tts_voice
+    selected_speed = float(cfg.tts_speed)
+
+    print("\n=== L3 Voice Companion TTS Scenario Suite ===")
+    print(f"suite    : {suite_name}")
+    print(f"backend  : {cfg.tts_backend}")
+    print(f"model    : {cfg.tts_model}")
+    print(f"voice    : {selected_voice}")
+    print(f"speed    : {selected_speed}")
+    print(f"cases    : {len(cases)}")
+    print(f"out_dir  : {suite_dir}")
+
+    rows: list[dict[str, Any]] = []
+    for idx, case in enumerate(cases, start=1):
+        case_id = str(case["id"])
+        text = str(case["text"])
+        kind = str(case.get("expected_kind") or "content")
+        print(f"\n[{idx}/{len(cases)}] {case_id}: {safe_console_text(text)}")
+        report_path = run_l3_trace(
+            raw_text=text,
+            tts=tts,
+            cfg=cfg,
+            legacy_voice=legacy_voice,
+            legacy_speed=legacy_speed,
+            kind=kind,
+            out_dir=suite_dir,
+            no_synthesize=no_synthesize,
+            no_play=no_play,
+        )
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        synthesis = report.get("synthesis", {}) or {}
+        actual = synthesis.get("actual_trace", {}) or {}
+        row: dict[str, Any] = {
+            "idx": idx,
+            "id": case_id,
+            "category": case.get("category", ""),
+            "text": text,
+            "synthesis_text": actual.get("synthesis_text", ""),
+            "note": case.get("note", ""),
+            "expected_kind": case.get("expected_kind", ""),
+            "actual_kind": actual.get("tts_kind", ""),
+            "max_duration_ms": case.get("max_duration_ms", ""),
+            "duration_ms": synthesis.get("duration_ms", ""),
+            "raw_duration_ms": "",
+            "leading_trim_ms": "",
+            "trailing_trim_ms": "",
+            "quality": synthesis.get("quality", ""),
+            "synth_ms": synthesis.get("synth_ms", ""),
+            "synthesized": bool(synthesis.get("ran")),
+            "style_mode": actual.get("backend", ""),
+            "style_index": actual.get("voice", ""),
+            "actual_path": actual.get("backend", ""),
+            "token_count": "",
+            "tone_drop_count": "",
+            "total_drop": "",
+            "tone_loss_risk": "",
+            "wav_path": synthesis.get("wav_path", ""),
+            "report_path": str(report_path),
+            "html_path": str(report_path.with_suffix(".html")),
+        }
+        row["status"], row["reasons"] = _suite_row_status(row)
+        rows.append(row)
+
+    pass_count = sum(1 for row in rows if row["status"] == "pass")
+    warn_count = len(rows) - pass_count
+    summary = {
+        "meta": {
+            "time": dt.datetime.now().isoformat(timespec="seconds"),
+            "title": "L3 Voice Companion TTS Scenario Suite",
+            "suite": suite_name,
+            "backend": cfg.tts_backend,
+            "model": cfg.tts_model,
+            "voice": selected_voice,
+            "speed": selected_speed,
+            "case_count": len(rows),
+            "pass_count": pass_count,
+            "warn_count": warn_count,
+            "out_dir": str(suite_dir),
+        },
+        "rows": rows,
+    }
+
+    summary_base = suite_dir / f"suite_summary_{suite_name}_{ts}"
+    json_path = summary_base.with_suffix(".json")
+    csv_path = summary_base.with_suffix(".csv")
+    html_path = summary_base.with_suffix(".html")
+    json_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    with csv_path.open("w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()) if rows else [])
+        if rows:
+            writer.writeheader()
+            writer.writerows(rows)
+    html_path.write_text(build_suite_html_report(summary), encoding="utf-8")
+
+    print("\n=== L3 Voice Companion TTS Suite Summary ===")
+    print(f"pass/warn : {pass_count}/{warn_count}")
+    for row in rows:
+        suffix = f" - {row['reasons']}" if row.get("reasons") else ""
+        print(f"{row['status'].upper():4} {row['id']} duration={row.get('duration_ms', '')}ms kind={row.get('actual_kind', '')}{suffix}")
+    print(f"summary   : {json_path}")
+    print(f"csv       : {csv_path}")
+    print(f"listen    : {html_path}")
+
+
 def main() -> None:
     args = parse_args()
     out_dir = args.out_dir
@@ -1049,20 +1171,16 @@ def main() -> None:
         if not tts.ready:
             raise RuntimeError(f"L3 TTS backend not ready: {getattr(tts, 'model_path', 'unknown')}")
         if args.suite:
-            suite_dir = out_dir / f"l3_tts_suite_{args.suite}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            suite_dir.mkdir(parents=True, exist_ok=True)
-            for case in TTS_SCENARIO_SUITES[args.suite]:
-                run_l3_trace(
-                    raw_text=str(case["text"]),
-                    tts=tts,
-                    cfg=cfg,
-                    legacy_voice=args.voice,
-                    legacy_speed=args.speed,
-                    kind=str(case.get("expected_kind") or args.kind),
-                    out_dir=suite_dir,
-                    no_synthesize=args.no_synthesize,
-                    no_play=args.no_play,
-                )
+            run_l3_suite(
+                suite_name=args.suite,
+                tts=tts,
+                cfg=cfg,
+                legacy_voice=args.voice,
+                legacy_speed=args.speed,
+                out_dir=out_dir,
+                no_synthesize=args.no_synthesize,
+                no_play=args.no_play,
+            )
             return
         if args.text.strip():
             run_l3_trace(

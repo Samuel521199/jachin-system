@@ -6,7 +6,7 @@
  * Run Mode: Standalone | Client
  */
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import { motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -319,383 +319,112 @@ export function SettingsPanel() {
 
   if (loading) {
     return (
-      <div className="h-full flex items-center justify-center p-6">
-        <Loader2 className="w-8 h-8 animate-spin text-rose-400" />
+      <div className="flex h-full items-center justify-center p-6">
+        <div className="jarvis-panel flex items-center gap-3 rounded-[8px] border border-cyan-200/[0.08] bg-cyan-300/[0.018] px-5 py-4 text-cyan-100">
+          <Loader2 className="h-5 w-5 animate-spin" />
+          <span className="font-mono text-xs uppercase tracking-[0.16em]">Loading Settings</span>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="h-full flex flex-col p-6 overflow-auto">
-      <header className="flex-shrink-0 mb-6">
-        <h1
-          className="font-sci-fi text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-rose-400 to-rose-600"
-          style={{ fontFamily: "Orbitron, sans-serif" }}
-        >
-          Settings
-        </h1>
-        <p className="text-slate-500 text-sm mt-0.5">AI 模式与运行模式</p>
-      </header>
+    <div className="settings-console-page h-full overflow-auto p-5 sm:p-6">
+      <div className="mx-auto flex max-w-[1180px] flex-col gap-5">
+        <header className="jarvis-panel relative overflow-hidden rounded-[8px] border border-cyan-200/[0.08] bg-cyan-300/[0.018] p-5">
+          <div className="jarvis-hero-grid opacity-[0.2]" aria-hidden />
+          <div className="relative z-10 flex flex-col gap-5">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="flex items-center gap-4">
+                <div className="jarvis-core-stage relative hidden h-20 w-20 flex-shrink-0 items-center justify-center sm:flex">
+                  <svg className="jarvis-core-svg" viewBox="0 0 260 260" aria-hidden>
+                    <circle className="jarvis-core-ring jarvis-core-ring-outer" cx="130" cy="130" r="108" />
+                    <circle className="jarvis-core-ring jarvis-core-ring-mid" cx="130" cy="130" r="82" />
+                    <circle className="jarvis-core-ring jarvis-core-ring-inner" cx="130" cy="130" r="58" />
+                    <path className="jarvis-core-arc jarvis-core-arc-a" d="M130 22a108 108 0 0 1 99 65" />
+                    <path className="jarvis-core-arc jarvis-core-arc-b" d="M51 204a108 108 0 0 1 0-148" />
+                  </svg>
+                  <Settings className="h-6 w-6 text-cyan-100 drop-shadow-[0_0_14px_rgba(125,211,252,0.55)]" />
+                  <div className="jarvis-core-scan" aria-hidden />
+                </div>
+                <div>
+                  <p className="mb-2 inline-flex rounded-full border border-cyan-200/[0.09] bg-cyan-300/[0.035] px-3 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-cyan-100/75">
+                    System Preferences
+                  </p>
+                  <h1 className="text-2xl font-semibold text-slate-100 sm:text-3xl">Settings</h1>
+                  <p className="mt-1 text-sm text-slate-400">AI 模式、运行通道与安全策略</p>
+                </div>
+              </div>
+              <button
+                onClick={() => void fetchData()}
+                className="inline-flex h-10 items-center gap-2 rounded-[8px] border border-cyan-200/[0.12] bg-cyan-300/[0.045] px-4 text-sm text-cyan-50 transition hover:border-cyan-200/25 hover:bg-cyan-300/[0.075]"
+              >
+                <RefreshCw className="h-4 w-4" />
+                刷新
+              </button>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <StatusTile label="LLM" value={config?.llm_provider ?? "unknown"} icon={<Settings className="h-4 w-4" />} />
+              <StatusTile label="TTS" value={config?.tts_provider ?? "unknown"} icon={<Key className="h-4 w-4" />} />
+              <StatusTile label="STT" value={config?.stt_provider ?? "unknown"} icon={<Shield className="h-4 w-4" />} />
+              <StatusTile label="Run Mode" value={config?.run_mode ?? "unknown"} icon={<FolderOpen className="h-4 w-4" />} />
+            </div>
+          </div>
+        </header>
 
       {restartHint && (
         <motion.div
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="mb-4 px-4 py-3 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-200 text-sm"
+            className="rounded-[8px] border border-amber-300/20 bg-amber-300/[0.06] px-4 py-3 text-sm text-amber-100"
         >
           需要重启应用以应用更改
         </motion.div>
       )}
 
-      <div className="flex-1 space-y-6">
-        <motion.section
-          className="glass-panel rounded-xl overflow-hidden"
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.3 }}
-        >
-          <div className="px-4 py-3 border-b border-white/10 flex items-center gap-2">
-            <Settings className="w-4 h-4 text-rose-400/80" />
-            <span className="font-mono text-xs uppercase tracking-wider text-slate-400">
-              当前生效
-            </span>
-            <button
-              onClick={() => void fetchData()}
-              className="ml-auto p-1 rounded text-slate-400 hover:text-rose-400 transition-colors"
-              title="刷新"
-            >
-              <RefreshCw className="w-4 h-4" />
-            </button>
-          </div>
-          <div className="p-4 space-y-2 text-sm font-mono text-slate-300">
-            {config && (
-              <>
-                <div>LLM: {config.llm_provider}</div>
-                <div>TTS: {config.tts_provider}</div>
-                <div>STT: {config.stt_provider}</div>
-                <div>Run Mode: {config.run_mode}</div>
-              </>
-            )}
-          </div>
-        </motion.section>
-
-        <motion.section
-          className="glass-panel rounded-xl overflow-hidden"
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.3, delay: 0.035 }}
-        >
-          <div className="px-4 py-3 border-b border-white/10 flex items-center gap-2">
-            <ShieldOff className="w-4 h-4 text-amber-400/90" />
-            <span className="font-mono text-xs uppercase tracking-wider text-slate-400">
-              OS 文件操作确认
-            </span>
-          </div>
-          <div className="p-4 space-y-4">
-            <div className="flex items-start gap-3">
-              <button
-                type="button"
-                onClick={() =>
-                  void handleOsFileDangerousBypassChange(
-                    !Boolean(settings?.os_file_dangerous_without_confirm)
-                  )
-                }
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,0.95fr)_minmax(360px,0.65fr)]">
+          <motion.section
+            className="jarvis-panel rounded-[8px] border border-cyan-200/[0.08] bg-cyan-300/[0.018] p-4"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3 }}
+          >
+            <div className="mb-4 flex items-center gap-2">
+              <ShieldOff className="h-4 w-4 text-amber-200/80" />
+              <h2 className="font-mono text-[11px] uppercase tracking-[0.16em] text-cyan-100/80">Safety Gates</h2>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <ToggleCard
+                title="高危文件免确认"
+                summary={settings?.os_file_dangerous_without_confirm ? "已开放直接执行" : "保持二次确认"}
+                checked={Boolean(settings?.os_file_dangerous_without_confirm)}
                 disabled={saving || !settings}
-                className={cn(
-                  "relative mt-0.5 h-5 w-9 rounded-full border transition-colors disabled:opacity-50",
-                  settings?.os_file_dangerous_without_confirm
-                    ? "bg-amber-500/30 border-amber-400/60"
-                    : "bg-white/5 border-white/15"
-                )}
-                title="切换高危文件操作免确认"
-              >
-                <span
-                  className={cn(
-                    "absolute top-0.5 h-3.5 w-3.5 rounded-full bg-slate-100 transition-transform",
-                    settings?.os_file_dangerous_without_confirm ? "translate-x-4" : "translate-x-0.5"
-                  )}
-                />
-              </button>
-              <div className="space-y-1">
-                <div className="text-sm font-mono text-slate-200">
-                  高危文件操作免二次确认
-                </div>
-                <p className="text-xs text-slate-500 leading-relaxed">
-                  默认关闭。关闭时，删除、覆盖、移动到已存在目标等操作会先返回确认请求；开启后，Windows 文件 MCP 可在用户指令明确时直接执行这些高危动作。
-                </p>
-              </div>
-            </div>
-            <div className="flex items-start gap-3 border-t border-white/10 pt-4">
-              <button
-                type="button"
-                onClick={() =>
-                  void handleLarkBitableWriteBypassChange(
-                    !Boolean(settings?.lark_bitable_write_without_confirm)
-                  )
-                }
+                onChange={() => void handleOsFileDangerousBypassChange(!Boolean(settings?.os_file_dangerous_without_confirm))}
+                tone="amber"
+              />
+              <ToggleCard
+                title="飞书写入免确认"
+                summary={settings?.lark_bitable_write_without_confirm ? "已开放直接写入" : "写入前先预览"}
+                checked={Boolean(settings?.lark_bitable_write_without_confirm)}
                 disabled={saving || !settings}
-                className={cn(
-                  "relative mt-0.5 h-5 w-9 rounded-full border transition-colors disabled:opacity-50",
-                  settings?.lark_bitable_write_without_confirm
-                    ? "bg-amber-500/30 border-amber-400/60"
-                    : "bg-white/5 border-white/15"
-                )}
-                title="切换飞书多维表写入免确认"
-              >
-                <span
-                  className={cn(
-                    "absolute top-0.5 h-3.5 w-3.5 rounded-full bg-slate-100 transition-transform",
-                    settings?.lark_bitable_write_without_confirm ? "translate-x-4" : "translate-x-0.5"
-                  )}
-                />
-              </button>
-              <div className="space-y-1">
-                <div className="text-sm font-mono text-slate-200">
-                  飞书多维表写入免二次确认
-                </div>
-                <p className="text-xs text-slate-500 leading-relaxed">
-                  默认关闭。关闭时，新增或修改多维表记录会先返回写入预览；开启后，Lark 多维表 MCP 可在用户指令明确时直接写入并做截图/OCR 校验。
-                </p>
-              </div>
+                onChange={() => void handleLarkBitableWriteBypassChange(!Boolean(settings?.lark_bitable_write_without_confirm))}
+                tone="amber"
+              />
             </div>
-          </div>
-        </motion.section>
+          </motion.section>
 
-        <motion.section
-          className="glass-panel rounded-xl overflow-hidden"
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.3, delay: 0.04 }}
-        >
-          <div className="px-4 py-3 border-b border-white/10 flex items-center gap-2">
-            <FolderOpen className="w-4 h-4 text-cyan-400/80" />
-            <span className="font-mono text-xs uppercase tracking-wider text-slate-400">
-              Native 文件系统策略
-            </span>
-            <button
-              type="button"
-              onClick={() => void loadFsPolicy()}
-              disabled={fsPolicyLoading}
-              className="ml-auto p-1 rounded text-slate-400 hover:text-cyan-400 transition-colors disabled:opacity-40"
-              title="从 L3 刷新"
-            >
-              {fsPolicyLoading ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <RefreshCw className="w-4 h-4" />
-              )}
-            </button>
-          </div>
-          <div className="p-4 space-y-6 text-sm">
-            {fsPolicy?.policy_file && (
-              <p className="text-xs text-slate-500 font-mono break-all">
-                配置：{fsPolicy.policy_file}
-              </p>
-            )}
-            {fsPolicyError && (
-              <p className="text-xs text-amber-400/90 leading-relaxed">{fsPolicyError}</p>
-            )}
-
+          <motion.section
+            className="jarvis-panel rounded-[8px] border border-cyan-200/[0.08] bg-cyan-300/[0.018] p-4"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, delay: 0.04 }}
+          >
+            <div className="mb-4 flex items-center gap-2">
+              <Key className="h-4 w-4 text-cyan-100/80" />
+              <h2 className="font-mono text-[11px] uppercase tracking-[0.16em] text-cyan-100/80">Qwen Access</h2>
+            </div>
             <div>
-              <div className="flex items-center gap-2 mb-1.5">
-                <Shield className="w-4 h-4 text-emerald-400/90" />
-                <span className="font-mono text-slate-300">写入白名单（内置）</span>
-              </div>
-              <p className="text-xs text-slate-500 mb-2">
-                系统内置允许 Native 写入的根目录（如 workspace、client_volumes、HR 数据、用户文档目录等），不可在此页移除。
-              </p>
-              <ul className="text-xs font-mono text-slate-400 space-y-1 max-h-36 overflow-y-auto rounded border border-white/10 p-2 bg-black/20">
-                {(fsPolicy?.builtin_write_roots ?? []).length === 0 ? (
-                  <li className="text-slate-500">
-                    {fsPolicyError
-                      ? "（需连接 L3 以显示解析后的内置绝对路径）"
-                      : "（内置绝对路径由 L3 在线时填充；下方「额外」列表已可从本机策略文件加载）"}
-                  </li>
-                ) : (
-                  (fsPolicy?.builtin_write_roots ?? []).map((p) => <li key={p}>{p}</li>)
-                )}
-              </ul>
-            </div>
-
-            <div>
-              <div className="flex items-center gap-2 mb-1.5">
-                <Shield className="w-4 h-4 text-cyan-400/90" />
-                <span className="font-mono text-slate-300">写入白名单（额外）</span>
-              </div>
-              <p className="text-xs text-slate-500 mb-2">
-                在此追加允许写入的目录根；保存后经后端校验并合并进白名单，影响 core:fs_write 等工具。
-              </p>
-              <ul className="text-xs font-mono text-slate-300 space-y-1 mb-2">
-                {customWriteRoots.map((p) => (
-                  <li
-                    key={p}
-                    className="flex items-center gap-2 rounded border border-white/10 px-2 py-1 bg-white/5"
-                  >
-                    <span className="flex-1 truncate" title={p}>
-                      {p}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setCustomWriteRoots((prev) => prev.filter((x) => x !== p))}
-                      className="p-1 rounded text-slate-500 hover:text-rose-400"
-                      title="移除此项"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </li>
-                ))}
-                {customWriteRoots.length === 0 && (
-                  <li className="text-slate-500 text-xs">暂无额外路径</li>
-                )}
-              </ul>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={writePathDraft}
-                  onChange={(e) => setWritePathDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      addCustomWriteRoot();
-                    }
-                  }}
-                  placeholder="绝对路径，如 D:\\Projects\\my-data"
-                  className={cn(
-                    "flex-1 px-3 py-2 rounded border bg-white/5 text-slate-200 text-xs font-mono",
-                    "border-white/10 focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/30",
-                    "placeholder:text-slate-600"
-                  )}
-                />
-                <button
-                  type="button"
-                  onClick={addCustomWriteRoot}
-                  className={cn(
-                    "px-3 py-2 rounded font-mono text-xs flex items-center gap-1.5 shrink-0",
-                    "bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/35 text-cyan-200"
-                  )}
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  添加
-                </button>
-              </div>
-            </div>
-
-            <div>
-              <div className="flex items-center gap-2 mb-1.5">
-                <ShieldOff className="w-4 h-4 text-rose-400/80" />
-                <span className="font-mono text-slate-300">读取黑名单（内置）</span>
-              </div>
-              <p className="text-xs text-slate-500 mb-2">
-                下列类型的路径禁止通过 Native 读取（底线规则，不可关闭）：
-              </p>
-              <ul className="text-xs text-slate-400 space-y-1 list-disc list-inside leading-relaxed">
-                {(fsPolicy?.builtin_read_blacklist_lines ?? READ_BLACKLIST_BUILTIN_FALLBACK).map((line) => (
-                  <li key={line}>{line}</li>
-                ))}
-              </ul>
-            </div>
-
-            <div>
-              <div className="flex items-center gap-2 mb-1.5">
-                <ShieldOff className="w-4 h-4 text-orange-400/90" />
-                <span className="font-mono text-slate-300">读取黑名单（额外）</span>
-              </div>
-              <p className="text-xs text-slate-500 mb-2">
-                在此追加禁止读取的目录根：位于其下的任意路径均会被 core:fs_read 拒绝。
-              </p>
-              <ul className="text-xs font-mono text-slate-300 space-y-1 mb-2">
-                {customReadBlacklist.map((p) => (
-                  <li
-                    key={p}
-                    className="flex items-center gap-2 rounded border border-white/10 px-2 py-1 bg-white/5"
-                  >
-                    <span className="flex-1 truncate" title={p}>
-                      {p}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setCustomReadBlacklist((prev) => prev.filter((x) => x !== p))}
-                      className="p-1 rounded text-slate-500 hover:text-rose-400"
-                      title="移除此项"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </li>
-                ))}
-                {customReadBlacklist.length === 0 && (
-                  <li className="text-slate-500 text-xs">暂无额外禁止路径</li>
-                )}
-              </ul>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={readPathDraft}
-                  onChange={(e) => setReadPathDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      addCustomReadBlacklist();
-                    }
-                  }}
-                  placeholder="绝对路径，如 D:\\Secrets"
-                  className={cn(
-                    "flex-1 px-3 py-2 rounded border bg-white/5 text-slate-200 text-xs font-mono",
-                    "border-white/10 focus:border-orange-500/50 focus:ring-1 focus:ring-orange-500/30",
-                    "placeholder:text-slate-600"
-                  )}
-                />
-                <button
-                  type="button"
-                  onClick={addCustomReadBlacklist}
-                  className={cn(
-                    "px-3 py-2 rounded font-mono text-xs flex items-center gap-1.5 shrink-0",
-                    "bg-orange-500/15 hover:bg-orange-500/25 border border-orange-500/35 text-orange-200"
-                  )}
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  添加
-                </button>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-3 pt-1">
-              <button
-                type="button"
-                onClick={() => void handleSaveFsPolicy()}
-                disabled={fsPolicySaving}
-                className={cn(
-                  "px-4 py-2 rounded font-mono text-sm flex items-center gap-2",
-                  "bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-200",
-                  "disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                )}
-              >
-                {fsPolicySaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                保存路径策略
-              </button>
-              {fsPolicySavedHint && (
-                <span className="text-xs text-emerald-400">已保存，L3 将重新加载策略文件</span>
-              )}
-            </div>
-          </div>
-        </motion.section>
-
-        <motion.section
-          className="glass-panel rounded-xl overflow-hidden"
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.3, delay: 0.05 }}
-        >
-          <div className="px-4 py-3 border-b border-white/10">
-            <span className="font-mono text-xs uppercase tracking-wider text-slate-400">
-              用户覆盖
-            </span>
-          </div>
-          <div className="p-4 space-y-4">
-            <div>
-              <label className="block text-sm font-mono text-slate-400 mb-2">
-                <Key className="w-3.5 h-3.5 inline mr-1.5" />
-                Qwen API Key（通义千问）
-              </label>
               <div className="flex gap-2">
                 <input
                   type="password"
@@ -703,150 +432,379 @@ export function SettingsPanel() {
                   onChange={(e) => setApiKeyInput(e.target.value)}
                   placeholder={settings?.qwen_api_key ? "已保存，输入新值可更新" : "sk-xxx（留空则使用 .env 配置）"}
                   disabled={apiKeySaving}
-                  className={cn(
-                    "flex-1 px-3 py-2 rounded border bg-white/5 text-slate-200 text-sm font-mono",
-                    "border-white/10 focus:border-rose-500/50 focus:ring-1 focus:ring-rose-500/30",
-                    "placeholder:text-slate-500 disabled:opacity-50"
-                  )}
+                  className="h-10 min-w-0 flex-1 rounded-[8px] border border-cyan-200/[0.1] bg-slate-950/42 px-3 font-mono text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-cyan-200/35 disabled:opacity-50"
                 />
                 <button
                   onClick={handleSaveApiKey}
                   disabled={apiKeySaving}
-                  className={cn(
-                    "px-4 py-2 rounded font-mono text-sm flex items-center gap-2",
-                    "bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-200",
-                    "disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  )}
+                  className="inline-flex h-10 items-center gap-2 rounded-[8px] border border-cyan-200/[0.13] bg-cyan-300/[0.055] px-3 text-sm text-cyan-50 transition hover:bg-cyan-300/[0.085] disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {apiKeySaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  {apiKeySaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                   保存
                 </button>
               </div>
-              {apiKeySaved && (
-                <p className="text-xs text-emerald-400 mt-1">已保存，后续无需重复配置</p>
-              )}
-              <p className="text-xs text-slate-500 mt-1">保存后立即生效；若未生效请重启后端</p>
+              <p className="mt-2 text-xs text-slate-500">{apiKeySaved ? "已保存，后续无需重复配置" : "留空则继续使用环境配置"}</p>
             </div>
+          </motion.section>
+        </div>
 
-            <div>
-              <label className="block text-sm font-mono text-slate-400 mb-2">LLM Mode</label>
-              <select
-                value={settings?.llm_provider_override ?? ""}
-                onChange={(e) =>
-                  handleLlmChange(e.target.value || null)
-                }
-                disabled={saving}
-                className={cn(
-                  "w-full px-3 py-2 rounded border bg-white/5 text-slate-200 text-sm font-mono",
-                  "border-white/10 focus:border-rose-500/50 focus:ring-1 focus:ring-rose-500/30",
-                  "disabled:opacity-50"
-                )}
-              >
-                {LLM_OPTIONS.map((o) => (
-                  <option key={o.label} value={o.value ?? ""}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+        <motion.section
+          className="jarvis-panel rounded-[8px] border border-cyan-200/[0.08] bg-cyan-300/[0.018] p-4"
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: 0.05 }}
+        >
+          <div className="mb-4 flex items-center gap-2">
+            <Settings className="h-4 w-4 text-cyan-100/80" />
+            <h2 className="font-mono text-[11px] uppercase tracking-[0.16em] text-cyan-100/80">Runtime Overrides</h2>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+            <SelectControl
+              label="LLM"
+              value={settings?.llm_provider_override ?? ""}
+              onChange={(value) => void handleLlmChange(value || null)}
+              disabled={saving}
+            >
+              {LLM_OPTIONS.map((o) => (
+                <option key={o.label} value={o.value ?? ""}>
+                  {o.label}
+                </option>
+              ))}
+            </SelectControl>
 
-            <div>
-              <label className="block text-sm font-mono text-slate-400 mb-2">TTS Mode</label>
-              <select
-                value={settings?.tts_provider_override ?? ""}
-                onChange={(e) =>
-                  handleTtsChange(e.target.value || null)
-                }
-                disabled={saving}
-                className={cn(
-                  "w-full px-3 py-2 rounded border bg-white/5 text-slate-200 text-sm font-mono",
-                  "border-white/10 focus:border-rose-500/50 focus:ring-1 focus:ring-rose-500/30",
-                  "disabled:opacity-50"
-                )}
-              >
-                {TTS_OPTIONS.map((o) => (
-                  <option key={o.label} value={o.value ?? ""}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <SelectControl
+              label="TTS"
+              value={settings?.tts_provider_override ?? ""}
+              onChange={(value) => void handleTtsChange(value || null)}
+              disabled={saving}
+            >
+              {TTS_OPTIONS.map((o) => (
+                <option key={o.label} value={o.value ?? ""}>
+                  {o.label}
+                </option>
+              ))}
+            </SelectControl>
 
-            <div>
-              <label className="block text-sm font-mono text-slate-400 mb-2">Run Mode</label>
-              <select
-                value={settings?.run_mode_override ?? "standalone"}
-                onChange={(e) => handleRunModeChange(e.target.value)}
-                disabled={saving}
-                className={cn(
-                  "w-full px-3 py-2 rounded border bg-white/5 text-slate-200 text-sm font-mono",
-                  "border-white/10 focus:border-rose-500/50 focus:ring-1 focus:ring-rose-500/30",
-                  "disabled:opacity-50"
-                )}
-              >
-                {RUN_MODE_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <SelectControl
+              label="Run"
+              value={settings?.run_mode_override ?? "standalone"}
+              onChange={(value) => void handleRunModeChange(value)}
+              disabled={saving}
+            >
+              {RUN_MODE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </SelectControl>
 
-            <div>
-              <label className="block text-sm font-mono text-slate-400 mb-2">Chat 流式</label>
-              <select
-                value={settings?.chat_stream_via_direct === false ? "false" : "true"}
-                onChange={(e) => handleChatStreamChange(e.target.value === "true")}
-                disabled={saving}
-                className={cn(
-                  "w-full px-3 py-2 rounded border bg-white/5 text-slate-200 text-sm font-mono",
-                  "border-white/10 focus:border-rose-500/50 focus:ring-1 focus:ring-rose-500/30",
-                  "disabled:opacity-50"
-                )}
-              >
-                {CHAT_STREAM_OPTIONS.map((o) => (
-                  <option key={String(o.value)} value={String(o.value)}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-              <p className="text-xs text-slate-500 mt-1">默认本地流式，避免 Dapr 缓冲导致无回复</p>
-            </div>
+            <SelectControl
+              label="Chat"
+              value={settings?.chat_stream_via_direct === false ? "false" : "true"}
+              onChange={(value) => void handleChatStreamChange(value === "true")}
+              disabled={saving}
+            >
+              {CHAT_STREAM_OPTIONS.map((o) => (
+                <option key={String(o.value)} value={String(o.value)}>
+                  {o.label}
+                </option>
+              ))}
+            </SelectControl>
 
-            <div>
-              <label className="block text-sm font-mono text-slate-400 mb-2">桌面精灵语音模式</label>
-              <select
-                value={settings?.sprite_voice_mode ?? "push_to_talk"}
-                onChange={(e) => handleSpriteVoiceModeChange(e.target.value)}
-                disabled={saving}
-                className={cn(
-                  "w-full px-3 py-2 rounded border bg-white/5 text-slate-200 text-sm font-mono",
-                  "border-white/10 focus:border-rose-500/50 focus:ring-1 focus:ring-rose-500/30",
-                  "disabled:opacity-50"
-                )}
-              >
-                {SPRITE_VOICE_MODE_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-              <div className="text-xs text-slate-500 mt-2 space-y-1">
-                <p>A. 录音：低资源、极低误触，隐私/嘈杂/长文本</p>
-                <p>B. 唤醒：中资源(KWS)、需唤醒词，远场/双手占用</p>
-                <p>C. 连续：高资源(VAD+STT)、易误触，沉浸闲聊</p>
-              </div>
-            </div>
+            <SelectControl
+              label="Voice"
+              value={settings?.sprite_voice_mode ?? "push_to_talk"}
+              onChange={(value) => void handleSpriteVoiceModeChange(value)}
+              disabled={saving}
+            >
+              {SPRITE_VOICE_MODE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </SelectControl>
           </div>
         </motion.section>
 
         <motion.section
+          className="jarvis-panel rounded-[8px] border border-cyan-200/[0.08] bg-cyan-300/[0.018]"
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="rounded-xl border border-white/10 bg-black/20 p-6"
+          transition={{ duration: 0.3, delay: 0.06 }}
+        >
+          <details>
+            <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-4">
+              <FolderOpen className="h-4 w-4 text-cyan-100/80" />
+              <div className="min-w-0 flex-1">
+                <div className="font-mono text-[11px] uppercase tracking-[0.16em] text-cyan-100/80">Advanced File Policy</div>
+                <div className="mt-1 truncate text-xs text-slate-500">
+                  {fsPolicy?.policy_file ? fsPolicy.policy_file : "Native 文件系统策略"}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  void loadFsPolicy();
+                }}
+                disabled={fsPolicyLoading}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-[7px] border border-cyan-200/[0.08] text-slate-400 hover:border-cyan-200/22 hover:text-cyan-100 disabled:opacity-40"
+                title="从 L3 刷新"
+              >
+                {fsPolicyLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              </button>
+            </summary>
+
+            <div className="space-y-5 border-t border-cyan-200/[0.055] p-4 text-sm">
+              {fsPolicyError && <p className="text-xs text-amber-300">{fsPolicyError}</p>}
+
+              <div className="grid gap-4 xl:grid-cols-2">
+                <PolicyBlock title="写入白名单" icon={<Shield className="h-4 w-4" />}>
+                  <PathList
+                    items={fsPolicy?.builtin_write_roots ?? []}
+                    empty={fsPolicyError ? "需连接 L3 以显示内置绝对路径" : "内置路径由 L3 在线时填充"}
+                  />
+                  <EditablePathList
+                    items={customWriteRoots}
+                    draft={writePathDraft}
+                    placeholder="追加允许写入目录"
+                    onDraftChange={setWritePathDraft}
+                    onAdd={addCustomWriteRoot}
+                    onRemove={(path) => setCustomWriteRoots((prev) => prev.filter((x) => x !== path))}
+                  />
+                </PolicyBlock>
+
+                <PolicyBlock title="读取黑名单" icon={<ShieldOff className="h-4 w-4" />}>
+                  <PathList items={fsPolicy?.builtin_read_blacklist_lines ?? READ_BLACKLIST_BUILTIN_FALLBACK} empty="暂无内置规则" />
+                  <EditablePathList
+                    items={customReadBlacklist}
+                    draft={readPathDraft}
+                    placeholder="追加禁止读取目录"
+                    onDraftChange={setReadPathDraft}
+                    onAdd={addCustomReadBlacklist}
+                    onRemove={(path) => setCustomReadBlacklist((prev) => prev.filter((x) => x !== path))}
+                    tone="orange"
+                  />
+                </PolicyBlock>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => void handleSaveFsPolicy()}
+                  disabled={fsPolicySaving}
+                  className="inline-flex h-10 items-center gap-2 rounded-[8px] border border-cyan-200/[0.13] bg-cyan-300/[0.055] px-4 text-sm text-cyan-50 transition hover:bg-cyan-300/[0.085] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {fsPolicySaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  保存路径策略
+                </button>
+                {fsPolicySavedHint && <span className="text-xs text-emerald-300">已保存，L3 将重新加载策略文件</span>}
+              </div>
+            </div>
+          </details>
+        </motion.section>
+
+        <motion.section
+          className="jarvis-panel rounded-[8px] border border-cyan-200/[0.08] bg-cyan-300/[0.018] p-4"
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: 0.07 }}
         >
           <LarkLongConnectionSettings />
         </motion.section>
+      </div>
+    </div>
+  );
+}
+
+function StatusTile({ label, value, icon }: { label: string; value: string; icon: ReactNode }) {
+  return (
+    <div className="jarvis-tile rounded-[8px] border border-cyan-200/[0.07] bg-slate-950/24 p-3">
+      <div className="relative z-10 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">{label}</div>
+          <div className="mt-1 truncate font-mono text-sm text-slate-100" title={value}>
+            {value}
+          </div>
+        </div>
+        <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[7px] border border-cyan-200/[0.08] bg-cyan-300/[0.035] text-cyan-100/80">
+          {icon}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function ToggleCard({
+  title,
+  summary,
+  checked,
+  disabled,
+  onChange,
+  tone = "cyan",
+}: {
+  title: string;
+  summary: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: () => void;
+  tone?: "cyan" | "amber";
+}) {
+  const activeClass =
+    tone === "amber"
+      ? "border-amber-300/25 bg-amber-300/[0.055]"
+      : "border-cyan-200/[0.16] bg-cyan-300/[0.055]";
+
+  return (
+    <button
+      type="button"
+      onClick={onChange}
+      disabled={disabled}
+      className={cn(
+        "jarvis-tile relative min-h-[116px] rounded-[8px] border p-4 text-left transition disabled:cursor-not-allowed disabled:opacity-50",
+        checked ? activeClass : "border-cyan-200/[0.07] bg-slate-950/22 hover:border-cyan-200/[0.14]"
+      )}
+    >
+      <div className="relative z-10 flex items-start justify-between gap-4">
+        <div>
+          <div className="text-sm font-semibold text-slate-100">{title}</div>
+          <div className="mt-2 text-xs text-slate-500">{summary}</div>
+        </div>
+        <span
+          className={cn(
+            "relative mt-0.5 h-5 w-9 flex-shrink-0 rounded-full border transition-colors",
+            checked ? "border-cyan-200/25 bg-cyan-300/20" : "border-cyan-200/[0.09] bg-slate-950/45"
+          )}
+        >
+          <span
+            className={cn(
+              "absolute top-0.5 h-3.5 w-3.5 rounded-full bg-slate-100 transition-transform",
+              checked ? "translate-x-4" : "translate-x-0.5"
+            )}
+          />
+        </span>
+      </div>
+      <div className="relative z-10 mt-4 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+        {checked ? "armed" : "guarded"}
+      </div>
+    </button>
+  );
+}
+
+function SelectControl({
+  label,
+  value,
+  onChange,
+  disabled,
+  children,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-2 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        className="h-10 w-full rounded-[8px] border border-cyan-200/[0.1] bg-slate-950/42 px-3 font-mono text-sm text-slate-100 outline-none focus:border-cyan-200/35 disabled:opacity-50"
+      >
+        {children}
+      </select>
+    </label>
+  );
+}
+
+function PolicyBlock({ title, icon, children }: { title: string; icon: ReactNode; children: ReactNode }) {
+  return (
+    <div className="rounded-[8px] border border-cyan-200/[0.07] bg-slate-950/24 p-4">
+      <div className="mb-3 flex items-center gap-2 text-cyan-100/80">
+        {icon}
+        <span className="text-sm font-medium text-slate-200">{title}</span>
+      </div>
+      <div className="space-y-3">{children}</div>
+    </div>
+  );
+}
+
+function PathList({ items, empty }: { items: string[]; empty: string }) {
+  return (
+    <div className="max-h-36 overflow-auto rounded-[8px] border border-cyan-200/[0.06] bg-slate-950/35 p-2 custom-scrollbar">
+      {items.length === 0 ? (
+        <div className="text-xs text-slate-500">{empty}</div>
+      ) : (
+        <div className="space-y-1">
+          {items.map((item) => (
+            <div key={item} className="truncate font-mono text-[11px] text-slate-400" title={item}>
+              {item}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EditablePathList({
+  items,
+  draft,
+  placeholder,
+  onDraftChange,
+  onAdd,
+  onRemove,
+  tone = "cyan",
+}: {
+  items: string[];
+  draft: string;
+  placeholder: string;
+  onDraftChange: (value: string) => void;
+  onAdd: () => void;
+  onRemove: (value: string) => void;
+  tone?: "cyan" | "orange";
+}) {
+  const buttonClass =
+    tone === "orange"
+      ? "border-orange-300/25 bg-orange-300/[0.07] text-orange-100 hover:bg-orange-300/[0.11]"
+      : "border-cyan-200/[0.13] bg-cyan-300/[0.055] text-cyan-50 hover:bg-cyan-300/[0.085]";
+
+  return (
+    <div className="space-y-2">
+      {items.length > 0 && (
+        <div className="space-y-1">
+          {items.map((item) => (
+            <div key={item} className="flex items-center gap-2 rounded-[7px] border border-cyan-200/[0.06] bg-cyan-300/[0.018] px-2 py-1">
+              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-slate-300" title={item}>
+                {item}
+              </span>
+              <button type="button" onClick={() => onRemove(item)} className="text-slate-500 hover:text-rose-300" title="移除此项">
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={draft}
+          onChange={(e) => onDraftChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              onAdd();
+            }
+          }}
+          placeholder={placeholder}
+          className="h-9 min-w-0 flex-1 rounded-[8px] border border-cyan-200/[0.08] bg-slate-950/42 px-3 font-mono text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-cyan-200/28"
+        />
+        <button type="button" onClick={onAdd} className={cn("inline-flex h-9 items-center gap-1.5 rounded-[8px] border px-3 text-xs transition", buttonClass)}>
+          <Plus className="h-3.5 w-3.5" />
+          添加
+        </button>
       </div>
     </div>
   );

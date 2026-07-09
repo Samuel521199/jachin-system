@@ -97,17 +97,27 @@ export function SystemHeartbeat() {
   }, [litCount, isOverheated]);
 
   return (
-    <div className="px-3 py-4 border-t border-cyan-500/15">
-      <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500 mb-2 font-mono">
-        System Heartbeat
-      </p>
-      <div className="flex items-end justify-center gap-[3px] h-9 px-0.5">
+    <div className="jarvis-heartbeat relative z-10 border-t border-cyan-200/[0.06] px-3 py-4">
+      <div className="mb-3 flex items-center gap-2">
+        <span className="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] border border-cyan-200/[0.08] bg-cyan-300/[0.025]">
+          <span className={cn("h-2 w-2 rounded-full", isOverheated ? "bg-amber-300 shadow-[0_0_12px_rgba(251,191,36,0.8)]" : "bg-cyan-200 shadow-[0_0_12px_rgba(125,211,252,0.65)]")} />
+        </span>
+        <div className="min-w-0 flex-1 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
+          <p className="truncate text-[10px] font-semibold uppercase tracking-[0.2em] text-cyan-100/58">
+            System Heartbeat
+          </p>
+          <p className="mt-0.5 truncate text-[10px] font-mono tabular-nums text-slate-500">
+            Tier 2 · {clamped}%
+          </p>
+        </div>
+      </div>
+      <div className="flex h-8 items-end justify-center gap-[3px] px-0.5">
         {ticks.map((tick, i) => {
           if (!tick.on) {
             return (
               <div
                 key={i}
-                className={cn("w-[2px] max-w-[3px] flex-1 rounded-none min-h-[6px]", tick.className)}
+                className={cn("w-[2px] max-w-[3px] flex-1 rounded-full min-h-[5px]", tick.className)}
               />
             );
           }
@@ -115,7 +125,7 @@ export function SystemHeartbeat() {
             return (
               <motion.div
                 key={i}
-                className={cn("w-[2px] max-w-[3px] flex-1 rounded-none min-h-[6px]", tick.className)}
+                className={cn("w-[2px] max-w-[3px] flex-1 rounded-full min-h-[5px]", tick.className)}
                 animate={{ opacity: [0.75, 1, 0.75] }}
                 transition={{ duration: 0.9, repeat: Infinity, ease: "easeInOut", delay: (i % 6) * 0.04 }}
               />
@@ -124,17 +134,17 @@ export function SystemHeartbeat() {
           return (
             <motion.div
               key={i}
-              className="w-[2px] max-w-[3px] flex-1 rounded-none min-h-[6px]"
+              className="w-[2px] max-w-[3px] flex-1 rounded-full min-h-[5px]"
               style={tick.style}
-              animate={{ opacity: [0.55, 1, 0.55] }}
+              animate={{ opacity: [0.52, 1, 0.52] }}
               transition={{ duration: 1.2 + (i % 5) * 0.06, repeat: Infinity, ease: "easeInOut" }}
             />
           );
         })}
       </div>
-      <p className="text-[10px] text-slate-500 mt-2 font-mono tabular-nums tracking-tight">
-        Tier 2 · {clamped}%
-        {gpu != null ? ` (CPU ${cpu} · GPU ${gpu})` : ""}
+      <p className="mt-2 hidden text-[10px] font-mono tabular-nums tracking-tight text-slate-500 group-hover:block">
+        CPU {cpu}%
+        {gpu != null ? ` · GPU ${gpu}%` : ""}
         {gpuTemp != null ? ` · ${gpuTemp}°C` : ""}
       </p>
       {isOverheated && gpuTemp != null && (

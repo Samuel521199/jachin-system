@@ -2,9 +2,9 @@
 """Jachin voice-module STT tester.
 
 By default this script calls the same production voice module that Jachin uses:
-`voice_server/services/stt_service.py`. That means it tests the configured
-Sherpa-ONNX Zipformer STT backend, hotword provider, and Global Entity First
-voice understanding layer in one path.
+the configured `voice_server` STT backend. That means it tests the active
+production path, including DashScope Fun-ASR native hotwords when
+`JACHIN_STT_BACKEND=cloud`, or Sherpa-ONNX hotwords when local STT is selected.
 
 The old standalone Sherpa experiment runner is still available with
 `--legacy-standalone`. It can test:
@@ -1232,7 +1232,7 @@ def list_devices() -> int:
     return 0
 
 
-def _import_jachin_voice_modules() -> tuple[Any, Any]:
+def _make_jachin_stt_service() -> tuple[Any, Any]:
     voice_server_dir = ROOT / "voice_server"
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
@@ -1240,10 +1240,34 @@ def _import_jachin_voice_modules() -> tuple[Any, Any]:
         sys.path.insert(0, str(voice_server_dir))
     try:
         from config import load_config
-        from services.stt_service import SttService
     except Exception as exc:
         raise SystemExit(f"Failed to import Jachin voice modules from {voice_server_dir}: {exc}") from exc
-    return load_config, SttService
+    cfg = load_config()
+    try:
+        if cfg.stt_backend == "cloud":
+            from services.cloud_stt_service import CloudSttService
+
+            service = CloudSttService(
+                api_key=cfg.dashscope_api_key,
+                api_base=cfg.dashscope_api_base,
+                ws_api_base=cfg.dashscope_ws_api_base,
+                model=cfg.stt_model,
+                realtime_model=cfg.stt_realtime_model,
+                hotword_model=cfg.stt_hotword_model,
+                file_model=cfg.stt_file_model,
+                vocabulary_id=cfg.stt_vocabulary_id,
+                vocabulary_prefix=cfg.stt_vocabulary_prefix,
+                auto_sync_vocabulary=cfg.stt_auto_sync_vocabulary,
+                workspace=cfg.dashscope_workspace_id,
+                language=cfg.stt_language,
+            )
+        else:
+            from services.stt_service import SttService
+
+            service = SttService(cfg.stt_dir)
+    except Exception as exc:
+        raise SystemExit(f"Failed to create Jachin STT service: {exc}") from exc
+    return cfg, service
 
 
 def _read_input_wav_bytes(args: argparse.Namespace) -> tuple[bytes, str]:
@@ -1265,10 +1289,8 @@ def _read_input_wav_bytes(args: argparse.Namespace) -> tuple[bytes, str]:
 
 
 def run_jachin_voice_module(args: argparse.Namespace) -> int:
-    load_config, SttService = _import_jachin_voice_modules()
-    cfg = load_config()
-    model_dir = args.model_dir or cfg.stt_dir
-    service = SttService(model_dir)
+    cfg, service = _make_jachin_stt_service()
+    model_ref = getattr(service, "model_path", "") or getattr(service, "model_name", "unknown")
     wav_bytes, source = _read_input_wav_bytes(args)
 
     if args.debug:
@@ -1283,7 +1305,8 @@ def run_jachin_voice_module(args: argparse.Namespace) -> int:
         if args.llm_rerank:
             print("[llm-rerank] ignored in Jachin voice-module mode unless the production module enables it.")
         print(f"[source] {source}")
-        print(f"[model_dir] {model_dir}")
+        print(f"[stt_backend] {cfg.stt_backend}")
+        print(f"[model_ref] {model_ref}")
     if not service.ready:
         print(f"[error] Jachin STT model not ready: {service.model_path}", file=sys.stderr)
         return 2
@@ -1351,7 +1374,8 @@ def run_jachin_voice_module(args: argparse.Namespace) -> int:
     if args.json_out:
         payload = {
             "mode": "jachin_voice_module",
-            "model_dir": str(model_dir),
+            "stt_backend": cfg.stt_backend,
+            "model_ref": str(model_ref),
             "source": source,
             "wall_latency_ms": wall_ms,
             "rtf": rtf,

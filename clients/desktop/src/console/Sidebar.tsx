@@ -174,6 +174,25 @@ const navItems = [
   },
 ] as const;
 
+type NavItem = (typeof navItems)[number];
+
+function navSection(path: string, lang: "zh" | "en"): string {
+  const zh = lang === "zh";
+  if (path === "/dashboard" || path === "/brain" || path === "/safety-lock" || path === "/calendar") {
+    return zh ? "核心中枢" : "CORE";
+  }
+  if (path === "/skills" || path === "/capability-publish" || path === "/capability-install" || path === "/english-vocab") {
+    return zh ? "能力矩阵" : "CAPABILITY";
+  }
+  if (path === "/network" || path === "/wake" || path === "/monitor" || path === "/k11-smoke") {
+    return zh ? "感知与巡检" : "SENSORY";
+  }
+  if (path === "/gameqa" || path === "/os-evidence" || path === "/pmo" || path === "/bi") {
+    return zh ? "任务执行" : "OPERATIONS";
+  }
+  return zh ? "人格设置" : "PERSONA";
+}
+
 function capabilityInstalled(items: CapabilityInstallItem[], gate?: CapabilityGate): boolean {
   if (!gate) return true;
   const ids = new Set((gate.ids ?? []).map((id) => id.trim().toLowerCase()).filter(Boolean));
@@ -227,55 +246,91 @@ export function Sidebar() {
     return navItems.filter((item) => capabilityInstalled(installedItems, "capabilityGate" in item ? item.capabilityGate : undefined));
   }, [installScanReady, installedItems]);
 
+  const navGroups = useMemo(() => {
+    const groups: Array<{ section: string; items: NavItem[] }> = [];
+    for (const item of visibleNavItems) {
+      const section = navSection(item.path, lang);
+      const last = groups[groups.length - 1];
+      if (last?.section === section) {
+        last.items.push(item);
+      } else {
+        groups.push({ section, items: [item] });
+      }
+    }
+    return groups;
+  }, [visibleNavItems, lang]);
+
   return (
     <aside
       className={cn(
-        "console-fiber-host group flex flex-shrink-0 flex-col overflow-hidden transition-[width] duration-300 ease-out",
-        "z-10 w-20 border-r border-cyan-200/[0.07] bg-slate-950/58 shadow-[12px_0_44px_rgba(0,0,0,0.24)] backdrop-blur-xl hover:w-64"
+        "jarvis-sidebar group flex flex-shrink-0 flex-col overflow-hidden transition-[width] duration-300 ease-out",
+        "z-10 w-20 border-r border-cyan-200/[0.07] bg-slate-950/58 shadow-[12px_0_44px_rgba(0,0,0,0.24)] backdrop-blur-xl hover:w-72"
       )}
     >
-      <div className="flex min-w-0 flex-shrink-0 items-center gap-3 border-b border-cyan-200/[0.06] p-4">
+      <div className="jarvis-sidebar-scan" aria-hidden />
+      <div className="relative z-10 flex min-w-0 flex-shrink-0 items-center gap-3 border-b border-cyan-200/[0.06] p-4">
         <div
-          className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[8px] border border-cyan-200/[0.09] bg-cyan-300/[0.04] shadow-[inset_0_0_18px_rgba(56,189,248,0.025)]"
+          className="jarvis-sidebar-mark flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[8px] border border-cyan-200/[0.09] bg-cyan-300/[0.04] shadow-[inset_0_0_18px_rgba(56,189,248,0.025)]"
           style={{ fontFamily: "Orbitron, sans-serif" }}
         >
           <span className="text-sm font-bold text-cyan-100">J</span>
         </div>
-        <h1
-          className="w-0 overflow-hidden whitespace-nowrap text-sm font-semibold tracking-normal text-cyan-50 opacity-0 transition-all duration-300 group-hover:w-auto group-hover:opacity-100"
-          style={{ fontFamily: "Orbitron, sans-serif" }}
-        >
-          JACHIN
-        </h1>
+        <div className="w-0 overflow-hidden opacity-0 transition-all duration-300 group-hover:w-44 group-hover:opacity-100">
+          <h1
+            className="whitespace-nowrap text-sm font-semibold tracking-[0.18em] text-cyan-50"
+            style={{ fontFamily: "Orbitron, sans-serif" }}
+          >
+            JACHIN
+          </h1>
+          <p className="mt-0.5 truncate text-[10px] uppercase tracking-[0.18em] text-slate-500">Omni Console</p>
+        </div>
       </div>
-      <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 py-3">
-        {visibleNavItems.map((item) => {
-          const Icon = item.icon;
-          const label = "label" in item ? item.label : c.sidebar[item.labelKey];
-          const title = "title" in item ? item.title : c.sidebar[item.titleKey];
-          const path = item.path;
-          return (
-            <NavLink
-              key={path}
-              to={path}
-              end={path === "/dashboard"}
-              title={title}
-              className={({ isActive }) =>
-                cn(
-                  "relative flex items-center gap-3 rounded-[8px] border py-3 pl-3 pr-2 text-sm font-medium transition-all duration-200",
-                  isActive
-                    ? "border-cyan-200/[0.12] bg-cyan-300/[0.065] text-cyan-50 shadow-[inset_0_0_18px_rgba(56,189,248,0.045)]"
-                    : "border-transparent text-slate-500 hover:border-cyan-200/[0.08] hover:bg-cyan-300/[0.025] hover:text-cyan-100/90"
-                )
-              }
-            >
-              <Icon className="h-5 w-5 flex-shrink-0" />
-              <span className="w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-300 group-hover:w-auto group-hover:opacity-100">
-                {label}
+      <nav className="relative z-10 min-h-0 flex-1 overflow-y-auto px-2 py-3">
+        {navGroups.map((group) => (
+          <div key={group.section} className="mb-3 last:mb-0">
+            <div className="jarvis-nav-section mb-1 flex items-center gap-2 px-2">
+              <span className="h-px w-3 shrink-0 bg-cyan-200/[0.14]" />
+              <span className="w-0 overflow-hidden whitespace-nowrap text-[9px] font-semibold uppercase tracking-[0.2em] text-cyan-100/42 opacity-0 transition-all duration-300 group-hover:w-auto group-hover:opacity-100">
+                {group.section}
               </span>
-            </NavLink>
-          );
-        })}
+              <span className="hidden h-px flex-1 bg-cyan-200/[0.08] group-hover:block" />
+            </div>
+            <div className="space-y-1.5">
+              {group.items.map((item) => {
+                const Icon = item.icon;
+                const label = "label" in item ? item.label : c.sidebar[item.labelKey];
+                const title = "title" in item ? item.title : c.sidebar[item.titleKey];
+                const path = item.path;
+                return (
+                  <NavLink
+                    key={path}
+                    to={path}
+                    end={path === "/dashboard"}
+                    title={title}
+                    className={({ isActive }) =>
+                      cn(
+                        "jarvis-nav-item relative flex items-center gap-3 rounded-[8px] border py-2.5 pl-3 pr-2 text-sm font-medium transition-all duration-200",
+                        isActive ? "jarvis-nav-active text-cyan-50" : "text-slate-500 hover:text-cyan-100/90"
+                      )
+                    }
+                  >
+                    {({ isActive }) => (
+                      <>
+                        <span className={cn("jarvis-nav-icon flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[7px]", isActive && "jarvis-nav-icon-active")}>
+                          <Icon className="h-[18px] w-[18px] flex-shrink-0" />
+                        </span>
+                        <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-300 group-hover:opacity-100">
+                          {label}
+                        </span>
+                        <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full opacity-0 transition group-hover:opacity-100", isActive ? "bg-cyan-200 shadow-[0_0_10px_rgba(125,211,252,0.75)]" : "bg-cyan-200/18")} />
+                      </>
+                    )}
+                  </NavLink>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </nav>
       <SystemHeartbeat />
     </aside>

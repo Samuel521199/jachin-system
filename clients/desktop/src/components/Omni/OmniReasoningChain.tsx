@@ -28,7 +28,7 @@ export const OmniReasoningChain: React.FC<OmniReasoningChainProps> = ({
   labels = DEFAULT_LABELS,
 }) => {
   const trimmed = text.trim();
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(() => Boolean(isStreaming));
   const reasoningEndRef = useRef<HTMLDivElement>(null);
   const prevStreamingRef = useRef(false);
 
@@ -67,24 +67,23 @@ export const OmniReasoningChain: React.FC<OmniReasoningChainProps> = ({
         e.stopPropagation();
         setOpen((e.target as HTMLDetailsElement).open);
       }}
-      className="omni-reasoning-chain group mb-2.5 w-full min-w-0 max-w-full rounded-xl border border-white/10 bg-black/40 outline-none ring-0 focus:outline-none focus-visible:outline-none"
+      className="omni-reasoning-chain group mb-2.5 w-full min-w-0 max-w-full rounded-lg border border-sky-300/10 bg-sky-300/[0.035] outline-none ring-0 focus:outline-none focus-visible:outline-none"
     >
-      <summary className="flex min-w-0 cursor-pointer select-none list-none items-center gap-2 rounded-t-xl border-b border-white/5 bg-white/5 px-2 py-2 text-left outline-none sm:px-3 [&::-webkit-details-marker]:hidden">
-        <Sparkles className="h-3.5 w-3.5 shrink-0 text-cyan-500/50" aria-hidden />
-        <span className="min-w-0 shrink text-[12px] font-medium tracking-wide text-cyan-400/80">{labels.chain}</span>
-        <span className="hidden shrink-0 text-[10px] text-cyan-500/45 sm:inline">{labels.expand}</span>
+      <summary className="flex min-w-0 cursor-pointer select-none list-none items-center gap-2 rounded-t-lg border-b border-sky-300/[0.045] bg-white/[0.025] px-2 py-2 text-left outline-none sm:px-3 [&::-webkit-details-marker]:hidden">
+        <Sparkles className="h-3.5 w-3.5 shrink-0 text-sky-300/[0.48]" aria-hidden />
+        <span className="min-w-0 shrink text-[12px] font-medium tracking-normal text-sky-100/[0.76]">{labels.chain}</span>
+        <span className="hidden shrink-0 text-[10px] text-sky-200/[0.34] sm:inline">{labels.expand}</span>
         {isStreaming ? (
-          <span className="rounded bg-cyan-500/10 px-1.5 py-0.5 text-[9px] font-mono text-cyan-400/55">
+          <span className="rounded bg-sky-300/[0.08] px-1.5 py-0.5 text-[9px] text-sky-200/[0.58]">
             {labels.updating}
           </span>
         ) : null}
         <ChevronDown
-          className="ml-auto h-4 w-4 shrink-0 text-cyan-500/45 transition-transform duration-200 group-open:rotate-180"
+          className="ml-auto h-4 w-4 shrink-0 text-sky-200/[0.38] transition-transform duration-200 group-open:rotate-180"
           aria-hidden
         />
       </summary>
-      {/* 展开后的思考内容：固定高度、盒内滚动、半透明「暗流」字色 */}
-      <div className="max-h-48 overflow-y-auto no-scrollbar p-3 bg-black/30 border-t border-white/5 text-sm text-gray-400/70 font-mono leading-relaxed break-words whitespace-pre-wrap">
+      <div className="max-h-48 overflow-y-auto no-scrollbar border-t border-sky-300/[0.045] bg-black/[0.18] p-3 font-mono text-xs leading-relaxed text-slate-300/[0.58] break-words whitespace-pre-wrap">
         {trimmed}
         <div ref={reasoningEndRef} className="h-px w-full shrink-0 scroll-mt-1" aria-hidden />
       </div>

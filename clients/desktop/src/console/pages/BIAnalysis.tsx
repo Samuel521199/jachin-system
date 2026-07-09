@@ -4,7 +4,21 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BarChart3 } from "lucide-react";
+import { motion } from "framer-motion";
+import {
+  Activity,
+  BarChart3,
+  CalendarClock,
+  CheckCircle2,
+  Clock3,
+  Loader2,
+  Play,
+  Radio,
+  Square,
+  TimerReset,
+  TrendingUp,
+  Zap,
+} from "lucide-react";
 import { cn } from "../../utils/cn";
 import {
   clearL3SkillsBaseUrlCache,
@@ -14,6 +28,13 @@ import {
 
 const DEFAULT_HOUR_BEIJING = 8;
 const DEFAULT_MINUTE_BEIJING = 0;
+
+const PIPELINE_STAGES = [
+  { label: "采集", desc: "数据抓取" },
+  { label: "归因", desc: "多维表" },
+  { label: "推演", desc: "策略分析" },
+  { label: "投递", desc: "战报同步" },
+];
 
 function parseScheduleLogLine(data: Record<string, unknown>): string | null {
   if (typeof data.line === "string") return data.line;
@@ -291,193 +312,354 @@ export function BIAnalysis() {
   }, [displayLogs]);
 
   const l3OrRun = l3Probing || running;
+  const scheduledLabel = hourlyRecurring
+    ? `每小时 ${String(minuteBeijing).padStart(2, "0")} 分`
+    : `${String(hourBeijing).padStart(2, "0")}:${String(minuteBeijing).padStart(2, "0")}`;
+  const runState = l3Probing ? "L3 探测中" : running ? "分析运行中" : doneOk === true ? "最近完成" : "待命";
+  const logCount = displayLogs.length;
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col gap-5 p-6 text-amber-200/90">
+    <div className="relative h-full min-h-0 overflow-auto p-5 text-slate-200 sm:p-6">
       {showNotify && (
-        <div
+        <motion.div
+          initial={{ opacity: 0, y: -10, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
           className={cn(
-            "fixed right-6 top-20 z-[100] max-w-sm rounded-lg border px-4 py-3 text-sm backdrop-blur",
-            "border-amber-500/45 bg-black/90 text-amber-100 shadow-[0_0_28px_rgba(245,158,11,0.18)]"
+            "fixed right-6 top-20 z-[100] max-w-sm rounded-[8px] border px-4 py-3 text-sm backdrop-blur-xl",
+            "border-emerald-300/25 bg-slate-950/92 text-emerald-100 shadow-[0_0_32px_rgba(52,211,153,0.16)]"
           )}
           role="status"
         >
-          BI 每日战报已完成。
-        </div>
+          BI 每日战报已完成
+        </motion.div>
       )}
 
-      <header className="flex flex-shrink-0 flex-wrap items-center gap-3 border-b border-amber-500/15 pb-4">
-        <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-amber-500/25 bg-amber-500/10">
-          <BarChart3 className="h-5 w-5 text-amber-300" aria-hidden />
-        </div>
-        <div>
-          <h2
-            className="font-sci-fi text-lg font-semibold tracking-wide text-white"
-            style={{ textShadow: "0 0 12px rgba(245, 158, 11, 0.45)" }}
-          >
-            ■ BI 分析
-          </h2>
-          <p className="text-xs text-amber-700/90">
-            每日战报 ·{" "}
-            <span className="font-mono text-amber-600/90">scripts/run_bi_daily_report.py</span>
-          </p>
-        </div>
-      </header>
-
-      <section className="flex flex-shrink-0 flex-col gap-4 rounded-xl border border-amber-500/20 bg-amber-500/[0.05] p-4">
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <button
-            type="button"
-            disabled={l3OrRun}
-            onClick={() => void handleStart()}
-            className={cn(
-              "rounded-lg px-5 py-2.5 text-sm font-bold transition-all",
-              l3OrRun
-                ? "cursor-not-allowed bg-slate-800 text-slate-500"
-                : "bg-amber-400 text-black shadow-[0_0_24px_rgba(245,158,11,0.35)] hover:bg-amber-300"
-            )}
-          >
-            {l3Probing ? "探测 L3 中…" : running ? "执行中…" : "🚀 启动 BI 分析"}
-          </button>
-          <button
-            type="button"
-            disabled={!(running || l3Probing)}
-            onClick={() => void handleStop()}
-            className={cn(
-              "rounded-lg border px-4 py-2.5 text-sm font-semibold transition-all",
-              running || l3Probing
-                ? "border-rose-500/50 bg-rose-950/40 text-rose-200 hover:bg-rose-900/50"
-                : "cursor-not-allowed border-slate-700 bg-slate-900/40 text-slate-600"
-            )}
-          >
-            🛑 停止
-          </button>
-        </div>
-
-        <p className="text-[11px] leading-relaxed text-amber-600/75">
-          「启动 BI 分析」经 L3 子进程跑完整战报流程（抓取、多维表、战略分析、推送等），日志见下方 MIND
-          STREAM。Windows 下<strong className="text-amber-500/88">定时到点</strong>会另开控制台窗口（与手动 SSE
-          不同，便于长时间任务观察）。YAML 侧旧调度（bi_daily_report.yaml）与本页控制台定时独立，勿重复开启两套。
-        </p>
-
-        <div className="flex flex-col gap-3 border-t border-amber-500/15 pt-4">
-          <div className="text-xs font-medium text-amber-500/90">⏲️ 定时 BI 战报（北京时间）</div>
-          <div className="flex flex-wrap items-end gap-3">
-            <label className="flex flex-col gap-1 text-xs text-amber-600/90">
-              时
-              <input
-                type="number"
-                min={0}
-                max={23}
-                value={hourBeijing}
-                disabled={l3OrRun}
-                onChange={(e) => setHourBeijing(Number(e.target.value))}
-                className="w-16 rounded border border-amber-500/35 bg-black/60 px-2 py-1.5 font-mono text-amber-100 outline-none focus:border-amber-400/60"
-              />
-            </label>
-            <span className="mb-2 text-amber-500/50">:</span>
-            <label className="flex flex-col gap-1 text-xs text-amber-600/90">
-              分
-              <input
-                type="number"
-                min={0}
-                max={59}
-                value={minuteBeijing}
-                disabled={l3OrRun}
-                onChange={(e) => setMinuteBeijing(Number(e.target.value))}
-                className="w-16 rounded border border-amber-500/35 bg-black/60 px-2 py-1.5 font-mono text-amber-100 outline-none focus:border-amber-400/60"
-              />
-            </label>
-            <button
-              type="button"
-              disabled={l3OrRun || saveScheduleLoading}
-              onClick={() => void handleSaveSchedule()}
-              className={cn(
-                "mb-0.5 rounded-lg border px-4 py-2 text-xs font-semibold transition",
-                l3OrRun || saveScheduleLoading
-                  ? "cursor-not-allowed border-slate-700 text-slate-500"
-                  : "border-amber-500/50 bg-amber-950/50 text-amber-100 hover:border-amber-400/50"
-              )}
-            >
-              {saveScheduleLoading ? "保存中…" : "保存定时配置"}
-            </button>
-          </div>
-          <label className="flex max-w-xl cursor-pointer items-start gap-2 text-xs text-amber-600/90">
-            <input
-              type="checkbox"
-              className="mt-0.5 h-3.5 w-3.5 shrink-0"
-              checked={hourlyRecurring}
-              disabled={l3OrRun}
-              onChange={(e) => setHourlyRecurring(e.target.checked)}
-            />
-            <span>
-              <span className="font-medium text-amber-500/90">每小时定点</span>
-              <span className="text-amber-600/75">
-                （按「分」每个整点触发；关闭则仅在设定时刻每日一次）
-              </span>
-            </span>
-          </label>
-          {scheduleSaveBanner && (
-            <p className="text-xs leading-relaxed text-emerald-400/90" role="status">
-              {scheduleSaveBanner}
-            </p>
-          )}
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <span
-                className={cn(
-                  "inline-block h-2.5 w-2.5 shrink-0 rounded-full",
-                  schedulerActive ? "bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.7)]" : "bg-slate-600"
-                )}
-                aria-hidden
-              />
-              <span className="text-xs text-amber-600/85">
-                {schedulerActive ? "Active" : "Inactive"} ·{" "}
-                {hourlyRecurring
-                  ? `每小时 · 北京 *:${String(minuteBeijing).padStart(2, "0")}`
-                  : `每日 · 北京 ${String(hourBeijing).padStart(2, "0")}:${String(minuteBeijing).padStart(2, "0")}`}
-              </span>
+      <div className="mx-auto flex max-w-[1180px] flex-col gap-5">
+        <motion.header
+          className="jarvis-panel relative overflow-hidden rounded-[8px] border border-cyan-200/[0.08] bg-cyan-300/[0.018] p-5"
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}
+        >
+          <div className="jarvis-hero-grid opacity-[0.2]" aria-hidden />
+          <div className="relative z-10 grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="flex min-w-0 items-center gap-5">
+              <div className="relative flex h-24 w-24 flex-shrink-0 items-center justify-center rounded-full border border-cyan-200/10 bg-cyan-300/[0.035] shadow-[0_0_38px_rgba(34,211,238,0.11)]">
+                <motion.div
+                  className="absolute inset-3 rounded-full border border-cyan-200/20"
+                  animate={{ rotate: 360 }}
+                  transition={{ duration: 18, repeat: Infinity, ease: "linear" }}
+                />
+                <motion.div
+                  className="absolute inset-6 rounded-full border border-emerald-200/20 border-t-emerald-300/80"
+                  animate={{ rotate: -360 }}
+                  transition={{ duration: 9, repeat: Infinity, ease: "linear" }}
+                />
+                <BarChart3 className="relative h-8 w-8 text-cyan-100" aria-hidden />
+              </div>
+              <div className="min-w-0">
+                <p className="mb-2 inline-flex rounded-full border border-cyan-200/[0.09] bg-cyan-300/[0.035] px-3 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-cyan-100/75">
+                  BI Growth Core
+                </p>
+                <h1 className="text-2xl font-semibold text-slate-100 sm:text-3xl">BI 分析</h1>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
+                  每日增长战报、数据采集、策略推演与投递状态集中在这里。默认只保留关键操作，细节进入 Mind Stream。
+                </p>
+              </div>
             </div>
-            <label className="flex cursor-pointer items-center gap-2 text-xs text-amber-600/90">
-              <span className="select-none">开启到点自动跑</span>
-              <input
-                type="checkbox"
-                role="switch"
-                className="h-4 w-9 cursor-pointer appearance-none rounded-full border border-amber-500/40 bg-black/70 transition checked:bg-emerald-600/80 disabled:opacity-40"
-                checked={schedulerActive}
-                disabled={scheduleLoading}
-                onChange={(e) => void handleScheduleToggle(e.target.checked)}
-              />
-            </label>
-          </div>
-        </div>
-      </section>
 
-      <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-amber-500/15 bg-black/40">
-        <div className="flex flex-shrink-0 items-center justify-between border-b border-amber-500/10 px-4 py-2">
-          <span className="font-mono text-xs tracking-widest text-amber-500/80">MIND STREAM</span>
-          {doneOk !== null && (
-            <span
-              className={cn(
-                "text-xs font-medium",
-                doneOk ? "text-emerald-400" : "text-rose-400"
-              )}
+            <div className="grid grid-cols-2 gap-3">
+              <StatusCard icon={Activity} label="任务状态" value={runState} active={running || l3Probing} />
+              <StatusCard icon={CalendarClock} label="下一节律" value={scheduledLabel} active={schedulerActive} />
+              <StatusCard icon={Radio} label="调度器" value={schedulerActive ? "Active" : "Standby"} active={schedulerActive} />
+              <StatusCard icon={TrendingUp} label="日志流" value={`${logCount} 条`} active={logCount > 0} />
+            </div>
+          </div>
+        </motion.header>
+
+        <div className="grid min-h-0 gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="flex min-h-0 flex-col gap-5">
+            <motion.section
+              className="jarvis-panel rounded-[8px] border border-cyan-200/[0.08] bg-slate-950/35 p-5"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.32, delay: 0.04 }}
             >
-              {doneOk ? "SUCCESS" : "FAILED / STOPPED"}
-            </span>
-          )}
+              <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-cyan-200/55">
+                    Mission Pipeline
+                  </p>
+                  <h2 className="mt-1 text-base font-semibold text-slate-100">增长战报链路</h2>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={l3OrRun}
+                    onClick={() => void handleStart()}
+                    className={cn(
+                      "inline-flex h-10 items-center gap-2 rounded-[8px] px-4 text-sm font-semibold transition-all duration-200",
+                      l3OrRun
+                        ? "cursor-not-allowed border border-slate-700/80 bg-slate-900/65 text-slate-500"
+                        : "border border-cyan-200/30 bg-cyan-300/18 text-cyan-50 shadow-[0_0_26px_rgba(34,211,238,0.14)] hover:-translate-y-0.5 hover:bg-cyan-300/24"
+                    )}
+                  >
+                    {l3Probing ? (
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                    ) : (
+                      <Play className="h-4 w-4" aria-hidden />
+                    )}
+                    {l3Probing ? "探测中" : running ? "运行中" : "启动分析"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!(running || l3Probing)}
+                    onClick={() => void handleStop()}
+                    className={cn(
+                      "inline-flex h-10 items-center gap-2 rounded-[8px] border px-4 text-sm font-semibold transition-all duration-200",
+                      running || l3Probing
+                        ? "border-rose-300/35 bg-rose-500/12 text-rose-100 hover:bg-rose-500/18"
+                        : "cursor-not-allowed border-slate-700/70 bg-slate-900/45 text-slate-600"
+                    )}
+                  >
+                    <Square className="h-3.5 w-3.5 fill-current" aria-hidden />
+                    停止
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-4">
+                {PIPELINE_STAGES.map((stage, index) => {
+                  const active = running && index <= 1;
+                  return (
+                    <motion.div
+                      key={stage.label}
+                      className={cn(
+                        "relative overflow-hidden rounded-[8px] border p-4 transition-colors",
+                        active
+                          ? "border-cyan-200/25 bg-cyan-300/[0.055]"
+                          : "border-cyan-200/[0.08] bg-slate-900/42"
+                      )}
+                      whileHover={{ y: -2 }}
+                      transition={{ type: "spring", stiffness: 360, damping: 28 }}
+                    >
+                      <div className="mb-4 flex items-center justify-between">
+                        <span className="font-mono text-[10px] text-slate-500">0{index + 1}</span>
+                        <span
+                          className={cn(
+                            "h-2 w-2 rounded-full",
+                            active ? "bg-cyan-200 shadow-[0_0_14px_rgba(103,232,249,0.85)]" : "bg-slate-600"
+                          )}
+                        />
+                      </div>
+                      <div className="text-sm font-semibold text-slate-100">{stage.label}</div>
+                      <div className="mt-1 text-xs text-slate-500">{stage.desc}</div>
+                      {active && <div className="absolute inset-x-0 bottom-0 h-px bg-cyan-200/55" />}
+                    </motion.div>
+                  );
+                })}
+              </div>
+            </motion.section>
+
+            <motion.section
+              className="jarvis-panel flex min-h-[320px] flex-1 flex-col overflow-hidden rounded-[8px] border border-cyan-200/[0.08] bg-slate-950/38"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.32, delay: 0.08 }}
+            >
+              <div className="flex flex-shrink-0 items-center justify-between border-b border-cyan-200/[0.07] px-5 py-3">
+                <div>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-cyan-200/55">
+                    Mind Stream
+                  </p>
+                  <h2 className="mt-1 text-sm font-semibold text-slate-200">实时运行流</h2>
+                </div>
+                {doneOk !== null && (
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium",
+                      doneOk
+                        ? "border-emerald-300/20 bg-emerald-300/10 text-emerald-200"
+                        : "border-rose-300/20 bg-rose-400/10 text-rose-200"
+                    )}
+                  >
+                    {doneOk ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Square className="h-3 w-3 fill-current" />}
+                    {doneOk ? "Success" : "Stopped"}
+                  </span>
+                )}
+              </div>
+              <pre className="min-h-0 flex-1 overflow-y-auto px-5 py-4 font-mono text-[11px] leading-6 text-cyan-50/78">
+                {displayLogs.length === 0 ? (
+                  <span className="text-slate-500">等待启动或定时日志，新的战报事件会在这里流入。</span>
+                ) : (
+                  displayLogs.map((line, i) => (
+                    <div
+                      key={`${i}-${line.slice(0, 24)}`}
+                      className="border-l border-cyan-200/10 pl-3 text-slate-300/88"
+                    >
+                      {line}
+                    </div>
+                  ))
+                )}
+                <div ref={logsEndRef} />
+              </pre>
+            </motion.section>
+          </div>
+
+          <motion.aside
+            className="flex flex-col gap-5"
+            initial={{ opacity: 0, x: 8 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.32, delay: 0.06 }}
+          >
+            <section className="jarvis-panel rounded-[8px] border border-cyan-200/[0.08] bg-slate-950/38 p-5">
+              <div className="mb-5 flex items-center justify-between gap-3">
+                <div>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-cyan-200/55">
+                    Schedule Core
+                  </p>
+                  <h2 className="mt-1 text-base font-semibold text-slate-100">定时节律</h2>
+                </div>
+                <button
+                  type="button"
+                  disabled={scheduleLoading}
+                  onClick={() => void handleScheduleToggle(!schedulerActive)}
+                  className={cn(
+                    "relative h-7 w-12 rounded-full border transition-all duration-300",
+                    schedulerActive
+                      ? "border-emerald-300/35 bg-emerald-300/18"
+                      : "border-slate-600/80 bg-slate-900/70",
+                    scheduleLoading && "opacity-50"
+                  )}
+                  aria-label="开启到点自动跑"
+                >
+                  <span
+                    className={cn(
+                      "absolute top-1 h-5 w-5 rounded-full transition-all duration-300",
+                      schedulerActive
+                        ? "left-6 bg-emerald-200 shadow-[0_0_16px_rgba(110,231,183,0.55)]"
+                        : "left-1 bg-slate-500"
+                    )}
+                  />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-3">
+                <label className="space-y-1.5 text-xs text-slate-500">
+                  时
+                  <input
+                    type="number"
+                    min={0}
+                    max={23}
+                    value={hourBeijing}
+                    disabled={l3OrRun}
+                    onChange={(e) => setHourBeijing(Number(e.target.value))}
+                    className="h-11 w-full rounded-[8px] border border-cyan-200/12 bg-slate-950/70 px-3 font-mono text-sm text-cyan-50 outline-none transition focus:border-cyan-200/35"
+                  />
+                </label>
+                <span className="pb-3 font-mono text-slate-500">:</span>
+                <label className="space-y-1.5 text-xs text-slate-500">
+                  分
+                  <input
+                    type="number"
+                    min={0}
+                    max={59}
+                    value={minuteBeijing}
+                    disabled={l3OrRun}
+                    onChange={(e) => setMinuteBeijing(Number(e.target.value))}
+                    className="h-11 w-full rounded-[8px] border border-cyan-200/12 bg-slate-950/70 px-3 font-mono text-sm text-cyan-50 outline-none transition focus:border-cyan-200/35"
+                  />
+                </label>
+              </div>
+
+              <label className="mt-4 flex cursor-pointer items-center justify-between gap-3 rounded-[8px] border border-cyan-200/[0.07] bg-slate-900/36 px-3 py-3">
+                <span className="flex items-center gap-2 text-sm text-slate-300">
+                  <TimerReset className="h-4 w-4 text-cyan-200/80" aria-hidden />
+                  每小时定点
+                </span>
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 accent-cyan-300"
+                  checked={hourlyRecurring}
+                  disabled={l3OrRun}
+                  onChange={(e) => setHourlyRecurring(e.target.checked)}
+                />
+              </label>
+
+              <button
+                type="button"
+                disabled={l3OrRun || saveScheduleLoading}
+                onClick={() => void handleSaveSchedule()}
+                className={cn(
+                  "mt-4 inline-flex h-10 w-full items-center justify-center gap-2 rounded-[8px] border text-sm font-semibold transition-all",
+                  l3OrRun || saveScheduleLoading
+                    ? "cursor-not-allowed border-slate-700/80 bg-slate-900/45 text-slate-600"
+                    : "border-cyan-200/20 bg-cyan-300/[0.06] text-cyan-100 hover:bg-cyan-300/[0.1]"
+                )}
+              >
+                {saveScheduleLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock3 className="h-4 w-4" />}
+                {saveScheduleLoading ? "保存中" : "保存节律"}
+              </button>
+
+              {scheduleSaveBanner && (
+                <p className="mt-3 rounded-[8px] border border-emerald-300/12 bg-emerald-300/[0.045] px-3 py-2 text-xs leading-5 text-emerald-200/85" role="status">
+                  {scheduleSaveBanner}
+                </p>
+              )}
+            </section>
+
+            <section className="jarvis-panel rounded-[8px] border border-cyan-200/[0.08] bg-slate-950/38 p-5">
+              <div className="mb-4 flex items-center gap-2">
+                <Zap className="h-4 w-4 text-cyan-200" aria-hidden />
+                <h2 className="text-base font-semibold text-slate-100">运行摘要</h2>
+              </div>
+              <div className="space-y-3">
+                <SummaryRow label="执行入口" value="L3 SSE" />
+                <SummaryRow label="战报脚本" value="run_bi_daily_report.py" />
+                <SummaryRow label="定时模式" value={schedulerActive ? "已开启" : "未开启"} />
+                <SummaryRow label="北京时间" value={scheduledLabel} />
+              </div>
+            </section>
+          </motion.aside>
         </div>
-        <pre className="min-h-0 flex-1 overflow-y-auto p-4 font-mono text-[11px] leading-relaxed text-amber-100/85">
-          {displayLogs.length === 0 ? (
-            <span className="text-amber-700/70">等待启动或定时日志…</span>
-          ) : (
-            displayLogs.map((line, i) => (
-              <div key={`${i}-${line.slice(0, 24)}`}>{line}</div>
-            ))
+      </div>
+    </div>
+  );
+}
+
+function StatusCard({
+  icon: Icon,
+  label,
+  value,
+  active,
+}: {
+  icon: typeof Activity;
+  label: string;
+  value: string;
+  active: boolean;
+}) {
+  return (
+    <div className="rounded-[8px] border border-cyan-200/[0.08] bg-slate-950/38 p-3">
+      <div className="mb-3 flex items-center justify-between">
+        <Icon className={cn("h-4 w-4", active ? "text-cyan-200" : "text-slate-500")} aria-hidden />
+        <span
+          className={cn(
+            "h-1.5 w-1.5 rounded-full",
+            active ? "bg-cyan-200 shadow-[0_0_12px_rgba(103,232,249,0.8)]" : "bg-slate-600"
           )}
-          <div ref={logsEndRef} />
-        </pre>
-      </section>
+        />
+      </div>
+      <p className="text-[11px] text-slate-500">{label}</p>
+      <p className="mt-1 truncate text-sm font-semibold text-slate-100">{value}</p>
+    </div>
+  );
+}
+
+function SummaryRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-[8px] border border-cyan-200/[0.07] bg-slate-900/32 px-3 py-2">
+      <span className="text-xs text-slate-500">{label}</span>
+      <span className="max-w-[190px] truncate font-mono text-xs text-cyan-100/85">{value}</span>
     </div>
   );
 }

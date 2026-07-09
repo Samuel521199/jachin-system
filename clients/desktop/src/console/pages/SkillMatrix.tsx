@@ -4,7 +4,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
-import { Play, Loader2, RefreshCw, Trash2, RotateCcw, EyeOff, Plug } from "lucide-react";
+import { Play, Loader2, RefreshCw, Trash2, RotateCcw, EyeOff, Plug, Boxes, Cpu, Network, Sparkles, Zap } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   listSkills,
@@ -551,129 +551,159 @@ export function SkillMatrix() {
     (skill) => !BUSINESS_SKILLS.some((def) => matchesBusinessDefinition(skill.item_id ?? skill.skill_id, skill.name, def))
   );
   const visibleSkills = [...businessSkills, ...otherSkills];
+  const totalCapabilities = visibleSkills.reduce((sum, skill) => sum + (skill.capabilities?.length ?? 0), 0);
+  const activeSkillCount = visibleSkills.filter((skill) => String(skill.status).toLowerCase() !== "disabled").length;
+  const matrixStats = [
+    { label: "业务入口", value: businessSkills.length, meta: `${BUSINESS_SKILLS.length} mapped`, Icon: Boxes },
+    { label: "能力节点", value: activeSkillCount, meta: `${visibleSkills.length} total`, Icon: Cpu },
+    { label: "能力接口", value: totalCapabilities, meta: "caps online", Icon: Sparkles },
+    { label: "MCP 总线", value: mcps.length, meta: "l3 links", Icon: Network },
+  ];
+  const matrixTabs = [
+    { id: "skills" as const, label: "已安装技能", count: visibleSkills.length, Icon: Boxes },
+    { id: "mcps" as const, label: "MCP", count: mcps.length, Icon: Plug },
+    { id: "hidden" as const, label: "已隐藏", count: hiddenSkills.length + hiddenMcps.length, Icon: EyeOff },
+    { id: "recycle" as const, label: "回收站", count: recycleItems.length, Icon: Trash2 },
+  ];
 
   return (
-    <div className="h-full flex flex-col p-6 overflow-auto">
-      <header className="flex-shrink-0 mb-6 flex items-start justify-between gap-4">
-        <div>
-          <h1
-            className="font-sci-fi text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-rose-400 to-rose-600"
-            style={{ fontFamily: "Orbitron, sans-serif" }}
-          >
-            Skill Matrix
-          </h1>
-          <p className="text-slate-500 text-sm mt-0.5">插件与权限 · 军械库</p>
-        </div>
-        <button
-          type="button"
-          onClick={handleSync}
-          disabled={syncing}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-700/80 hover:bg-slate-600/80 disabled:opacity-50 text-slate-300 hover:text-white text-sm font-mono transition-colors"
-          title="从 L2 拉取最新技能"
-        >
-          {syncing ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <RefreshCw className="w-4 h-4" />
-          )}
-          立即同步
-        </button>
-      </header>
+    <div className="skill-matrix-page h-full overflow-auto p-5 sm:p-6">
+      <div className="mx-auto flex min-h-full max-w-[1180px] flex-col gap-5">
+        <header className="jarvis-panel relative overflow-hidden rounded-[8px] border border-cyan-200/[0.08] bg-cyan-300/[0.018] p-5">
+          <div className="jarvis-hero-grid opacity-[0.24]" aria-hidden />
+          <div className="relative z-10 flex flex-col gap-5">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="flex items-center gap-4">
+                <div className="jarvis-core-stage relative hidden h-20 w-20 flex-shrink-0 items-center justify-center sm:flex">
+                  <svg className="jarvis-core-svg" viewBox="0 0 260 260" aria-hidden>
+                    <circle className="jarvis-core-ring jarvis-core-ring-outer" cx="130" cy="130" r="108" />
+                    <circle className="jarvis-core-ring jarvis-core-ring-mid" cx="130" cy="130" r="82" />
+                    <path className="jarvis-core-arc jarvis-core-arc-a" d="M130 22a108 108 0 0 1 99 65" />
+                    <path className="jarvis-core-arc jarvis-core-arc-b" d="M51 204a108 108 0 0 1 0-148" />
+                  </svg>
+                  <div className="h-3 w-3 rounded-full bg-cyan-100 shadow-[0_0_18px_rgba(125,211,252,0.85)]" />
+                  <div className="jarvis-core-scan" aria-hidden />
+                </div>
+                <div>
+                  <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-cyan-200/[0.09] bg-cyan-300/[0.035] px-3 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-cyan-100/75">
+                    <Zap className="h-3 w-3" />
+                    Capability Arsenal
+                  </div>
+                  <h1 className="font-sci-fi text-3xl font-bold text-slate-100" style={{ fontFamily: "Orbitron, sans-serif" }}>
+                    Skill Matrix
+                  </h1>
+                  <p className="mt-1 max-w-2xl text-sm text-slate-400">
+                    业务 Skill、MCP 与本机执行能力的统一调度面板。
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleSync}
+                disabled={syncing}
+                className="inline-flex h-10 items-center gap-2 rounded-[8px] border border-cyan-200/[0.12] bg-cyan-300/[0.045] px-4 text-sm font-medium text-cyan-50 transition hover:border-cyan-200/25 hover:bg-cyan-300/[0.075] disabled:opacity-50"
+                title="从 L2 拉取最新技能"
+              >
+                {syncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                立即同步
+              </button>
+            </div>
 
-      <motion.section
-        className="flex-shrink-0 glass-panel rounded-xl p-4 mb-6"
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3 }}
-      >
-        <h2 className="font-mono text-xs uppercase tracking-wider text-slate-500 mb-3">自然语言执行</h2>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleInvoke()}
-            placeholder="例如：列出桌面文件"
-            className="flex-1 px-4 py-2 rounded-lg bg-white/5 border border-white/10 text-white placeholder-slate-500 focus:outline-none focus:border-rose-500/50 font-mono text-sm"
-          />
-          <button
-            type="button"
-            onClick={handleInvoke}
-            disabled={!query.trim() || queryLoading}
-            className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-50 flex items-center gap-2 font-mono text-sm"
-          >
-            {queryLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-            执行
-          </button>
-        </div>
-        {queryResult != null && (
-          <div className="mt-3 p-3 rounded-lg bg-black/40 text-xs overflow-x-auto max-h-[70vh] overflow-y-auto border border-white/5 custom-scrollbar">
-            <MarkdownMessage content={queryResult} />
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              {matrixStats.map(({ label, value, meta, Icon }) => (
+                <div key={label} className="jarvis-tile rounded-[8px] border border-cyan-200/[0.07] bg-slate-950/24 p-3">
+                  <div className="relative z-10 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs text-slate-500">{label}</p>
+                      <p className="mt-1 font-mono text-2xl font-semibold text-slate-100">{value}</p>
+                    </div>
+                    <span className="flex h-9 w-9 items-center justify-center rounded-[7px] border border-cyan-200/[0.08] bg-cyan-300/[0.035] text-cyan-100/80">
+                      <Icon className="h-4 w-4" />
+                    </span>
+                  </div>
+                  <p className="relative z-10 mt-2 font-mono text-[10px] uppercase tracking-[0.1em] text-slate-500">{meta}</p>
+                </div>
+              ))}
+            </div>
           </div>
-        )}
-      </motion.section>
+        </header>
 
-      <motion.section
-        className="flex-shrink-0 mb-6"
-        initial={{ opacity: 0, y: 4 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3, delay: 0.05 }}
-      >
-        <SkillChainView steps={lastChainSteps} />
-      </motion.section>
+        <div className="grid flex-shrink-0 gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(360px,0.8fr)]">
+          <motion.section
+            className="jarvis-panel relative overflow-hidden rounded-[8px] border border-cyan-200/[0.08] bg-cyan-300/[0.018] p-4"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3 }}
+          >
+            <div className="relative z-10 mb-3 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="font-mono text-[11px] uppercase tracking-[0.16em] text-cyan-100/80">Natural Command</h2>
+                <p className="mt-0.5 text-xs text-slate-500">把自然语言转为技能编排</p>
+              </div>
+              <span className="rounded-full border border-cyan-200/[0.08] bg-cyan-300/[0.025] px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-slate-500">
+                L3 route
+              </span>
+            </div>
+            <div className="relative z-10 flex flex-col gap-2 sm:flex-row">
+              <input
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleInvoke()}
+                placeholder="例如：列出桌面文件"
+                className="min-h-11 flex-1 rounded-[8px] border border-cyan-200/[0.12] bg-slate-950/45 px-4 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-cyan-200/35"
+              />
+              <button
+                type="button"
+                onClick={handleInvoke}
+                disabled={!query.trim() || queryLoading}
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-[8px] border border-cyan-200/[0.14] bg-cyan-300/[0.07] px-5 text-sm font-medium text-cyan-50 transition hover:border-cyan-200/28 hover:bg-cyan-300/[0.11] disabled:opacity-45"
+              >
+                {queryLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                执行
+              </button>
+            </div>
+            {queryResult != null && (
+              <div className="relative z-10 mt-3 max-h-[42vh] overflow-auto rounded-[8px] border border-cyan-200/[0.07] bg-slate-950/45 p-3 text-xs custom-scrollbar">
+                <MarkdownMessage content={queryResult} />
+              </div>
+            )}
+          </motion.section>
 
-      <section className="flex-1 min-h-0">
-        <div className="flex items-center gap-4 mb-3">
-          <div className="flex gap-1 p-1 rounded-lg bg-white/5 border border-white/10">
-            <button
-              type="button"
-              onClick={() => setActiveTab("skills")}
-              className={`px-3 py-1.5 rounded-md text-sm font-mono transition-colors ${
-                activeTab === "skills"
-                  ? "bg-rose-500/30 text-rose-400"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              已安装技能
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab("mcps")}
-              className={`px-3 py-1.5 rounded-md text-sm font-mono transition-colors flex items-center gap-1.5 ${
-                activeTab === "mcps"
-                  ? "bg-violet-500/30 text-violet-400"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              <Plug className="w-3.5 h-3.5" />
-              MCP {mcps.length > 0 && `(${mcps.length})`}
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab("hidden")}
-              className={`px-3 py-1.5 rounded-md text-sm font-mono transition-colors flex items-center gap-1.5 ${
-                activeTab === "hidden"
-                  ? "bg-amber-500/30 text-amber-400"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              <EyeOff className="w-3.5 h-3.5" />
-              已隐藏 {(hiddenSkills.length + hiddenMcps.length) > 0 && `(${hiddenSkills.length + hiddenMcps.length})`}
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab("recycle")}
-              className={`px-3 py-1.5 rounded-md text-sm font-mono transition-colors flex items-center gap-1.5 ${
-                activeTab === "recycle"
-                  ? "bg-rose-500/30 text-rose-400"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              回收站 {recycleItems.length > 0 && `(${recycleItems.length})`}
-            </button>
-          </div>
+          <motion.section
+            className="min-h-[154px]"
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, delay: 0.05 }}
+          >
+            <SkillChainView steps={lastChainSteps} className="h-full" />
+          </motion.section>
         </div>
+
+        <section className="flex min-h-0 flex-1 flex-col">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="jarvis-panel flex flex-wrap gap-1 rounded-[8px] border border-cyan-200/[0.08] bg-cyan-300/[0.018] p-1">
+              {matrixTabs.map(({ id, label, count, Icon }) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setActiveTab(id)}
+                  className={`inline-flex h-9 items-center gap-2 rounded-[7px] px-3 text-sm transition ${
+                    activeTab === id
+                      ? "border border-cyan-200/[0.12] bg-cyan-300/[0.07] text-cyan-50 shadow-[inset_0_0_18px_rgba(56,189,248,0.045)]"
+                      : "text-slate-500 hover:bg-cyan-300/[0.035] hover:text-slate-200"
+                  }`}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {label}
+                  {count > 0 && <span className="font-mono text-[10px] text-slate-500">{count}</span>}
+                </button>
+              ))}
+            </div>
+            <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">
+              Matrix view · {visibleSkills.length} skills
+            </span>
+          </div>
 
         <AnimatePresence>
           {toast && (
@@ -996,6 +1026,7 @@ export function SkillMatrix() {
           onClose={handleStreamProgressClose}
         />
       )}
+    </div>
     </div>
   );
 }
