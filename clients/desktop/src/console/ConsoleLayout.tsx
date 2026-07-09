@@ -95,7 +95,7 @@ export function ConsoleLayout() {
             modelName={config?.model_name ?? import.meta.env.VITE_MODEL_NAME ?? undefined}
           />
           <div
-            className="relative z-[99] h-px w-full flex-shrink-0 bg-gradient-to-r from-transparent via-cyan-400/45 to-transparent shadow-[0_0_14px_rgba(34,211,238,0.35)]"
+            className="relative z-[99] h-px w-full flex-shrink-0 bg-gradient-to-r from-transparent via-cyan-100/18 to-transparent"
             aria-hidden
           />
           <div className="flex-1 min-h-0 overflow-auto flex flex-col">

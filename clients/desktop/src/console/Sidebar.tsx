@@ -231,25 +231,24 @@ export function Sidebar() {
     <aside
       className={cn(
         "console-fiber-host group flex flex-shrink-0 flex-col overflow-hidden transition-[width] duration-300 ease-out",
-        "z-10 w-20 bg-slate-900/50 shadow-[10px_0_40px_rgba(0,0,0,0.55)] backdrop-blur-xl hover:w-64",
-        "border-r-0"
+        "z-10 w-20 border-r border-cyan-200/[0.07] bg-slate-950/58 shadow-[12px_0_44px_rgba(0,0,0,0.24)] backdrop-blur-xl hover:w-64"
       )}
     >
-      <div className="flex min-w-0 flex-shrink-0 items-center gap-3 border-b border-cyan-500/15 p-4">
+      <div className="flex min-w-0 flex-shrink-0 items-center gap-3 border-b border-cyan-200/[0.06] p-4">
         <div
-          className="flex h-8 w-8 flex-shrink-0 items-center justify-center border border-cyan-500/25 bg-gradient-to-br from-rose-500/25 to-cyan-500/20 [clip-path:polygon(0_0,calc(100%-4px)_0,100%_4px,100%_100%,4px_100%,0_calc(100%-4px))]"
+          className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[8px] border border-cyan-200/[0.09] bg-cyan-300/[0.04] shadow-[inset_0_0_18px_rgba(56,189,248,0.025)]"
           style={{ fontFamily: "Orbitron, sans-serif" }}
         >
-          <span className="text-sm font-bold text-rose-400">J</span>
+          <span className="text-sm font-bold text-cyan-100">J</span>
         </div>
         <h1
-          className="font-sci-fi w-0 overflow-hidden whitespace-nowrap bg-gradient-to-r from-rose-400 to-rose-600 bg-clip-text font-bold tracking-wider text-transparent opacity-0 transition-all duration-300 group-hover:w-auto group-hover:opacity-100"
+          className="w-0 overflow-hidden whitespace-nowrap text-sm font-semibold tracking-normal text-cyan-50 opacity-0 transition-all duration-300 group-hover:w-auto group-hover:opacity-100"
           style={{ fontFamily: "Orbitron, sans-serif" }}
         >
-          CONSOLE
+          JACHIN
         </h1>
       </div>
-      <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2">
+      <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 py-3">
         {visibleNavItems.map((item) => {
           const Icon = item.icon;
           const label = "label" in item ? item.label : c.sidebar[item.labelKey];
@@ -263,11 +262,10 @@ export function Sidebar() {
               title={title}
               className={({ isActive }) =>
                 cn(
-                  "relative flex items-center gap-3 rounded-r-lg border border-y-0 border-r-0 border-transparent py-3 pl-3 pr-2 text-sm font-medium transition-all duration-200",
-                  "border-l-2",
+                  "relative flex items-center gap-3 rounded-[8px] border py-3 pl-3 pr-2 text-sm font-medium transition-all duration-200",
                   isActive
-                    ? "border-cyan-400/45 bg-cyan-500/[0.08] text-cyan-200/95 shadow-[inset_0_0_20px_rgba(34,211,238,0.06)] drop-shadow-[0_0_6px_rgba(34,211,238,0.25)]"
-                    : "border-transparent text-cyan-900/80 hover:border-cyan-500/35 hover:bg-cyan-500/[0.05] hover:text-cyan-300 hover:shadow-[inset_0_0_16px_rgba(34,211,238,0.04)] hover:drop-shadow-[0_0_5px_rgba(34,211,238,0.2)]"
+                    ? "border-cyan-200/[0.12] bg-cyan-300/[0.065] text-cyan-50 shadow-[inset_0_0_18px_rgba(56,189,248,0.045)]"
+                    : "border-transparent text-slate-500 hover:border-cyan-200/[0.08] hover:bg-cyan-300/[0.025] hover:text-cyan-100/90"
                 )
               }
             >

@@ -1,15 +1,35 @@
-﻿/**
- * Dashboard - 战情室 (Situation Room)
- * MindStream | 中区固定约 3/5 原高度带（ComputeTopology + Quick Actions）| Agenda
+/**
+ * Dashboard - Jachin Omni Cockpit
+ * Personal assistant first, diagnostics second.
  */
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
+import {
+  Activity,
+  BrainCircuit,
+  ChevronDown,
+  Cpu,
+  Database,
+  Eye,
+  LockKeyhole,
+  Mic,
+  Moon,
+  Network,
+  Send,
+  ShieldCheck,
+  Sparkles,
+  Square,
+  Trash2,
+  Zap,
+} from "lucide-react";
 import { MindStream } from "../components/MindStream";
 import { ComputeTopology } from "../components/ComputeTopology";
+import { JachinCore } from "../../components/Omni/JachinCore";
 import { getClusterStats, getSuggestions, getLogsRecent, executeSuggestion, getGpuStats, getClusterNodes, getClusterTasks } from "../../lib/api";
 import type { SuggestionItem, GpuStatsItem, ClusterNodeInfo, ClusterTaskInfo } from "../../lib/api";
+import type { CoreVisualState } from "../../hooks/useJachinCoreState";
 import { cn } from "../../utils/cn";
 import { useDesktopUiLang } from "../../hooks/useDesktopUiLang";
 import { getDesktopConsole, localizeMindStreamLine } from "../../utils/desktopUiI18n";
@@ -23,24 +43,82 @@ interface SystemStats {
   memory_used_bytes: number;
 }
 
+const formatPercent = (value: number) => `${Math.max(0, Math.min(100, Math.round(value)))}%`;
+
 export function Dashboard({
   suggestions: suggestionsProp,
   onSuggestionAction,
 }: {
-  /** 建议卡片数据，不传则使用占位数据；后端可传入主动推送的建议 */
   suggestions?: SuggestionItem[];
-  /** 点击建议卡片按钮时回调，便于后端执行或记录 */
   onSuggestionAction?: (suggestionId: string, action: string) => void;
 } = {}) {
   const [lang] = useDesktopUiLang();
   const c = useMemo(() => getDesktopConsole(lang), [lang]);
+  const copy = useMemo(
+    () =>
+      lang === "zh"
+        ? {
+            eyebrow: "OMNI COCKPIT",
+            title: "Jachin Omni",
+            subtitle: "个人智能副驾驶已就绪",
+            placeholder: "交给 Jachin 一件事...",
+            statusIdle: "待命",
+            statusThinking: "思考中",
+            statusStreaming: "执行中",
+            actions: "快捷控制",
+            autonomy: "当前态势",
+            trust: "信任层",
+            suggestions: "今天可以为你处理",
+            systems: "系统层",
+            stream: "思维流",
+            topology: "算力拓扑",
+            openSystems: "展开系统层",
+            closeSystems: "收起系统层",
+            localOnly: "本地优先",
+            guarded: "安全锁在线",
+            memory: "记忆",
+            devices: "设备",
+            running: "任务",
+            sendTitle: "打开 Omni 对话",
+            voiceStartTitle: "开始语音采集",
+            voiceStopTitle: "停止语音采集",
+          }
+        : {
+            eyebrow: "OMNI COCKPIT",
+            title: "Jachin Omni",
+            subtitle: "Personal AI copilot ready",
+            placeholder: "Give Jachin something to handle...",
+            statusIdle: "Idle",
+            statusThinking: "Thinking",
+            statusStreaming: "Executing",
+            actions: "Quick Controls",
+            autonomy: "Situation",
+            trust: "Trust Layer",
+            suggestions: "For Today",
+            systems: "Systems",
+            stream: "Mind Stream",
+            topology: "Compute Topology",
+            openSystems: "Open systems",
+            closeSystems: "Close systems",
+            localOnly: "Local first",
+            guarded: "Safety lock online",
+            memory: "Memory",
+            devices: "Devices",
+            running: "Tasks",
+            sendTitle: "Open Omni chat",
+            voiceStartTitle: "Start voice capture",
+            voiceStopTitle: "Stop voice capture",
+          },
+    [lang],
+  );
+
   const quickActions = useMemo(
     () =>
       [
         {
           id: "privacy",
           label: c.dashboard.quickPrivacy,
-          icon: "🛡️",
+          Icon: ShieldCheck,
           cmd: "quick_action_privacy_mode",
           isToggle: true as const,
           title: c.dashboard.quickPrivacyTitle,
@@ -48,7 +126,7 @@ export function Dashboard({
         {
           id: "clean",
           label: c.dashboard.quickClean,
-          icon: "🧹",
+          Icon: Trash2,
           cmd: "quick_action_clear_memory",
           isToggle: false as const,
           title: c.dashboard.quickCleanTitle,
@@ -56,7 +134,7 @@ export function Dashboard({
         {
           id: "eagle",
           label: c.dashboard.quickEagle,
-          icon: "👁️",
+          Icon: Eye,
           cmd: "quick_action_eagle_eye",
           isToggle: true as const,
           title: c.dashboard.quickEagleTitle,
@@ -64,7 +142,7 @@ export function Dashboard({
         {
           id: "sleep",
           label: c.dashboard.quickSleep,
-          icon: "💤",
+          Icon: Moon,
           cmd: "quick_action_hibernate",
           isToggle: true as const,
           title: c.dashboard.quickSleepTitle,
@@ -84,11 +162,13 @@ export function Dashboard({
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>(() => [
     ...(getDesktopConsole(readDesktopUiLang()).demoSuggestions as unknown as SuggestionItem[]),
   ]);
-  const [clusterStats, setClusterStats] = useState<{ nodes?: { total?: number }; tasks?: { running?: number } } | null>(null);
+  const [clusterStats, setClusterStats] = useState<{ nodes?: { total?: number; online?: number }; tasks?: { running?: number; total?: number; pending?: number } } | null>(null);
   const [gpuStats, setGpuStats] = useState<{ gpus: GpuStatsItem[] } | null>(null);
   const [clusterNodes, setClusterNodes] = useState<ClusterNodeInfo[]>([]);
   const [clusterTasks, setClusterTasks] = useState<ClusterTaskInfo[]>([]);
   const [isVoiceCaptureRunning, setIsVoiceCaptureRunning] = useState(false);
+  const [commandInput, setCommandInput] = useState("");
+  const [systemsOpen, setSystemsOpen] = useState(false);
 
   const fetchClusterStats = useCallback(async () => {
     try {
@@ -203,7 +283,7 @@ export function Dashboard({
         console.error("executeSuggestion failed:", e);
       }
     },
-    [onSuggestionAction]
+    [onSuggestionAction],
   );
 
   const displaySuggestions = suggestionsProp ?? suggestions;
@@ -234,6 +314,21 @@ export function Dashboard({
   const ramPercent = stats && stats.memory_total_bytes > 0
     ? Math.round((stats.memory_used_bytes / stats.memory_total_bytes) * 100)
     : 0;
+  const runningTasks = clusterStats?.tasks?.running ?? 0;
+  const totalTasks = clusterStats?.tasks?.total ?? 0;
+  const onlineNodes = clusterStats?.nodes?.online ?? 0;
+  const totalNodes = clusterStats?.nodes?.total ?? 0;
+  const gpuPercent = gpuStats?.gpus?.[0]?.utilization_gpu ?? 0;
+  const coreState: CoreVisualState = isVoiceCaptureRunning || actionLoading
+    ? "thinking"
+    : runningTasks > 0
+      ? "streaming"
+      : "idle";
+  const statusLabel = coreState === "thinking"
+    ? copy.statusThinking
+    : coreState === "streaming"
+      ? copy.statusStreaming
+      : copy.statusIdle;
 
   const runQuickAction = async (cmd: string, isToggle?: boolean) => {
     setActionLoading(cmd);
@@ -253,186 +348,356 @@ export function Dashboard({
     }
   };
 
-  return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 p-5 sm:p-6">
-      {/* Mind Stream：视口比例 + 下限，为 Agenda 留出纵向空间 */}
-      <section className="h-[min(32vh,320px)] min-h-[180px] shrink-0">
-        <MindStream
-          className="h-full min-h-0"
-          maxLines={6}
-          demoLoop
-          liveStatsLines={liveStatsLines}
-          liveLogLines={liveLogLines}
-          mindLocale={c.mind}
-          localizeLine={(line) => localizeMindStreamLine(line, lang)}
-        />
-      </section>
+  const toggleVoiceCapture = async () => {
+    try {
+      if (isVoiceCaptureRunning) {
+        await invoke("stop_voice_capture");
+        setIsVoiceCaptureRunning(false);
+      } else {
+        await invoke("start_voice_capture");
+        setIsVoiceCaptureRunning(true);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
 
-      {/* 中区高度 ≈ 原 min(42vh,360px) 的 3/5；内部紧凑 + 溢出滚动，避免大块留白与堆叠 */}
-      <section className="flex h-[min(25.2vh,216px)] shrink-0 items-stretch gap-4 md:gap-5">
+  const openOmniChat = async () => {
+    try {
+      if (commandInput.trim()) {
+        window.localStorage.setItem("jachin_console_last_prompt", commandInput.trim());
+      }
+      await invoke("show_chat_window");
+      setCommandInput("");
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  return (
+    <div className="omni-cockpit flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 sm:p-5 xl:p-6">
+      <section className="grid min-h-[430px] grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_21rem]">
         <motion.div
-          className="dashboard-holo-fiber console-fiber-host console-holo-slab flex h-full min-h-0 min-w-0 flex-1 flex-col p-3 sm:p-4"
-          initial={{ opacity: 0, y: 12 }}
+          className="console-orb-panel relative flex min-h-[430px] flex-col overflow-hidden p-5 sm:p-6"
+          initial={{ opacity: 0, y: 14 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.35 }}
+          transition={{ duration: 0.38 }}
         >
-          <div className="flex min-h-0 w-full flex-1 flex-col items-center overflow-y-auto overflow-x-hidden [-webkit-overflow-scrolling:touch]">
-            <div className="flex w-full max-w-md flex-shrink-0 flex-col items-center gap-1.5 pb-1">
-              <ComputeTopology
-                compact
-                workerCount={Math.max(0, (clusterStats?.nodes?.total ?? 1) - 1)}
-                activeWorkerIndex={(clusterStats?.tasks?.running ?? 0) > 0 ? 0 : (cpuPercent > 25 ? 0 : -1)}
-                cpuPercent={cpuPercent}
-                ramPercent={ramPercent}
-                gpuStats={gpuStats?.gpus ?? undefined}
-                nodes={clusterNodes}
-                tasks={clusterTasks}
+          <div className="pointer-events-none absolute inset-x-12 top-0 h-px bg-gradient-to-r from-transparent via-cyan-200/55 to-transparent" />
+          <div className="relative z-10 flex flex-1 flex-col items-center justify-center gap-6 text-center">
+            <div className="flex items-center gap-2 rounded-full border border-cyan-300/15 bg-cyan-300/[0.04] px-3 py-1 text-[10px] font-medium uppercase tracking-[0.24em] text-cyan-100/75">
+              <Sparkles className="h-3.5 w-3.5 text-cyan-200/85" />
+              {copy.eyebrow}
+            </div>
+
+            <div className="relative flex h-36 w-36 items-center justify-center sm:h-40 sm:w-40">
+              <div className="absolute inset-0 rounded-full bg-cyan-300/[0.03] blur-2xl" />
+              <div className="absolute inset-5 rounded-full border border-cyan-200/10" />
+              <JachinCore
+                state={coreState}
+                machineState={coreState === "streaming" ? "STREAMING" : coreState === "thinking" ? "THINKING" : "IDLE"}
+                toolFlash={null}
+                className="!h-24 !w-24"
               />
+            </div>
+
+            <div className="space-y-2">
+              <h1 className="text-3xl font-semibold tracking-normal text-cyan-50 sm:text-5xl">
+                {copy.title}
+              </h1>
+              <p className="text-sm leading-relaxed text-slate-300/82 sm:text-base">
+                {copy.subtitle}
+              </p>
+            </div>
+
+            <div className="w-full max-w-3xl rounded-[8px] border border-cyan-200/[0.08] bg-slate-950/45 p-2 shadow-[0_20px_70px_rgba(0,0,0,0.34),inset_0_0_24px_rgba(56,189,248,0.035)] backdrop-blur-xl">
+              <form
+                className="flex items-center gap-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void openOmniChat();
+                }}
+              >
+                <BrainCircuit className="ml-2 h-5 w-5 shrink-0 text-cyan-200/70" />
+                <input
+                  value={commandInput}
+                  onChange={(e) => setCommandInput(e.target.value)}
+                  placeholder={copy.placeholder}
+                  className="h-12 min-w-0 flex-1 bg-transparent text-base text-cyan-50 placeholder:text-slate-500 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => void toggleVoiceCapture()}
+                  title={isVoiceCaptureRunning ? copy.voiceStopTitle : copy.voiceStartTitle}
+                  aria-label={isVoiceCaptureRunning ? copy.voiceStopTitle : copy.voiceStartTitle}
+                  className={cn(
+                    "flex h-10 w-10 shrink-0 items-center justify-center rounded-[8px] border transition",
+                    isVoiceCaptureRunning
+                      ? "border-amber-300/35 bg-amber-300/15 text-amber-200"
+                      : "border-cyan-200/[0.08] bg-cyan-300/[0.025] text-slate-300 hover:border-cyan-200/[0.16] hover:bg-cyan-300/[0.055] hover:text-cyan-100",
+                  )}
+                >
+                  {isVoiceCaptureRunning ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                </button>
+                <button
+                  type="submit"
+                  title={copy.sendTitle}
+                  aria-label={copy.sendTitle}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[8px] border border-cyan-200/[0.14] bg-cyan-300/[0.075] text-cyan-100 transition hover:bg-cyan-300/[0.12]"
+                >
+                  <Send className="h-4 w-4" />
+                </button>
+              </form>
+            </div>
+
+            <div className="grid w-full max-w-3xl grid-cols-2 gap-2 sm:grid-cols-4">
+              {[
+                { label: "CPU", value: formatPercent(cpuPercent), Icon: Cpu, tone: "text-cyan-100" },
+                { label: "RAM", value: formatPercent(ramPercent), Icon: Database, tone: "text-violet-100" },
+                { label: "GPU", value: formatPercent(gpuPercent), Icon: Zap, tone: "text-amber-100" },
+                { label: "RAY", value: `${onlineNodes}/${totalNodes || "—"}`, Icon: Network, tone: "text-emerald-100" },
+              ].map((item) => (
+                <div key={item.label} className="rounded-[8px] border border-cyan-200/[0.07] bg-cyan-300/[0.022] px-3 py-3 text-left shadow-[inset_0_0_18px_rgba(56,189,248,0.018)]">
+                  <div className="mb-3 flex items-center justify-between text-slate-500">
+                    <span className="text-[10px] font-medium uppercase tracking-[0.18em]">{item.label}</span>
+                    <item.Icon className="h-4 w-4" />
+                  </div>
+                  <p className={cn("font-mono text-xl tabular-nums", item.tone)}>{item.value}</p>
+                </div>
+              ))}
             </div>
           </div>
         </motion.div>
-        <motion.div
-          className="dashboard-holo-fiber console-fiber-host console-holo-slab flex h-full min-h-0 w-[min(19rem,100%)] max-w-[19rem] flex-shrink-0 flex-col p-3 sm:p-4"
-          initial={{ opacity: 0, y: 12 }}
+
+        <motion.aside
+          className="flex min-h-[430px] flex-col gap-4"
+          initial={{ opacity: 0, y: 14 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.35, delay: 0.05 }}
+          transition={{ duration: 0.38, delay: 0.06 }}
         >
-          <h2
-            className="mb-1.5 shrink-0 font-mono text-[10px] font-semibold uppercase tracking-[0.28em] text-cyan-600/90"
-            style={{ fontFamily: "Orbitron, sans-serif" }}
-          >
-            {c.dashboard.quickActionsTitle}
-          </h2>
-          <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto overflow-x-hidden pr-0.5">
-            <div className="isolate grid w-full max-w-[17.5rem] shrink-0 grid-cols-2 auto-rows-min content-start justify-items-center gap-x-2 gap-y-2 self-center py-0.5">
+          <div className="console-soft-panel flex flex-col gap-4 p-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-100/75">{copy.autonomy}</h2>
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-cyan-200/14 bg-cyan-300/[0.05] px-2.5 py-1 text-[10px] text-cyan-100/80">
+                <Activity className="h-3.5 w-3.5" />
+                {statusLabel}
+              </span>
+            </div>
+            <div className="grid gap-2">
+              <StatusRow Icon={LockKeyhole} label={copy.trust} value={privacyMode ? c.dashboard.quickPrivacy : copy.guarded} active={Boolean(privacyMode)} />
+              <StatusRow Icon={BrainCircuit} label={copy.running} value={`${runningTasks}/${totalTasks || 0}`} active={runningTasks > 0} />
+              <StatusRow Icon={Network} label={copy.devices} value={`${onlineNodes || 0} online`} active={onlineNodes > 0} />
+            </div>
+          </div>
+
+          <div className="console-soft-panel flex flex-1 flex-col gap-4 p-4">
+            <h2 className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-100/75">{copy.actions}</h2>
+            <div className="grid grid-cols-2 gap-2">
               {quickActions.map((action) => {
                 const isOn =
                   (action.id === "privacy" && privacyMode) ||
                   (action.id === "eagle" && eagleEyeOn) ||
                   (action.id === "sleep" && hibernateOn);
                 return (
-                  <motion.button
+                  <button
                     key={action.id}
                     type="button"
                     disabled={actionLoading !== null}
-                    onClick={() => runQuickAction(action.cmd, action.isToggle)}
+                    onClick={() => void runQuickAction(action.cmd, action.isToggle)}
                     title={action.title}
                     className={cn(
-                      "console-hex-btn flex h-[72px] w-[68px] max-h-[72px] max-w-[68px] shrink-0 flex-col items-center justify-center gap-0 border text-[8px] font-semibold uppercase leading-tight tracking-wide transition-all disabled:opacity-60",
-                      "border-cyan-500/30 bg-black/50 shadow-[inset_0_0_0_1px_rgba(6,182,212,0.08)]",
+                    "group flex min-h-[82px] flex-col items-start justify-between rounded-[8px] border p-3 text-left transition disabled:opacity-55",
                       isOn
-                        ? "border-emerald-400/60 text-emerald-300 shadow-[inset_0_0_22px_rgba(16,185,129,0.35),0_0_20px_rgba(52,211,153,0.2)]"
-                        : "text-slate-400 hover:border-cyan-400/50 hover:text-cyan-200/90 hover:shadow-[0_0_18px_rgba(6,182,212,0.15)]"
+                        ? "border-emerald-300/30 bg-emerald-300/[0.08] text-emerald-100"
+                        : "border-cyan-200/[0.07] bg-cyan-300/[0.022] text-slate-300 hover:border-cyan-200/[0.14] hover:bg-cyan-300/[0.05]",
                     )}
-                    whileHover={{ scale: actionLoading ? 1 : 1.03 }}
-                    whileTap={{ scale: 0.96 }}
                   >
-                    <span className="text-sm">{action.icon}</span>
-                    <span className="max-w-[3.5rem] px-0.5 text-center leading-tight">
-                      {isOn ? c.dashboard.quickToggleOn : action.label}
-                    </span>
-                  </motion.button>
+                    <action.Icon className={cn("h-5 w-5", isOn ? "text-emerald-200" : "text-cyan-100/72")} />
+                    <span className="text-sm font-medium leading-tight">{isOn ? c.dashboard.quickToggleOn : action.label}</span>
+                  </button>
                 );
               })}
             </div>
-            <div className="relative z-10 shrink-0 border border-cyan-500/25 bg-black/55 p-2.5 shadow-[inset_0_0_0_1px_rgba(6,182,212,0.06)]">
-              <p className="mb-1.5 font-mono text-[9px] uppercase tracking-wider text-slate-400">{c.dashboard.vadHeading}</p>
-              <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-                {!isVoiceCaptureRunning ? (
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      try {
-                        await invoke("start_voice_capture");
-                        setIsVoiceCaptureRunning(true);
-                      } catch (e) {
-                        console.error(e);
-                      }
-                    }}
-                    className="flex w-full items-center justify-center gap-1.5 border border-amber-500/45 bg-black/50 px-3 py-2 font-mono text-[9px] font-medium uppercase tracking-wider text-amber-300 transition-all [clip-path:polygon(0_0,calc(100%-8px)_0,100%_8px,100%_100%,0_100%)] hover:shadow-[inset_0_0_16px_rgba(245,158,11,0.2)] active:shadow-[inset_0_0_20px_rgba(6,182,212,0.45)] sm:w-auto"
-                  >
-                    <span>🎤</span> {c.dashboard.vadStart}
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      try {
-                        await invoke("stop_voice_capture");
-                        setIsVoiceCaptureRunning(false);
-                      } catch (e) {
-                        console.error(e);
-                      }
-                    }}
-                    className="flex w-full items-center justify-center gap-1.5 border border-rose-500/45 bg-black/50 px-3 py-2 font-mono text-[9px] font-medium uppercase tracking-wider text-rose-300 transition-all [clip-path:polygon(0_0,calc(100%-8px)_0,100%_8px,100%_100%,0_100%)] hover:shadow-[inset_0_0_16px_rgba(244,63,94,0.2)] active:shadow-[inset_0_0_20px_rgba(6,182,212,0.45)] sm:w-auto"
-                  >
-                    <span>⏹</span> {c.dashboard.vadStop}
-                  </button>
-                )}
-                {isVoiceCaptureRunning && (
-                  <span className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-wider text-amber-400">
-                    <span className="h-1.5 w-1.5 animate-pulse bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.9)]" />
-                    {c.dashboard.vadCapturing}
-                  </span>
-                )}
+            <div className="mt-auto rounded-[8px] border border-cyan-200/[0.065] bg-slate-950/28 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">{c.dashboard.vadHeading}</p>
+                  <p className="mt-1 text-xs text-slate-300/75">{isVoiceCaptureRunning ? c.dashboard.vadCapturing : copy.statusIdle}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void toggleVoiceCapture()}
+                  title={isVoiceCaptureRunning ? copy.voiceStopTitle : copy.voiceStartTitle}
+                  aria-label={isVoiceCaptureRunning ? copy.voiceStopTitle : copy.voiceStartTitle}
+                  className={cn(
+                    "flex h-10 w-10 items-center justify-center rounded-[8px] border transition",
+                    isVoiceCaptureRunning
+                      ? "border-amber-300/35 bg-amber-300/15 text-amber-200"
+                      : "border-cyan-200/[0.08] bg-cyan-300/[0.025] text-slate-300 hover:bg-cyan-300/[0.055] hover:text-cyan-100",
+                  )}
+                >
+                  {isVoiceCaptureRunning ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                </button>
               </div>
             </div>
+          </div>
+        </motion.aside>
+      </section>
+
+      <section className="grid min-h-[260px] grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_23rem]">
+        <motion.div
+          className="console-soft-panel flex min-h-0 flex-col overflow-hidden"
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.35, delay: 0.1 }}
+        >
+          <div className="flex items-center justify-between border-b border-cyan-200/[0.06] px-4 py-3">
+            <div>
+              <h2 className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-100/75">{copy.suggestions}</h2>
+              <p className="mt-1 text-xs text-slate-500">{c.dashboard.agendaStat.replace("{n}", String(displaySuggestions.length))}</p>
+            </div>
+            <Sparkles className="h-4 w-4 text-cyan-100/55" />
+          </div>
+          <div className="custom-scrollbar flex min-h-0 flex-1 gap-3 overflow-x-auto px-4 py-4">
+            {displaySuggestions.length === 0 ? (
+              <p className="text-sm text-slate-500">{c.dashboard.agendaEmpty}</p>
+            ) : (
+              displaySuggestions.slice(0, 6).map((s, i) => (
+                <motion.article
+                  key={s.id}
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: 0.12 + i * 0.035 }}
+                  className="flex min-w-[17rem] max-w-[19rem] flex-col justify-between rounded-[8px] border border-cyan-200/[0.07] bg-cyan-300/[0.022] p-4 shadow-[inset_0_0_18px_rgba(56,189,248,0.018)]"
+                >
+                  <div>
+                    {s.type ? (
+                      <span className="mb-3 inline-flex rounded-full border border-cyan-200/12 bg-cyan-300/[0.055] px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-cyan-100/75">
+                        {s.type}
+                      </span>
+                    ) : null}
+                    <p className="line-clamp-4 text-sm leading-relaxed text-slate-200/90">{s.text}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleSuggestionAction(s.id, s.action)}
+                    className="mt-5 inline-flex w-fit items-center gap-2 rounded-[8px] border border-cyan-200/[0.1] bg-cyan-300/[0.045] px-3 py-2 text-xs font-medium text-cyan-100 transition hover:border-cyan-200/[0.18] hover:bg-cyan-300/[0.08]"
+                  >
+                    <Zap className="h-3.5 w-3.5" />
+                    {c.suggestionActionLabels[s.action] ?? s.action}
+                  </button>
+                </motion.article>
+              ))
+            )}
+          </div>
+        </motion.div>
+
+        <motion.div
+          className="console-soft-panel flex min-h-[260px] flex-col overflow-hidden"
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.35, delay: 0.14 }}
+        >
+          <button
+            type="button"
+            onClick={() => setSystemsOpen((v) => !v)}
+            className="flex items-center justify-between border-b border-cyan-200/[0.06] px-4 py-3 text-left transition hover:bg-cyan-300/[0.025]"
+          >
+            <div>
+              <h2 className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-100/75">{copy.systems}</h2>
+              <p className="mt-1 text-xs text-slate-500">{systemsOpen ? copy.closeSystems : copy.openSystems}</p>
+            </div>
+            <ChevronDown className={cn("h-4 w-4 text-cyan-100/60 transition", systemsOpen && "rotate-180")} />
+          </button>
+          <div className="min-h-0 flex-1 overflow-hidden p-4">
+            {systemsOpen ? (
+              <ComputeTopology
+                compact
+                workerCount={Math.max(0, (clusterStats?.nodes?.total ?? 1) - 1)}
+                activeWorkerIndex={runningTasks > 0 ? 0 : (cpuPercent > 25 ? 0 : -1)}
+                cpuPercent={cpuPercent}
+                ramPercent={ramPercent}
+                gpuStats={gpuStats?.gpus ?? undefined}
+                nodes={clusterNodes}
+                tasks={clusterTasks}
+              />
+            ) : (
+              <div className="grid h-full content-center gap-3">
+                <StatusMeter label="CPU" value={cpuPercent} />
+                <StatusMeter label="RAM" value={ramPercent} />
+                <StatusMeter label="GPU" value={gpuPercent} />
+              </div>
+            )}
           </div>
         </motion.div>
       </section>
 
-      {/* Bottom: Agenda — flex-1 保证在常见视口下可见；卡片区可横/纵滚动 */}
-      <section className="flex min-h-[200px] flex-1 flex-col py-1">
-        <div className="console-fiber-host console-holo-slab flex min-h-0 flex-1 flex-col overflow-hidden">
-          <div className="flex flex-shrink-0 flex-col gap-1 border-b border-cyan-500/20 px-4 py-3 sm:flex-row sm:items-end sm:justify-between">
-            <div className="min-w-0">
-              <span
-                className="font-mono text-[10px] font-semibold uppercase tracking-[0.28em] text-cyan-600/90"
-                style={{ fontFamily: "Orbitron, sans-serif" }}
-              >
-                {c.dashboard.agendaTitle}
-              </span>
-              <p className="mt-1 max-w-2xl font-mono text-[9px] uppercase leading-relaxed tracking-wider text-slate-600">
-                {c.dashboard.agendaSubtitle}
-              </p>
-            </div>
-            <span className="shrink-0 font-mono text-[10px] tabular-nums text-cyan-700/80">
-              {c.dashboard.agendaStat.replace("{n}", String(displaySuggestions.length))}
+      <section className="min-h-[210px] shrink-0">
+        <div className="console-soft-panel h-full overflow-hidden p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-100/75">{copy.stream}</h2>
+            <span className="rounded-full border border-emerald-300/14 bg-emerald-300/[0.055] px-2.5 py-1 text-[10px] text-emerald-100/75">
+              {c.mind.statusLive}
             </span>
           </div>
-          <div className="custom-scrollbar flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overflow-x-auto px-4 py-4 sm:flex-row sm:gap-8">
-            {displaySuggestions.length === 0 ? (
-              <p className="font-mono text-xs uppercase tracking-wider text-slate-600">{c.dashboard.agendaEmpty}</p>
-            ) : (
-              displaySuggestions.map((s, i) => (
-                <motion.div
-                  key={s.id}
-                  initial={{ opacity: 0, x: -16 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: 0.05 + i * 0.04 }}
-                  className="flex w-full min-w-[min(18rem,85vw)] max-w-md shrink-0 flex-col justify-between border-l-2 border-cyan-500/35 bg-black/35 py-4 pl-5 pr-4 shadow-[inset_0_0_0_1px_rgba(6,182,212,0.06),8px_0_32px_rgba(0,0,0,0.35)] backdrop-blur-md transition-all hover:border-cyan-400/55 hover:shadow-[0_0_24px_rgba(6,182,212,0.08)] sm:min-w-[17rem]"
-                >
-                  {s.type ? (
-                    <span className="mb-2 inline-flex w-fit border border-cyan-500/25 bg-cyan-950/40 px-2 py-0.5 font-mono text-[9px] uppercase tracking-widest text-cyan-500/90">
-                      {s.type}
-                    </span>
-                  ) : null}
-                  <p className="mb-4 line-clamp-4 font-mono text-sm leading-relaxed text-slate-300 [text-shadow:0_0_16px_rgba(0,0,0,0.8)]">
-                    {s.text}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => handleSuggestionAction(s.id, s.action)}
-                    className="self-start border border-rose-500/40 bg-rose-500/10 px-4 py-2 font-mono text-[10px] font-semibold uppercase tracking-wider text-rose-300 transition-all [clip-path:polygon(0_0,calc(100%-8px)_0,100%_8px,100%_100%,8px_100%,0_calc(100%-8px))] hover:bg-rose-500/20 active:shadow-[inset_0_0_18px_rgba(6,182,212,0.35)]"
-                  >
-                    {c.suggestionActionLabels[s.action] ?? s.action}
-                  </button>
-                </motion.div>
-              ))
-            )}
-          </div>
+          <MindStream
+            className="h-[170px] min-h-0"
+            maxLines={5}
+            demoLoop
+            liveStatsLines={liveStatsLines}
+            liveLogLines={liveLogLines}
+            mindLocale={c.mind}
+            localizeLine={(line) => localizeMindStreamLine(line, lang)}
+          />
         </div>
       </section>
+    </div>
+  );
+}
+
+function StatusRow({
+  Icon,
+  label,
+  value,
+  active,
+}: {
+  Icon: typeof Activity;
+  label: string;
+  value: string;
+  active?: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-[8px] border border-cyan-200/[0.07] bg-cyan-300/[0.022] px-3 py-3 shadow-[inset_0_0_18px_rgba(56,189,248,0.018)]">
+      <div
+        className={cn(
+          "flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] border",
+          active ? "border-cyan-200/[0.14] bg-cyan-300/[0.065] text-cyan-100" : "border-cyan-200/[0.07] bg-cyan-300/[0.022] text-slate-400",
+        )}
+      >
+        <Icon className="h-4 w-4" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">{label}</p>
+        <p className="mt-0.5 truncate text-sm text-slate-200/88">{value}</p>
+      </div>
+    </div>
+  );
+}
+
+function StatusMeter({ label, value }: { label: string; value: number }) {
+  const safeValue = Math.max(0, Math.min(100, Math.round(value)));
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+        <span>{label}</span>
+        <span className="font-mono text-cyan-100/75">{safeValue}%</span>
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-white/[0.055]">
+        <div
+          className="h-full rounded-full bg-gradient-to-r from-cyan-300/70 via-sky-200/80 to-emerald-200/75"
+          style={{ width: `${safeValue}%` }}
+        />
+      </div>
     </div>
   );
 }
