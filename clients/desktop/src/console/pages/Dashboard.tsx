@@ -378,11 +378,16 @@ export function Dashboard({
     <div className="omni-cockpit flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 sm:p-5 xl:p-6">
       <section className="grid min-h-[430px] grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_21rem]">
         <motion.div
-          className="console-orb-panel relative flex min-h-[430px] flex-col overflow-hidden p-5 sm:p-6"
+          className="console-orb-panel jarvis-panel jarvis-hero-panel relative flex min-h-[430px] flex-col overflow-hidden p-5 sm:p-6"
           initial={{ opacity: 0, y: 14 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.38 }}
         >
+          <div className="jarvis-hero-grid" aria-hidden />
+          <div className="jarvis-corner jarvis-corner-tl" aria-hidden />
+          <div className="jarvis-corner jarvis-corner-tr" aria-hidden />
+          <div className="jarvis-corner jarvis-corner-bl" aria-hidden />
+          <div className="jarvis-corner jarvis-corner-br" aria-hidden />
           <div className="pointer-events-none absolute inset-x-12 top-0 h-px bg-gradient-to-r from-transparent via-cyan-200/55 to-transparent" />
           <div className="relative z-10 flex flex-1 flex-col items-center justify-center gap-6 text-center">
             <div className="flex items-center gap-2 rounded-full border border-cyan-300/15 bg-cyan-300/[0.04] px-3 py-1 text-[10px] font-medium uppercase tracking-[0.24em] text-cyan-100/75">
@@ -390,9 +395,21 @@ export function Dashboard({
               {copy.eyebrow}
             </div>
 
-            <div className="relative flex h-36 w-36 items-center justify-center sm:h-40 sm:w-40">
-              <div className="absolute inset-0 rounded-full bg-cyan-300/[0.03] blur-2xl" />
-              <div className="absolute inset-5 rounded-full border border-cyan-200/10" />
+            <div className="jarvis-core-stage relative flex h-44 w-44 items-center justify-center sm:h-52 sm:w-52">
+              <svg className="jarvis-core-svg" viewBox="0 0 260 260" aria-hidden>
+                <circle className="jarvis-core-ring jarvis-core-ring-outer" cx="130" cy="130" r="108" />
+                <circle className="jarvis-core-ring jarvis-core-ring-mid" cx="130" cy="130" r="86" />
+                <circle className="jarvis-core-ring jarvis-core-ring-inner" cx="130" cy="130" r="63" />
+                <path className="jarvis-core-arc jarvis-core-arc-a" d="M130 22a108 108 0 0 1 99 65" />
+                <path className="jarvis-core-arc jarvis-core-arc-b" d="M51 204a108 108 0 0 1 0-148" />
+                <path className="jarvis-core-arc jarvis-core-arc-c" d="M206 206a108 108 0 0 1-120 23" />
+                <line className="jarvis-core-line" x1="130" y1="18" x2="130" y2="48" />
+                <line className="jarvis-core-line" x1="130" y1="212" x2="130" y2="242" />
+                <line className="jarvis-core-line" x1="18" y1="130" x2="48" y2="130" />
+                <line className="jarvis-core-line" x1="212" y1="130" x2="242" y2="130" />
+              </svg>
+              <div className="jarvis-core-scan" aria-hidden />
+              <div className="absolute inset-0 rounded-full bg-cyan-300/[0.025] blur-2xl" />
               <JachinCore
                 state={coreState}
                 machineState={coreState === "streaming" ? "STREAMING" : coreState === "thinking" ? "THINKING" : "IDLE"}
@@ -457,7 +474,7 @@ export function Dashboard({
                 { label: "GPU", value: formatPercent(gpuPercent), Icon: Zap, tone: "text-amber-100" },
                 { label: "RAY", value: `${onlineNodes}/${totalNodes || "—"}`, Icon: Network, tone: "text-emerald-100" },
               ].map((item) => (
-                <div key={item.label} className="rounded-[8px] border border-cyan-200/[0.07] bg-cyan-300/[0.022] px-3 py-3 text-left shadow-[inset_0_0_18px_rgba(56,189,248,0.018)]">
+                <div key={item.label} className="jarvis-tile rounded-[8px] border border-cyan-200/[0.07] bg-cyan-300/[0.022] px-3 py-3 text-left shadow-[inset_0_0_18px_rgba(56,189,248,0.018)]">
                   <div className="mb-3 flex items-center justify-between text-slate-500">
                     <span className="text-[10px] font-medium uppercase tracking-[0.18em]">{item.label}</span>
                     <item.Icon className="h-4 w-4" />
@@ -475,7 +492,7 @@ export function Dashboard({
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.38, delay: 0.06 }}
         >
-          <div className="console-soft-panel flex flex-col gap-4 p-4">
+          <div className="console-soft-panel jarvis-panel flex flex-col gap-4 p-4">
             <div className="flex items-center justify-between">
               <h2 className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-100/75">{copy.autonomy}</h2>
               <span className="inline-flex items-center gap-1.5 rounded-full border border-cyan-200/14 bg-cyan-300/[0.05] px-2.5 py-1 text-[10px] text-cyan-100/80">
@@ -490,7 +507,7 @@ export function Dashboard({
             </div>
           </div>
 
-          <div className="console-soft-panel flex flex-1 flex-col gap-4 p-4">
+          <div className="console-soft-panel jarvis-panel flex flex-1 flex-col gap-4 p-4">
             <h2 className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-100/75">{copy.actions}</h2>
             <div className="grid grid-cols-2 gap-2">
               {quickActions.map((action) => {
@@ -546,7 +563,7 @@ export function Dashboard({
 
       <section className="grid min-h-[260px] grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_23rem]">
         <motion.div
-          className="console-soft-panel flex min-h-0 flex-col overflow-hidden"
+          className="console-soft-panel jarvis-panel flex min-h-0 flex-col overflow-hidden"
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.35, delay: 0.1 }}
@@ -568,7 +585,7 @@ export function Dashboard({
                   initial={{ opacity: 0, x: -10 }}
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ delay: 0.12 + i * 0.035 }}
-                  className="flex min-w-[17rem] max-w-[19rem] flex-col justify-between rounded-[8px] border border-cyan-200/[0.07] bg-cyan-300/[0.022] p-4 shadow-[inset_0_0_18px_rgba(56,189,248,0.018)]"
+                  className="jarvis-tile flex min-w-[17rem] max-w-[19rem] flex-col justify-between rounded-[8px] border border-cyan-200/[0.07] bg-cyan-300/[0.022] p-4 shadow-[inset_0_0_18px_rgba(56,189,248,0.018)]"
                 >
                   <div>
                     {s.type ? (
@@ -593,7 +610,7 @@ export function Dashboard({
         </motion.div>
 
         <motion.div
-          className="console-soft-panel flex min-h-[260px] flex-col overflow-hidden"
+          className="console-soft-panel jarvis-panel flex min-h-[260px] flex-col overflow-hidden"
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.35, delay: 0.14 }}
@@ -633,7 +650,7 @@ export function Dashboard({
       </section>
 
       <section className="min-h-[210px] shrink-0">
-        <div className="console-soft-panel h-full overflow-hidden p-4">
+        <div className="console-soft-panel jarvis-panel h-full overflow-hidden p-4">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-100/75">{copy.stream}</h2>
             <span className="rounded-full border border-emerald-300/14 bg-emerald-300/[0.055] px-2.5 py-1 text-[10px] text-emerald-100/75">

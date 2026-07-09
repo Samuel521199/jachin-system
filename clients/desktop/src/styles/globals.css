@@ -590,6 +590,220 @@ body#hud-body,
   outline-offset: 2px;
 }
 
+@keyframes jarvis-ring-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes jarvis-ring-counter {
+  to {
+    transform: rotate(-360deg);
+  }
+}
+
+@keyframes jarvis-scan-sweep {
+  0%, 100% {
+    transform: rotate(0deg);
+    opacity: 0.24;
+  }
+  50% {
+    opacity: 0.42;
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.jarvis-panel {
+  position: relative;
+}
+
+.jarvis-panel::before,
+.jarvis-panel::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  opacity: 0.72;
+}
+
+.jarvis-panel::before {
+  inset: 0;
+  border-radius: inherit;
+  background:
+    linear-gradient(90deg, rgba(125, 211, 252, 0.16), transparent 18%, transparent 82%, rgba(125, 211, 252, 0.12)),
+    linear-gradient(180deg, rgba(125, 211, 252, 0.10), transparent 22%, transparent 78%, rgba(125, 211, 252, 0.08));
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  padding: 1px;
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+
+.jarvis-panel::after {
+  left: 18px;
+  right: 18px;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.38), transparent);
+}
+
+.jarvis-hero-panel {
+  isolation: isolate;
+}
+
+.jarvis-hero-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.42;
+  background:
+    linear-gradient(rgba(125, 211, 252, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(125, 211, 252, 0.035) 1px, transparent 1px),
+    radial-gradient(circle at center, transparent 0 24%, rgba(125, 211, 252, 0.055) 24.3%, transparent 24.8% 36%, rgba(125, 211, 252, 0.04) 36.4%, transparent 36.9%);
+  background-size: 32px 32px, 32px 32px, 100% 100%;
+}
+
+.jarvis-corner {
+  position: absolute;
+  z-index: 2;
+  width: 34px;
+  height: 34px;
+  pointer-events: none;
+  border-color: rgba(125, 211, 252, 0.22);
+}
+
+.jarvis-corner-tl {
+  left: 14px;
+  top: 14px;
+  border-left: 1px solid;
+  border-top: 1px solid;
+}
+
+.jarvis-corner-tr {
+  right: 14px;
+  top: 14px;
+  border-right: 1px solid;
+  border-top: 1px solid;
+}
+
+.jarvis-corner-bl {
+  left: 14px;
+  bottom: 14px;
+  border-left: 1px solid;
+  border-bottom: 1px solid;
+}
+
+.jarvis-corner-br {
+  right: 14px;
+  bottom: 14px;
+  border-right: 1px solid;
+  border-bottom: 1px solid;
+}
+
+.jarvis-core-stage {
+  filter: drop-shadow(0 0 22px rgba(56, 189, 248, 0.12));
+}
+
+.jarvis-core-svg {
+  position: absolute;
+  inset: -12px;
+  width: calc(100% + 24px);
+  height: calc(100% + 24px);
+  overflow: visible;
+}
+
+.jarvis-core-ring,
+.jarvis-core-arc,
+.jarvis-core-line {
+  fill: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.jarvis-core-ring {
+  transform-origin: 130px 130px;
+  stroke: rgba(125, 211, 252, 0.16);
+  stroke-width: 1;
+}
+
+.jarvis-core-ring-outer {
+  stroke-dasharray: 2 9;
+  animation: jarvis-ring-rotate 28s linear infinite;
+}
+
+.jarvis-core-ring-mid {
+  stroke: rgba(52, 211, 153, 0.13);
+  stroke-dasharray: 18 14;
+  animation: jarvis-ring-counter 22s linear infinite;
+}
+
+.jarvis-core-ring-inner {
+  stroke: rgba(230, 241, 255, 0.12);
+  stroke-dasharray: 1 5;
+  animation: jarvis-ring-rotate 18s linear infinite;
+}
+
+.jarvis-core-arc {
+  stroke: rgba(56, 221, 245, 0.42);
+  stroke-width: 2;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 8px rgba(56, 221, 245, 0.34));
+}
+
+.jarvis-core-arc-b {
+  stroke: rgba(52, 211, 153, 0.32);
+}
+
+.jarvis-core-arc-c {
+  stroke: rgba(251, 191, 36, 0.24);
+}
+
+.jarvis-core-line {
+  stroke: rgba(125, 211, 252, 0.18);
+  stroke-width: 1;
+}
+
+.jarvis-core-scan {
+  position: absolute;
+  inset: 20px;
+  border-radius: 999px;
+  background: conic-gradient(from 0deg, transparent 0 78%, rgba(125, 211, 252, 0.24), transparent 88% 100%);
+  mask: radial-gradient(circle, transparent 0 52%, #000 53% 55%, transparent 57%);
+  -webkit-mask: radial-gradient(circle, transparent 0 52%, #000 53% 55%, transparent 57%);
+  animation: jarvis-scan-sweep 6s linear infinite;
+}
+
+.jarvis-tile {
+  position: relative;
+  overflow: hidden;
+}
+
+.jarvis-tile::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(125, 211, 252, 0.08), transparent 34%),
+    linear-gradient(180deg, rgba(125, 211, 252, 0.055), transparent 42%);
+  opacity: 0.7;
+}
+
+.jarvis-tile::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 0;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.24), transparent);
+}
+
 /** 光纤扫边（悬停父级 .console-fiber-host 时触发） */
 @keyframes console-fiber-sweep {
   0% {
