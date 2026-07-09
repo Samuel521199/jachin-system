@@ -60,6 +60,7 @@ async def try_execute_cognitive_direct_plan(
     """
 
     if not direct_mainline_enabled():
+        _log_direct_execution(stage="skipped", reason="direct_mainline_disabled")
         return None
 
     if is_cancellation_text(user_input):
@@ -90,9 +91,11 @@ async def try_execute_cognitive_direct_plan(
         return "\u5f53\u524d\u6ca1\u6709\u5f85\u786e\u8ba4\u4efb\u52a1\uff0c\u8bf7\u91cd\u65b0\u53d1\u8d77\u64cd\u4f5c\u3002"
 
     if plan is None:
+        _log_direct_execution(stage="skipped", reason="no_cognitive_plan")
         return None
     contract = plan.decision_contract
     if not plan.work_orders:
+        _log_direct_execution(stage="skipped", contract=contract, reason="no_work_order")
         return None
     work_order = plan.work_orders[0]
     if not contract.execution_allowed and contract.tool_policy.requires_confirmation:
@@ -112,7 +115,7 @@ async def try_execute_cognitive_direct_plan(
             contract=contract,
             work_order=work_order,
         )
-        close_turn_waiting_user(
+        closure = close_turn_waiting_user(
             turn_id=contract.turn_id,
             final_text=question,
             pending_decision={
@@ -123,6 +126,15 @@ async def try_execute_cognitive_direct_plan(
                 "requires_confirmation": True,
             },
         )
+        _log_direct_execution(
+            stage="waiting_user_confirmation",
+            contract=contract,
+            work_order=work_order,
+            tool_id=str(work_order.inputs.get("tool") or ""),
+            closure=closure,
+            final_text=question,
+            reason="DecisionContract requires confirmation",
+        )
         logger.info(
             "[CognitiveKernel] direct mainline saved pending confirmation turn=%s task=%s work_order=%s",
             contract.turn_id[:12],
@@ -131,17 +143,46 @@ async def try_execute_cognitive_direct_plan(
         )
         return question
     if not contract.execution_allowed:
+        _log_direct_execution(
+            stage="skipped",
+            contract=contract,
+            work_order=work_order,
+            tool_id=str(work_order.inputs.get("tool") or ""),
+            reason="execution_not_allowed",
+        )
         return None
     tool_id = str(
         work_order.inputs.get("tool")
         or (contract.tool_policy.allowed_tools[0] if contract.tool_policy.allowed_tools else "")
     ).strip()
     if not _planned_direct_tool_allowed(plan, tool_id):
+        _log_direct_execution(
+            stage="skipped",
+            contract=contract,
+            work_order=work_order,
+            tool_id=tool_id,
+            reason="planned_direct_tool_not_allowed",
+        )
         return None
     if not _planned_direct_tool_available(tool_id, tools):
         logger.info("[CognitiveKernel] direct mainline skipped: tool unavailable tool=%s", tool_id)
+        _log_direct_execution(
+            stage="skipped",
+            contract=contract,
+            work_order=work_order,
+            tool_id=tool_id,
+            reason="planned_direct_tool_unavailable",
+        )
         return None
 
+    _log_role_agent_prompt(
+        contract=contract,
+        work_order=work_order,
+        tool_id=tool_id,
+        allowed_skills=allowed_skills,
+        available_tools=tools,
+        stage="direct_mainline_dispatch",
+    )
     result = await _execute_work_order(
         contract=contract,
         work_order=work_order,
@@ -157,6 +198,15 @@ async def try_execute_cognitive_direct_plan(
         verification_reports=[result.verification],
         aborted=not bool(result.verification.ok),
     )
+    _log_direct_execution(
+        stage="executed",
+        contract=contract,
+        work_order=work_order,
+        tool_id=tool_id,
+        dispatch_result=result,
+        closure=closure,
+        final_text=final_text,
+    )
     await execute_turn_closure_memory_writes(closure)
     logger.info(
         "[CognitiveKernel] direct mainline executed turn=%s task=%s tool=%s ok=%s work_order=%s",
@@ -167,6 +217,34 @@ async def try_execute_cognitive_direct_plan(
         work_order.work_order_id,
     )
     return final_text
+
+
+def _log_direct_execution(
+    *,
+    stage: str,
+    contract: DecisionContract | None = None,
+    work_order: WorkOrder | None = None,
+    tool_id: str = "",
+    dispatch_result: Any = None,
+    closure: Any = None,
+    final_text: str = "",
+    reason: str = "",
+) -> None:
+    try:
+        from l3_node.terminal_turn_debug_log import log_cognitive_direct_execution
+
+        log_cognitive_direct_execution(
+            stage=stage,
+            contract=contract,
+            work_order=work_order,
+            tool_id=tool_id,
+            dispatch_result=dispatch_result,
+            closure=closure,
+            final_text=final_text,
+            reason=reason,
+        )
+    except Exception:
+        pass
 
 
 def _with_pending_confirmation_ui_protocol(
@@ -237,6 +315,14 @@ async def _try_resume_pending_confirmation(
         await execute_turn_closure_memory_writes(closure)
         return final_text
 
+    _log_role_agent_prompt(
+        contract=contract,
+        work_order=work_order,
+        tool_id=tool_id,
+        allowed_skills=allowed_skills,
+        available_tools=tools,
+        stage="resume_pending_dispatch",
+    )
     result = await _execute_work_order(
         contract=contract,
         work_order=work_order,
@@ -254,6 +340,15 @@ async def _try_resume_pending_confirmation(
         verification_reports=[result.verification],
         aborted=not bool(result.verification.ok),
     )
+    _log_direct_execution(
+        stage="resumed_pending_executed",
+        contract=contract,
+        work_order=work_order,
+        tool_id=tool_id,
+        dispatch_result=result,
+        closure=closure,
+        final_text=final_text,
+    )
     await execute_turn_closure_memory_writes(closure)
     logger.info(
         "[CognitiveKernel] direct mainline resumed pending turn=%s task=%s tool=%s ok=%s work_order=%s",
@@ -264,6 +359,30 @@ async def _try_resume_pending_confirmation(
         work_order.work_order_id,
     )
     return final_text
+
+
+def _log_role_agent_prompt(
+    *,
+    contract: DecisionContract,
+    work_order: WorkOrder,
+    tool_id: str,
+    allowed_skills: Optional[list[str]],
+    available_tools: list[dict[str, Any]],
+    stage: str,
+) -> None:
+    try:
+        from l3_node.terminal_turn_debug_log import log_role_agent_work_order_prompt
+
+        log_role_agent_work_order_prompt(
+            contract=contract,
+            work_order=work_order,
+            tool_id=tool_id,
+            allowed_skills=allowed_skills or [],
+            available_tools=available_tools,
+            stage=stage,
+        )
+    except Exception:
+        pass
 
 
 async def _execute_work_order(

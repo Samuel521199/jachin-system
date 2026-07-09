@@ -1,5 +1,7 @@
 """
-记忆统一门面：``snapshot_for_prompt`` 与 L1 Memory Nexus 对齐；``load_merged_local_entries`` 仅 **遗留 JSON** 读取；检索走 **deep_search**。
+记忆统一门面：被动 prompt 快照已停用；主循环记忆读取统一走
+``MemoryRecallAgent -> RelevantMemoryBundle``。``load_merged_local_entries``
+仅 **遗留 JSON** 读取；显式检索走 **deep_search**。
 """
 from __future__ import annotations
 
@@ -21,13 +23,9 @@ def snapshot_for_prompt(
     prompt_cycle: int | None = None,
     max_idle_prompt_cycles: int | None = None,
 ) -> str:
-    from l3_node.local_memory import get_local_memory_for_prompt
+    """Compatibility no-op: passive memory prompt snapshots are disabled."""
 
-    return get_local_memory_for_prompt(
-        limit=limit,
-        prompt_cycle=prompt_cycle,
-        max_idle_prompt_cycles=max_idle_prompt_cycles,
-    )
+    return ""
 
 
 def search_local_unified(

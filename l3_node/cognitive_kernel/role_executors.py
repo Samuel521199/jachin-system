@@ -78,6 +78,19 @@ class RoleExecutionAdapter:
     ) -> RoleExecutionResult:
         started = time.perf_counter()
         evidence = self.describe_evidence(work_order, context)
+        try:
+            from l3_node.terminal_turn_debug_log import log_role_agent_execution_detail
+
+            log_role_agent_execution_detail(
+                phase="started",
+                role_id=self.role_id,
+                adapter_kind=self.adapter_kind,
+                work_order=work_order,
+                context=context,
+                evidence=evidence,
+            )
+        except Exception:
+            pass
         append_event(
             "role_execution_started",
             context.turn_id,
@@ -122,6 +135,20 @@ class RoleExecutionAdapter:
                 **result.to_dict(),
             },
         )
+        try:
+            from l3_node.terminal_turn_debug_log import log_role_agent_execution_detail
+
+            log_role_agent_execution_detail(
+                phase="finished",
+                role_id=self.role_id,
+                adapter_kind=self.adapter_kind,
+                work_order=work_order,
+                context=context,
+                result=result,
+                evidence=result.evidence,
+            )
+        except Exception:
+            pass
         logger.debug(
             "[CognitiveKernel][%s] executed tool=%s ok=%s elapsed_ms=%.1f",
             self.role_id,

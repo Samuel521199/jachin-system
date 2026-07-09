@@ -202,9 +202,19 @@ APP_PROFILES: dict[str, dict[str, Any]] = {
     },
     "browser": {
         "aliases": ("browser", "web", "\u6d4f\u89c8\u5668"),
-        "keywords": ("browser", "web", "\u6d4f\u89c8\u5668"),
-        "exe_names": ("msedge.exe", "chrome.exe"),
-        "candidate_paths": ("msedge.exe", "chrome.exe"),
+        "keywords": (
+            "browser",
+            "web",
+            "\u6d4f\u89c8\u5668",
+            "chrome",
+            "google chrome",
+            "edge",
+            "microsoft edge",
+            "firefox",
+            "mozilla firefox",
+        ),
+        "exe_names": ("msedge.exe", "chrome.exe", "firefox.exe"),
+        "candidate_paths": ("msedge.exe", "chrome.exe", "firefox.exe"),
     },
     "terminal": {
         "aliases": ("terminal", "powershell", "cmd", "shell"),
@@ -6491,7 +6501,6 @@ def run_tasks(
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     report["report_path"] = str(report_path)
     return report
-
 
 
 

@@ -2,6 +2,22 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_external_memory_providers(monkeypatch):
+    import l3_node.cognitive_kernel.memory_recall_agent as memory_recall_agent
+
+    async def _no_passive_nexus(_limit: int):
+        return [], []
+
+    def _no_experience(**_kwargs):
+        return [], []
+
+    monkeypatch.setattr(memory_recall_agent, "_passive_nexus_memory_evidence", _no_passive_nexus)
+    monkeypatch.setattr(memory_recall_agent, "_experience_memory_evidence", _no_experience)
+
 
 def test_cognitive_kernel_ledger_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
@@ -119,6 +135,231 @@ def test_voice_envelope_and_fast_lane_policy(tmp_path, monkeypatch):
 
     monkeypatch.setenv("JACHIN_LEGACY_VOICE_FAST_LANE", "1")
     assert _is_ws_voice_fast_lane("你好", {"voice_fast_lane": True}, {"origin": "desktop_voice_companion"}) is False
+
+
+def test_memory_recall_section_6_query_plan_and_long_term_channels(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    import l3_node.local_memory_search as local_search
+    from l3_node.cognitive_kernel.contracts import AgentInputEnvelope, InputSource, MemoryWriteRequest, StateSnapshot
+    from l3_node.cognitive_kernel.memory_lifecycle import write_lifecycle_memory
+    from l3_node.cognitive_kernel.memory_recall_agent import recall_relevant_memory
+
+    def fake_search_local_memories(query, *, top_k=8, **_kwargs):
+        return {
+            "ok": True,
+            "hits": [
+                {
+                    "id": f"tool-{abs(hash(query))}",
+                    "memory_type": "tool_habit",
+                    "content": "tool habit: for communication use mcp:windows_lark_send_message before browser automation",
+                    "score": 0.91,
+                    "ttl": "long_term",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(local_search, "search_local_memories", fake_search_local_memories)
+
+    for memory_type, content in [
+        ("contact", "contact memory: Vivian is the usual report recipient for communication tasks"),
+        ("safety_preference", "safety preference: confirm before sending messages to Vivian"),
+        ("project_fact", "project fact: the report belongs to the sales dashboard project"),
+        ("historical_task_summary", "historical task summary: report task paused after data cleaning"),
+    ]:
+        write_lifecycle_memory(
+            MemoryWriteRequest(
+                turn_id="ck-memory-section-6-seed",
+                source_event="unit_test",
+                memory_type=memory_type,
+                content=content,
+                confidence=0.9,
+                ttl="permanent",
+            )
+        )
+
+    async def _run():
+        envelope = AgentInputEnvelope(
+            turn_id="ck-memory-section-6",
+            source=InputSource.TEXT,
+            raw_text="send to Vivian: report is ready",
+            normalized_text="send to Vivian: report is ready",
+        )
+        state = StateSnapshot(
+            snapshot_id="state-section-6",
+            generated_at_ms=1,
+            freshness_ms=1,
+            active_window={"app_name": "Lark", "title": "Vivian"},
+            recent_app_events=[{"event": "foreground_changed", "app_name": "Lark"}],
+            task_state={"active_task": "report"},
+        )
+        bundle = await recall_relevant_memory(
+            envelope=envelope,
+            state_snapshot=state,
+            prior_messages=[{"role": "user", "content": "continue the report task"}],
+            max_results_per_channel=4,
+        )
+        assert "send_message" in bundle.candidate_intents
+        assert "communication" in bundle.candidate_task_domains
+        assert "query_2_candidate_intent" in bundle.multi_queries
+        assert "query_6_long_term_user_memory" in bundle.multi_queries
+        assert "load_long_term_user_memory" in bundle.recall_request["retrieval_purpose"]
+        assert bundle.contact_matches
+        assert bundle.safety_preferences
+        assert bundle.project_facts
+        assert bundle.tool_habits
+        assert bundle.historical_task_summaries
+        assert bundle.ranking_evidence
+        assert {"score", "task_relevance_score", "state_alignment_score"} <= set(bundle.ranking_evidence[0])
+
+    asyncio.run(_run())
+
+
+def test_memory_recall_unifies_legacy_prompt_memory_sources(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    import l3_node.cognitive_kernel.memory_recall_agent as memory_recall_agent
+    from l3_node.cognitive_kernel.contracts import AgentInputEnvelope, InputSource, MemoryEvidence, StateSnapshot
+
+    async def fake_passive_nexus(_limit: int):
+        return [
+            MemoryEvidence(
+                memory_id="passive-l0",
+                memory_type="user_preference",
+                content="preference: preferred browser Chrome",
+                source="unit-passive-l0",
+                confidence=0.9,
+                confirmed_by_user=True,
+                ttl="long_term",
+            ),
+            MemoryEvidence(
+                memory_id="passive-l1",
+                memory_type="historical_task_summary",
+                content="historical task summary: browser automation usually uses Chrome",
+                source="unit-passive-l1",
+                confidence=0.8,
+                ttl="long_term",
+            ),
+        ], []
+
+    def fake_experience(**_kwargs):
+        return [
+            MemoryEvidence(
+                memory_id="experience-tool",
+                memory_type="tool_habit",
+                content="tool habit: open browser with mcp:windows_open_app before UI automation",
+                source="unit-experience",
+                confidence=0.88,
+                ttl="long_term",
+            )
+        ], []
+
+    monkeypatch.setattr(memory_recall_agent, "_passive_nexus_memory_evidence", fake_passive_nexus)
+    monkeypatch.setattr(memory_recall_agent, "_experience_memory_evidence", fake_experience)
+
+    async def _run():
+        bundle = await memory_recall_agent.recall_relevant_memory(
+            envelope=AgentInputEnvelope(
+                turn_id="ck-unified-memory-sources",
+                source=InputSource.TEXT,
+                raw_text="open browser",
+                normalized_text="open browser",
+            ),
+            state_snapshot=StateSnapshot(
+                snapshot_id="state-unified-memory",
+                generated_at_ms=1,
+                freshness_ms=1,
+                active_window={"app_name": "Codex"},
+            ),
+            prior_messages=[],
+            max_results_per_channel=4,
+        )
+        assert "passive_nexus_profile_memory" in bundle.recall_request["retrieval_channels"]
+        assert "experience_rag_memory" in bundle.recall_request["retrieval_channels"]
+        assert any(item.memory_id == "passive-l0" for item in bundle.user_preferences)
+        assert any(item.memory_id == "passive-l1" for item in bundle.historical_task_summaries)
+        assert any(item.memory_id == "experience-tool" for item in bundle.tool_habits)
+
+    asyncio.run(_run())
+
+
+def test_legacy_passive_memory_prompt_snapshots_are_disabled():
+    from l3_node.local_memory import get_local_memory_for_prompt
+    from l3_node.memory_facade import snapshot_for_prompt
+
+    assert get_local_memory_for_prompt() == ""
+    assert snapshot_for_prompt() == ""
+
+
+def test_cognitive_prompt_uses_section_6_memory_package():
+    from l3_node.cognitive_kernel.contracts import (
+        AgentInputEnvelope,
+        InputSource,
+        MemoryEvidence,
+        RelevantMemoryBundle,
+        StateSnapshot,
+        TaskLedgerEntry,
+    )
+    from l3_node.cognitive_kernel.pipeline import CognitiveTurnContext
+
+    envelope = AgentInputEnvelope(
+        turn_id="ck-prompt-section-6",
+        source=InputSource.TEXT,
+        raw_text="close it",
+        normalized_text="close it",
+    )
+    state = StateSnapshot(
+        snapshot_id="state-prompt-section-6",
+        generated_at_ms=1,
+        freshness_ms=1,
+        active_window={"app_name": "Calculator"},
+    )
+    memory = RelevantMemoryBundle(
+        turn_id=envelope.turn_id,
+        retrieval_summary="resolved close_app from recent action and active window",
+        candidate_intents=["close_app"],
+        candidate_task_domains=["desktop_app_control"],
+        multi_queries={"query_2_candidate_intent": "close_app"},
+        recent_actions=[
+            MemoryEvidence(
+                memory_id="recent-calc",
+                memory_type="short_term_action",
+                content="last_opened_app=Calculator",
+                source="unit",
+                confidence=0.9,
+                ttl="recent",
+            )
+        ],
+        user_preferences=[
+            MemoryEvidence(
+                memory_id="pref-confirm",
+                memory_type="safety_preference",
+                content="confirm before closing apps with unsaved work",
+                source="unit",
+                confidence=0.9,
+                confirmed_by_user=True,
+                ttl="permanent",
+            )
+        ],
+        ranking_evidence=[{"memory_id": "recent-calc", "score": 0.88}],
+        confidence=0.8,
+    )
+    ctx = CognitiveTurnContext(
+        envelope=envelope,
+        state_snapshot=state,
+        memory_bundle=memory,
+        ledger_entry=TaskLedgerEntry(
+            turn_id=envelope.turn_id,
+            input_envelope=envelope,
+            state_snapshot=state,
+            memory_bundle=memory,
+        ),
+    )
+    block = ctx.prompt_block()
+    assert "short_term_context" in block
+    assert "long_term_context" in block
+    assert "query_2_candidate_intent" in block
+    assert "last_opened_app=Calculator" in block
 
 
 def test_role_registry_and_work_order_dispatcher(tmp_path, monkeypatch):

@@ -39,9 +39,14 @@ class EvalRow:
     raw_text: str
     text: str
     user_message: str
+    raw_terms_hit: bool
+    final_terms_hit: bool
     terms_hit: bool
+    selected_type: str
     selected_intent: str
     selected_slots: str
+    needs_confirmation: bool
+    missing_slots: str
     confidence: float
     latency_ms: int
     rtf: float
@@ -120,10 +125,18 @@ def all_terms_hit(text: str, terms: list[str]) -> bool:
 def selected_summary(understanding: dict[str, Any]) -> tuple[str, str]:
     selected = understanding.get("selected") or {}
     if not isinstance(selected, dict):
-        return "", "{}"
+        return "", "", "{}", False, "[]"
+    selected_type = str(selected.get("type") or "")
     intent = str(selected.get("intent") or selected.get("type") or "")
     slots = selected.get("slots") or {}
-    return intent, json.dumps(slots, ensure_ascii=False, sort_keys=True)
+    missing = selected.get("missing_slots") or []
+    return (
+        selected_type,
+        intent,
+        json.dumps(slots, ensure_ascii=False, sort_keys=True),
+        bool(selected.get("needs_confirmation")),
+        json.dumps(missing, ensure_ascii=False),
+    )
 
 
 def read_manifest(path: Path) -> list[dict[str, Any]]:
@@ -160,6 +173,10 @@ def write_csv(path: Path, rows: list[EvalRow]) -> None:
 def print_summary(rows: list[EvalRow], *, backend: str, hotword_status: str) -> None:
     total = len(rows)
     hits = sum(row.terms_hit for row in rows)
+    raw_hits = sum(row.raw_terms_hit for row in rows)
+    final_hits = sum(row.final_terms_hit for row in rows)
+    clarification = sum(row.selected_type == "clarification_required" for row in rows)
+    confirmations = sum(row.needs_confirmation for row in rows)
     errors = sum(bool(row.error) for row in rows)
     avg_latency = round(sum(row.latency_ms for row in rows) / max(total, 1), 1)
     avg_rtf = round(sum(row.rtf for row in rows) / max(total, 1), 3)
@@ -168,6 +185,10 @@ def print_summary(rows: list[EvalRow], *, backend: str, hotword_status: str) -> 
     print("-- Jachin STT Hotword Batch Eval --")
     print(f"samples       : {total}")
     print(f"terms_hit     : {hits}/{total}")
+    print(f"raw_terms_hit : {raw_hits}/{total}")
+    print(f"final_terms_hit: {final_hits}/{total}")
+    print(f"clarifications: {clarification}/{total}")
+    print(f"confirmations : {confirmations}/{total}")
     print(f"errors        : {errors}/{total}")
     print(f"avg_latency_ms: {avg_latency}")
     print(f"avg_rtf       : {avg_rtf}")
@@ -184,7 +205,9 @@ def print_summary(rows: list[EvalRow], *, backend: str, hotword_status: str) -> 
         print(f"  raw    : {row.raw_text or '(empty)'}")
         print(f"  text   : {row.text or '(empty)'}")
         if row.selected_intent:
-            print(f"  task   : {row.selected_intent} {row.selected_slots}")
+            print(f"  task   : {row.selected_type}:{row.selected_intent} {row.selected_slots}")
+        if row.missing_slots and row.missing_slots != "[]":
+            print(f"  missing: {row.missing_slots}")
         if row.error:
             print(f"  error  : {row.error}")
 
@@ -235,9 +258,14 @@ def main() -> int:
                     raw_text="",
                     text="",
                     user_message="",
+                    raw_terms_hit=False,
+                    final_terms_hit=False,
                     terms_hit=False,
+                    selected_type="",
                     selected_intent="",
                     selected_slots="{}",
+                    needs_confirmation=False,
+                    missing_slots="[]",
                     confidence=0.0,
                     latency_ms=0,
                     rtf=0.0,
@@ -254,7 +282,9 @@ def main() -> int:
         latency_ms = int((time.perf_counter() - started) * 1000)
         audio_sec = round(result.duration_ms / 1000.0, 3)
         rtf = round((latency_ms / 1000.0) / max(audio_sec, 0.001), 3)
-        selected_intent, selected_slots = selected_summary(result.understanding or {})
+        selected_type, selected_intent, selected_slots, needs_confirmation, missing_slots = selected_summary(result.understanding or {})
+        raw_hit = all_terms_hit(result.raw_text or "", terms)
+        final_hit = all_terms_hit(" ".join([result.text or "", selected_slots]), terms)
         hit_text = " ".join([result.raw_text or "", result.text or "", selected_slots])
         rows.append(
             EvalRow(
@@ -267,9 +297,14 @@ def main() -> int:
                 raw_text=result.raw_text,
                 text=result.text,
                 user_message=result.user_message,
+                raw_terms_hit=raw_hit,
+                final_terms_hit=final_hit,
                 terms_hit=all_terms_hit(hit_text, terms),
+                selected_type=selected_type,
                 selected_intent=selected_intent,
                 selected_slots=selected_slots,
+                needs_confirmation=needs_confirmation,
+                missing_slots=missing_slots,
                 confidence=float(result.confidence or 0.0),
                 latency_ms=latency_ms,
                 rtf=rtf,

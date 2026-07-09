@@ -1,4 +1,4 @@
-﻿---
+---
 name: pmo-change-alert
 version: "1.0.0"
 description: "PMO 变更预警 v1：飞书多维表变更回调 → Python 三轴分析 → 有问题才推 Lark 精简卡"
@@ -21,8 +21,8 @@ tools:
 
 # PMO 变更预警子 Skill（pmo-change-alert）
 
-> **定位**：独立运行的 **文档变更监控 + 影响分析** 子技能（事件驱动，有问题才推 Lark）。  
-> **架构 SSOT**：[`docs/architecture/PMO_CHANGE_ALERT_CASE_STUDY_0605_MAHJONG.md`](../../docs/architecture/PMO_CHANGE_ALERT_CASE_STUDY_0605_MAHJONG.md) · [`PMO_CHANGE_ALERT_DESIGN.md`](../../docs/architecture/PMO_CHANGE_ALERT_DESIGN.md)  
+> **定位**：独立运行的 **文档变更监控 + 影响分析** 子技能（事件驱动，有问题才推 Lark）。
+> **策略 SSOT**：变更预警规则随 PMO 能力包发布，宿主不再保存 PMO 专属架构文档。
 > **调用方**：`pmo_bitable_watch_scheduler`（防抖轮询）· `pmo_webhook_receiver`（事件入队）· `scripts/run_pmo_change_alert_once.py`
 
 ---

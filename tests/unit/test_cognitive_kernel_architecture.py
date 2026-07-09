@@ -56,6 +56,132 @@ def _ctx(text, *, turn_id="ck-arch-1", source=None, active_window=None, risk_sta
     )
 
 
+def test_role_agent_registry_matches_memory_first_design_doc():
+    from l3_node.cognitive_kernel.roles import get_default_role_registry
+
+    expected_roles = {
+        "AmbiguityResolverAgent",
+        "AppAliasResolverAgent",
+        "AppClosePlannerAgent",
+        "AppControlExecutorAgent",
+        "AppControlPlannerAgent",
+        "AppLaunchPlannerAgent",
+        "AppStateAgent",
+        "AuditAgent",
+        "BackgroundTaskAgent",
+        "BrowserExecutorAgent",
+        "CommunicationPlannerAgent",
+        "ConfirmationAgent",
+        "ConsistencyCheckAgent",
+        "ConversationAgent",
+        "CorrectionLearningAgent",
+        "DesktopStateReadAgent",
+        "EntityResolverAgent",
+        "FileContextAgent",
+        "FileExecutorAgent",
+        "IntentAnalystAgent",
+        "MemoryRecallAgent",
+        "MemoryWriteAgent",
+        "MessageExecutorAgent",
+        "OsAutomationExecutorAgent",
+        "PermissionAgent",
+        "PreferenceAgent",
+        "PrivacyAgent",
+        "RecoveryAgent",
+        "RetryPlannerAgent",
+        "SafetyAgent",
+        "UserFacingReplyAgent",
+        "VerificationAgent",
+        "VoiceEvidenceAgent",
+        "WatcherAgent",
+        "WindowContextAgent",
+    }
+    registry = get_default_role_registry()
+    role_ids = {role.role_id for role in registry.list_roles()}
+
+    assert expected_roles <= role_ids
+    assert registry.get("SafetyAgent").permission_scope == "veto_and_confirmation_only"
+    assert registry.get("AppControlExecutorAgent").permission_scope == "execute_only_with_work_order"
+    assert registry.get("MemoryRecallAgent").can_execute_external_world is False
+    assert registry.get("MemoryRecallAgent").requires_work_order is True
+    assert registry.get("MemoryWriteAgent").can_execute_external_world is True
+    assert registry.select_for_tool("core:local_memory_search").role_id == "MemoryRecallAgent"
+    assert registry.select_for_tool("mcp:browser_click").role_id == "BrowserExecutorAgent"
+    assert registry.select_for_tool("mcp:windows_window_close").role_id == "AppControlExecutorAgent"
+
+
+def test_cognitive_kernel_prompt_is_doc_aligned_main_agent_boundary():
+    from l3_node.cognitive_kernel.kernel_prompts import (
+        build_cognitive_kernel_system_prompt,
+        build_text_reasoning_role_system_prefix,
+        build_user_facing_reply_agent_system_prompt,
+    )
+
+    kernel_prompt = build_cognitive_kernel_system_prompt()
+    text_role_prompt = build_text_reasoning_role_system_prefix()
+    reply_prompt = build_user_facing_reply_agent_system_prompt()
+
+    assert "你是 Jachin 的认知内核" in kernel_prompt
+    assert "不能直接调用会改变外部世界的工具" in kernel_prompt
+    assert "DecisionContract -> WorkOrder" in kernel_prompt
+    assert "VerificationAgent" in kernel_prompt
+    assert "TurnClosure" in kernel_prompt
+
+    assert "TextReasoningAgent" in text_role_prompt
+    assert "不是认知内核本身" in text_role_prompt
+    assert "工具调用会被宿主转换为 DecisionContract -> WorkOrder" in text_role_prompt
+
+    assert "UserFacingReplyAgent" in reply_prompt
+    assert "不声称执行了未授权" in reply_prompt
+
+
+def test_cognitive_turn_context_prompt_block_contains_kernel_system_prompt():
+    block = _ctx("open calculator").prompt_block(max_chars=12000)
+
+    assert "[Cognitive Kernel Context]" in block
+    assert "memory_first_cognitive_kernel" in block
+    assert "你是 Jachin 的认知内核" in block
+    assert "External actions require DecisionContract and WorkOrder" in block
+
+
+def test_review_board_uses_document_role_chain_for_short_close(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+
+    result = plan_cognitive_turn(
+        _ctx(
+            "close",
+            turn_id="ck-arch-doc-close-chain",
+            active_window={"app_name": "Calculator", "title": "Calculator"},
+            recent_actions=['{"target_name":"Calculator","execution_status":"success"}'],
+        )
+    )
+    review_roles = {review.role_id for review in result.review_summary.reviews}
+    selected_roles = set(result.decision_contract.selected_roles)
+
+    assert {
+        "MemoryRecallAgent",
+        "DesktopStateReadAgent",
+        "WindowContextAgent",
+        "AppStateAgent",
+        "AppClosePlannerAgent",
+        "SafetyAgent",
+        "PermissionAgent",
+        "ConfirmationAgent",
+    } <= review_roles
+    assert {
+        "AppControlExecutorAgent",
+        "VerificationAgent",
+        "AuditAgent",
+        "RecoveryAgent",
+        "RetryPlannerAgent",
+        "MemoryWriteAgent",
+        "UserFacingReplyAgent",
+    } <= selected_roles
+    assert result.work_orders[0].role_agent == "AppControlExecutorAgent"
+
+
 def test_mainline_open_app_review_to_work_order(tmp_path, monkeypatch):
     monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
 

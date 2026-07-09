@@ -73,6 +73,8 @@ def _iter_json_word_items(data: Any) -> list[tuple[str, int]]:
                 items.append((str(canonical), weight))
                 for alias in value.get("aliases") or []:
                     items.append((str(alias), max(5, weight - 10)))
+                for alias in value.get("phonetic_aliases") or []:
+                    items.append((str(alias), max(5, weight - 12)))
     elif isinstance(data, list | tuple):
         for item in data:
             if isinstance(item, str):

@@ -59,14 +59,18 @@ _APP_ALIASES: dict[str, tuple[str, ...]] = {
     "Explorer": ("资源管理器", "explorer", "文件管理器"),
 }
 
-_REVIEW_ROLES = (
+_BASE_REVIEW_ROLES = (
     "IntentAnalystAgent",
     "EntityResolverAgent",
     "AmbiguityResolverAgent",
-    "VoiceEvidenceAgent",
+    "MemoryRecallAgent",
+    "PreferenceAgent",
+    "CorrectionLearningAgent",
+    "DesktopStateReadAgent",
     "SafetyAgent",
-    "AppControlPlannerAgent",
-    "ConversationAgent",
+    "PermissionAgent",
+    "PrivacyAgent",
+    "ConsistencyCheckAgent",
 )
 
 
@@ -373,7 +377,7 @@ def run_review_board(
     envelope: AgentInputEnvelope,
     state_snapshot: StateSnapshot,
     memory_bundle: RelevantMemoryBundle,
-    review_roles: tuple[str, ...] = _REVIEW_ROLES,
+    review_roles: tuple[str, ...] | None = None,
 ) -> ReviewSummary:
     text = _norm_text(envelope)
     intent = _detect_intent(text)
@@ -391,8 +395,18 @@ def run_review_board(
     review_session_id = _new_id("review")
     candidate_intents = [intent]
     candidate_entities = [target] if target else []
+    active_review_roles = review_roles or _review_roles_for(
+        envelope=envelope,
+        intent=intent,
+        task_type=task_type,
+        target=target,
+        risk=risk,
+        missing_target=missing_target,
+        needs_clarification=needs_clarification,
+        memory_bundle=memory_bundle,
+    )
     reviews: list[RoleAgentReview] = []
-    for role_id in review_roles:
+    for role_id in active_review_roles:
         review_input = RoleAgentReviewInput(
             review_session_id=review_session_id,
             turn_id=envelope.turn_id,
@@ -435,6 +449,37 @@ def run_review_board(
     )
     append_event("review_board_summary", envelope.turn_id, summary.to_dict())
     return summary
+
+
+def _review_roles_for(
+    *,
+    envelope: AgentInputEnvelope,
+    intent: str,
+    task_type: str,
+    target: dict[str, Any],
+    risk: RiskLevel,
+    missing_target: bool,
+    needs_clarification: bool,
+    memory_bundle: RelevantMemoryBundle,
+) -> tuple[str, ...]:
+    roles = list(_BASE_REVIEW_ROLES)
+    if envelope.source == InputSource.VOICE:
+        roles.append("VoiceEvidenceAgent")
+    if task_type == "app_control":
+        roles.extend(["AppAliasResolverAgent", "WindowContextAgent", "AppStateAgent", "AppControlPlannerAgent"])
+        if intent == "open_app":
+            roles.append("AppLaunchPlannerAgent")
+        if intent == "close_app":
+            roles.extend(["AppClosePlannerAgent", "ConfirmationAgent"])
+    elif task_type == "message_delivery":
+        roles.extend(["CommunicationPlannerAgent", "CommunicationWorker", "ConfirmationAgent"])
+    elif task_type == "file_operation":
+        roles.extend(["FileContextAgent", "FileWorker", "ConfirmationAgent"])
+    else:
+        roles.extend(["ConversationAgent", "UserFacingReplyAgent"])
+    if risk in {RiskLevel.HIGH, RiskLevel.CRITICAL} or missing_target or needs_clarification or memory_bundle.conflicts:
+        roles.extend(["ConfirmationAgent", "RecoveryAgent", "RetryPlannerAgent"])
+    return tuple(dict.fromkeys(roles))
 
 
 def _truthy_risk(value: Any) -> bool:
@@ -487,6 +532,71 @@ def _review_as_role(
         rationale.append("Voice evidence reviewed." if voice else "No voice evidence attached.")
         evidence.append({"type": "voice_evidence", "source": review_input.input_envelope.source.value, "voice": voice or {}})
         confidence = 0.7
+    elif role_id == "MemoryRecallAgent":
+        rationale.append("RelevantMemoryBundle was reviewed as the only memory source for this turn.")
+        evidence.append(
+            {
+                "type": "memory_bundle",
+                "recent_actions": len(review_input.memory_bundle.recent_actions),
+                "active_tasks": len(review_input.memory_bundle.active_tasks),
+                "preferences": len(review_input.memory_bundle.user_preferences),
+                "corrections": len(review_input.memory_bundle.corrections),
+                "conflicts": len(review_input.memory_bundle.conflicts),
+                "confidence": review_input.memory_bundle.confidence,
+            }
+        )
+        confidence = max(0.45, min(0.92, review_input.memory_bundle.confidence or 0.62))
+    elif role_id == "PreferenceAgent":
+        rationale.append("User preferences and safety preferences were reviewed for default choices.")
+        evidence.append(
+            {
+                "type": "preference_memory",
+                "user_preferences": len(review_input.memory_bundle.user_preferences),
+                "safety_preferences": len(review_input.memory_bundle.safety_preferences),
+                "tool_habits": len(review_input.memory_bundle.tool_habits),
+            }
+        )
+        confidence = 0.72 if review_input.memory_bundle.user_preferences or review_input.memory_bundle.safety_preferences else 0.5
+    elif role_id == "CorrectionLearningAgent":
+        rationale.append("Correction memory was reviewed; any new correction must be written only through MemoryWriteAgent.")
+        evidence.append(
+            {
+                "type": "correction_memory",
+                "corrections": len(review_input.memory_bundle.corrections),
+                "aliases": len(review_input.memory_bundle.aliases),
+            }
+        )
+        confidence = 0.75 if review_input.memory_bundle.corrections else 0.5
+    elif role_id == "DesktopStateReadAgent":
+        rationale.append("Desktop state snapshot was reviewed; no live desktop action is performed in review.")
+        evidence.append(
+            {
+                "type": "state_snapshot",
+                "active_window": review_input.state_snapshot.active_window,
+                "running_apps_count": len(review_input.state_snapshot.running_apps),
+                "recent_app_events_count": len(review_input.state_snapshot.recent_app_events),
+            }
+        )
+        confidence = 0.84 if review_input.state_snapshot.active_window else 0.58
+    elif role_id == "WindowContextAgent":
+        rationale.append("Window context was reviewed for active-window and unsaved-content signals.")
+        evidence.append({"type": "window_context", "active_window": review_input.state_snapshot.active_window})
+        confidence = 0.82 if review_input.state_snapshot.active_window else 0.5
+    elif role_id == "AppStateAgent":
+        rationale.append("App state was reviewed from running apps and recent app events.")
+        evidence.append(
+            {
+                "type": "app_state",
+                "running_apps_count": len(review_input.state_snapshot.running_apps),
+                "recent_app_events_count": len(review_input.state_snapshot.recent_app_events),
+            }
+        )
+        confidence = 0.78
+    elif role_id == "FileContextAgent":
+        rationale.append("File context was reviewed without mutating files.")
+        if target:
+            evidence.append({"type": "file_context", **target})
+        confidence = 0.78 if target else 0.5
     elif role_id == "SafetyAgent":
         rationale.append(f"Risk classified as {risk.value}.")
         evidence.append(
@@ -497,15 +607,68 @@ def _review_as_role(
             }
         )
         confidence = 0.83
+    elif role_id == "PermissionAgent":
+        rationale.append("Permission boundary reviewed; final authorization remains with the Cognitive Kernel.")
+        evidence.append({"type": "permission_review", "intent": intent, "task_type": task_type, "risk": risk.value})
+        confidence = 0.8
+    elif role_id == "PrivacyAgent":
+        rationale.append("Privacy exposure reviewed for files, contacts, messages, and outbound side effects.")
+        evidence.append({"type": "privacy_review", "task_type": task_type, "target_type": target.get("type") if target else ""})
+        confidence = 0.82 if task_type in {"message_delivery", "file_operation"} else 0.68
+    elif role_id == "ConfirmationAgent":
+        rationale.append("Confirmation need reviewed for ambiguity or elevated risk.")
+        evidence.append({"type": "confirmation_review", "needs_clarification": needs_clarification, "question": clarification_question})
+        confidence = 0.84 if needs_clarification else 0.62
+    elif role_id == "AppAliasResolverAgent":
+        if target:
+            rationale.append(f"App alias resolution produced target {target.get('name')} from {target.get('source')}.")
+            evidence.append({"type": "app_alias", **target})
+            confidence = 0.88
+        else:
+            rationale.append("No app alias was resolved.")
+            confidence = 0.44
     elif role_id == "AppControlPlannerAgent":
         if task_type == "app_control":
             recommended_roles.append("AppControlExecutorAgent")
-            can_execute = not needs_clarification
             rationale.append(f"App control intent can use {tool}.")
             confidence = 0.84 if target else 0.45
         else:
             rationale.append("Not an app-control task.")
             confidence = 0.5
+    elif role_id == "AppLaunchPlannerAgent":
+        if intent == "open_app":
+            recommended_roles.append("AppControlExecutorAgent")
+            rationale.append(f"App launch can be authorized through {tool}.")
+            confidence = 0.86 if target else 0.45
+        else:
+            rationale.append("Not an app-launch task.")
+            confidence = 0.45
+    elif role_id == "AppClosePlannerAgent":
+        if intent == "close_app":
+            recommended_roles.append("AppControlExecutorAgent")
+            rationale.append(f"App close can be authorized through {tool} after risk review.")
+            confidence = 0.84 if target else 0.45
+        else:
+            rationale.append("Not an app-close task.")
+            confidence = 0.45
+    elif role_id in {"CommunicationPlannerAgent", "CommunicationWorker"}:
+        if task_type == "message_delivery":
+            recommended_roles.append("MessageExecutorAgent")
+            rationale.append("Communication task can be planned for MessageExecutorAgent after safety and privacy review.")
+            evidence.append({"type": "communication_target", **target} if target else {"type": "communication_target"})
+            confidence = 0.82 if target.get("recipients") and target.get("message") else 0.55
+        else:
+            rationale.append("Not a communication task.")
+            confidence = 0.45
+    elif role_id == "FileWorker":
+        if task_type == "file_operation":
+            recommended_roles.append("FileExecutorAgent")
+            rationale.append("File task can be planned for FileExecutorAgent within WorkOrder scope.")
+            evidence.append({"type": "file_target", **target} if target else {"type": "file_target"})
+            confidence = 0.82 if target else 0.5
+        else:
+            rationale.append("Not a file task.")
+            confidence = 0.45
     elif role_id == "ConversationAgent":
         if intent == "conversation":
             recommended_roles.append("UserFacingReplyAgent")
@@ -514,6 +677,21 @@ def _review_as_role(
         else:
             rationale.append("Input is not primarily conversational.")
             confidence = 0.4
+    elif role_id == "UserFacingReplyAgent":
+        rationale.append("Final wording should be generated only after TurnClosure or kernel decision boundaries are known.")
+        recommended_roles.append("UserFacingReplyAgent")
+        confidence = 0.82 if intent == "conversation" else 0.62
+    elif role_id == "ConsistencyCheckAgent":
+        rationale.append("Consistency between memory, state, target, and intent was reviewed.")
+        evidence.append({"type": "consistency", "conflicts": review_input.memory_bundle.conflicts})
+        confidence = 0.8 if not review_input.memory_bundle.conflicts else 0.6
+    elif role_id in {"RecoveryAgent", "RetryPlannerAgent"}:
+        rationale.append("Recovery options are available if execution verification fails or ambiguity remains.")
+        evidence.append({"type": "recovery_readiness", "risk": risk.value, "needs_clarification": needs_clarification})
+        confidence = 0.74
+    else:
+        rationale.append(f"{role_id} is registered for this stage but has no specialized review adapter yet.")
+        confidence = 0.5
 
     return RoleAgentReview(
         review_id=_new_id("role_review"),
@@ -536,13 +714,107 @@ def _review_as_role(
 
 
 def _selected_roles_for(intent: str) -> list[str]:
-    if intent in {"open_app", "close_app", "switch_app"}:
-        return ["AppControlExecutorAgent", "VerificationAgent", "RecoveryAgent", "MemoryWriteAgent", "UserFacingReplyAgent"]
+    if intent == "open_app":
+        return _dedupe_roles(
+            [
+                "MemoryRecallAgent",
+                "DesktopStateReadAgent",
+                "AppAliasResolverAgent",
+                "AppLaunchPlannerAgent",
+                "AppControlPlannerAgent",
+                "SafetyAgent",
+                "PermissionAgent",
+                "AppControlExecutorAgent",
+                "VerificationAgent",
+                "AuditAgent",
+                "RecoveryAgent",
+                "RetryPlannerAgent",
+                "MemoryWriteAgent",
+                "UserFacingReplyAgent",
+            ]
+        )
+    if intent == "close_app":
+        return _dedupe_roles(
+            [
+                "MemoryRecallAgent",
+                "DesktopStateReadAgent",
+                "WindowContextAgent",
+                "AppStateAgent",
+                "AppClosePlannerAgent",
+                "SafetyAgent",
+                "PermissionAgent",
+                "ConfirmationAgent",
+                "AppControlExecutorAgent",
+                "VerificationAgent",
+                "AuditAgent",
+                "RecoveryAgent",
+                "RetryPlannerAgent",
+                "MemoryWriteAgent",
+                "UserFacingReplyAgent",
+            ]
+        )
+    if intent == "switch_app":
+        return _dedupe_roles(
+            [
+                "MemoryRecallAgent",
+                "DesktopStateReadAgent",
+                "WindowContextAgent",
+                "AppControlPlannerAgent",
+                "SafetyAgent",
+                "PermissionAgent",
+                "AppControlExecutorAgent",
+                "VerificationAgent",
+                "AuditAgent",
+                "RecoveryAgent",
+                "MemoryWriteAgent",
+                "UserFacingReplyAgent",
+            ]
+        )
     if intent == "message_send":
-        return ["MessageExecutorAgent", "VerificationAgent", "RecoveryAgent", "MemoryWriteAgent", "UserFacingReplyAgent"]
+        return _dedupe_roles(
+            [
+                "MemoryRecallAgent",
+                "EntityResolverAgent",
+                "CommunicationPlannerAgent",
+                "CommunicationWorker",
+                "SafetyAgent",
+                "PermissionAgent",
+                "PrivacyAgent",
+                "ConfirmationAgent",
+                "MessageExecutorAgent",
+                "VerificationAgent",
+                "AuditAgent",
+                "RecoveryAgent",
+                "RetryPlannerAgent",
+                "MemoryWriteAgent",
+                "UserFacingReplyAgent",
+            ]
+        )
     if intent == "file_operation":
-        return ["FileExecutorAgent", "VerificationAgent", "RecoveryAgent", "MemoryWriteAgent", "UserFacingReplyAgent"]
-    return ["ConversationAgent", "MemoryWriteAgent", "UserFacingReplyAgent"]
+        return _dedupe_roles(
+            [
+                "MemoryRecallAgent",
+                "EntityResolverAgent",
+                "FileContextAgent",
+                "FileWorker",
+                "SafetyAgent",
+                "PermissionAgent",
+                "PrivacyAgent",
+                "ConfirmationAgent",
+                "FileExecutorAgent",
+                "VerificationAgent",
+                "AuditAgent",
+                "RecoveryAgent",
+                "RetryPlannerAgent",
+                "MemoryWriteAgent",
+                "UserFacingReplyAgent",
+            ]
+        )
+    return _dedupe_roles(["MemoryRecallAgent", "ConversationAgent", "UserFacingReplyAgent", "MemoryWriteAgent"])
+
+
+def _dedupe_roles(roles: list[str]) -> list[str]:
+    return list(dict.fromkeys(roles))
 
 
 def _summary_confidence(intent: str, target: dict[str, Any], needs_clarification: bool) -> float:

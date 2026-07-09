@@ -1,0 +1,5 @@
+output_root: "~/.jachin"
+writes:
+  - path: config/skills/pmo-copilot/pmo_bitable_watch.yaml
+    type: file
+    merge: overwrite_if_missing

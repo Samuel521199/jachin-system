@@ -76,12 +76,7 @@ from l3_node.intent_gateway.pushback_copy import (
     L3_SERVICE_ETHOS_RETRY_BLOCK,
     L3_SERVICE_ETHOS_RETRY_BLOCK_SLIM,
 )
-from l3_client.local_mcps.jachin_memory_nexus.memory_backend import recall_room
-from l3_node.memory_nexus_bridge import (
-    async_build_l0_persona_block,
-    async_build_l1_system_memory_block,
-    schedule_nexus_turn_commit_async,
-)
+from l3_node.memory_nexus_bridge import schedule_nexus_turn_commit_async
 from l3_node.cognitive_kernel.direct_mainline import try_execute_cognitive_direct_plan
 from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
 from l3_node.cognitive_kernel.pipeline import build_cognitive_turn_context
@@ -90,7 +85,7 @@ logger = logging.getLogger(__name__)
 
 
 def _gateway_prior_brief(prior_messages: list[dict[str, Any]], max_chars: int = 1200) -> str:
-    """供 GatewayContextBundle.short_memory_context 的轻量摘要（非完整历史）。"""
+    """Legacy helper kept for compatibility; main-loop memory now enters via MemoryRecallAgent."""
     parts: list[str] = []
     for m in prior_messages[-8:]:
         if not isinstance(m, dict):
@@ -3125,26 +3120,9 @@ async def _build_system_prompt(
             return True
         return bool(re.fullmatch(r"(hi|hello|hey|yo|喂|嘿)\s*jachin[!！?？]?", t))
     _dc_ctx = desktop_companion_context if isinstance(desktop_companion_context, dict) else {}
-    _nexus_prompt_disabled = os.environ.get("JACHIN_MEMORY_NEXUS_PROMPT_DISABLE", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
-    # 纯寒暄 / 显式关断：不碰 Memory Nexus，主流程优先
-    _skip_nexus_l0_l1 = _nexus_prompt_disabled or heuristic_trivial_chitchat_only(_surf_user)
-
+    # Memory SSOT: passive Nexus L0/L1 prompt injection is disabled here.
+    # Those sources are recalled only through MemoryRecallAgent -> RelevantMemoryBundle.
     l0_persona_header = ""
-    if not _skip_nexus_l0_l1:
-        try:
-            _pc = await async_build_l0_persona_block()
-            if (_pc or "").strip():
-                l0_persona_header = (
-                    "你是 Jachin AI OS。以下是你的最高指挥官(统帅)的专属行为侧写与偏好，你必须在接下来的所有交互中严格遵守这些习惯：\n"
-                    f"{_pc.strip()}\n\n"
-                )
-        except Exception as e:
-            logger.debug("[Memory Nexus] L0 灵魂侧写栈注入失败: %s", e)
 
     # L5：按本轮用户表面文本做启发式路由（与 run_agent 传入的 safety_lock_user_text 对齐）
     _mem_route = _memory_attention_route_mode(safety_lock_user_text or "")
@@ -3477,13 +3455,6 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 【UI 视觉测试】工具已就绪：get_parsed_screen → click_element（桌面图标常 double_click=true）→ type_text。
 ---
 """
-    # L1 唤醒栈：Memory Nexus（SQLite + FastEmbed）动态拉取近期巡检与用户侧记忆
-    l1_system_memory = ""
-    if not _skip_nexus_l0_l1:
-        try:
-            l1_system_memory = await async_build_l1_system_memory_block(recall_room)
-        except Exception as e:
-            logger.debug("[Memory Nexus] L1 唤醒注入失败: %s", e)
     jachin_rules = ""
     try:
         from l3_node.jachin_workspace_rules import get_jachin_workspace_rules_snippet
@@ -3647,8 +3618,6 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
     if pure_json_contract:
         if (safety_lock_txt or "").strip():
             _pure_mem_rules += f"\n{safety_lock_txt.strip()}\n"
-        if (l1_system_memory or "").strip():
-            _pure_mem_rules += f"\n{l1_system_memory.strip()}\n"
         if (jachin_rules or "").strip():
             _pure_mem_rules += f"\n【工作区规则】\n{jachin_rules.strip()}\n"
 
@@ -3698,12 +3667,10 @@ Final Answer: <最终回复>
 --- 以下段落随会话、记忆与域状态变化（建议置于提示词末尾以利于 API 前缀缓存）---
 """
     # 后缀驱逐 rank：越小越先丢。对齐 Cognitive Kernel prompt budget policy §5.3
-    # L5：long 提高 task_plan / plan_hint 保活；short 提高经验块、压低被动本地记忆（语义层始终最高档）
+    # Memory SSOT: memory-like context is not ranked here; it enters via RelevantMemoryBundle.
     _rank_sem_layer = 99
-    _rank_exp_fs = 96 if _mem_route == "short" else 94
     _rank_task_plan_disk = 97 if _mem_route == "long" else 95
     _rank_plan_hint = 24 if _mem_route == "long" else 18
-    _rank_passive_local = 8 if _mem_route == "short" else 10
 
     suffix_chunks: list[SuffixChunk] = []
     _sem_fmt = ""
@@ -3765,12 +3732,8 @@ Final Answer: <最终回复>
             )
         except ImportError:
             pass
-    # 历史 Few-Shot：紧接参谋长人设之后、L4 Probe SOP 之前，便于先看到成功案例再跟准则
-    _exp_fs = (experience_few_shots or "").strip()
-    if not pure_json_contract and _exp_fs:
-        suffix_chunks.append(
-            SuffixChunk("high", "l4_experience_rag", f"\n{_exp_fs}\n", eviction_rank=_rank_exp_fs)
-        )
+    # Memory SSOT: historical experience few-shots are routed through
+    # MemoryRecallAgent as tool_habit evidence, not injected directly.
     _rtg = (realtime_web_grounding_block or "").strip()
     if not pure_json_contract and _rtg:
         suffix_chunks.append(
@@ -3819,15 +3782,6 @@ Final Answer: <最终回复>
         except ImportError:
             pass
     if not pure_json_contract:
-        if (l1_system_memory or "").strip():
-            suffix_chunks.append(
-                SuffixChunk(
-                    "low",
-                    "passive_local_memory",
-                    f"\n{l1_system_memory}\n",
-                    eviction_rank=_rank_passive_local,
-                )
-            )
         if (jachin_rules or "").strip():
             suffix_chunks.append(
                 SuffixChunk("high", "jachin_workspace_rules", f"\n{jachin_rules}\n", eviction_rank=90)
@@ -3880,7 +3834,7 @@ Final Answer: <最终回复>
                     pass
             _react_footer_body = (
                 REACT_FOOTER_L5_MEMORY_COMPACT_FACTS
-                + "【记忆】被动注入仅供参考；事实以 core:local_memory_search 或 recall_memory（同源 Nexus）检索为准。\n"
+                + "【记忆 SSOT】本轮被动记忆只信任 Cognitive Kernel 的 RelevantMemoryBundle；不要从其它旧记忆块推断事实。\n"
                 "【记忆分级写入铁律】日常偏好/代号/框架喜好 → **必须且只能**用 **core:local_memory_append** 写入 Memory Nexus（SQLite + FastEmbed），"
                 "**禁止**幻觉写 MEMORY.md、**禁止** core:safety_lock_append；仅「禁止高危操作、核心安防」才用 safety_lock_append。\n"
                 "【记忆整理纪律】统帅**下令**整理时：系统常**异步**执行合并（非必有可轮询的 background_task）。**禁止**在对话中输出整份 Markdown 记忆清单；"
@@ -3896,7 +3850,7 @@ Final Answer: <最终回复>
         else:
             _react_footer_body = (
                 REACT_FOOTER_L5_MEMORY_COMPACT_FACTS
-                + "【记忆 SSOT】被动「系统近期核心记忆」仅为提示；事实以 core:local_memory_search / recall_memory（Nexus）检索为准。\n"
+                + "【记忆 SSOT】本轮被动记忆只信任 Cognitive Kernel 的 RelevantMemoryBundle；显式记忆工具仅用于用户要求的检索/写入动作。\n"
                 "【记忆分级写入铁律】\n"
                 "1. **个人偏好与项目情报（免审批）**：当统帅告诉你业务代号、框架偏好等日常记忆时，"
                 "**绝对禁止**幻觉写入 MEMORY.md！你**必须且只能使用 core:local_memory_append** 工具将事实存入 Memory Nexus（User_Persona / Learned_Skills）。"
@@ -3943,7 +3897,14 @@ Final Answer: <最终回复>
             len(prompt_prefix) + len(prompt_suffix),
             _total_cap,
         )
-    return prompt_prefix + prompt_suffix
+    from l3_node.cognitive_kernel.kernel_prompts import build_text_reasoning_role_system_prefix
+
+    legacy_text_protocol = prompt_prefix + prompt_suffix
+    return (
+        build_text_reasoning_role_system_prefix()
+        + "\n\n[Legacy Text Tool Protocol Retained As Role Adapter]\n"
+        + legacy_text_protocol
+    )
 
 
 class SubAgent:
@@ -6999,7 +6960,7 @@ async def _run_text_transport_core(
             if m:
                 ctx.final_answer = _apply_hr_recruitment_final_answer_table_sync(m.group(1).strip(), ctx)
                 return
-    ctx.final_answer = "[ReAct 循环达到上限]"
+    ctx.final_answer = "[TextReasoningAgent 达到本轮认知预算上限]"
 
 
 async def _build_direct_system_prompt(
@@ -7011,24 +6972,22 @@ async def _build_direct_system_prompt(
     desktop_companion_context: Optional[dict[str, Any]] = None,
     voice_fast_lane_prompt: bool = False,
 ) -> str:
-    """直连 LLM：无 ReAct、无工具表；保留记忆与工作区规则（保密约束等）。"""
+    """UserFacingReplyAgent LLM path: no tool table, no external-world action."""
+    from l3_node.cognitive_kernel.kernel_prompts import build_user_facing_reply_agent_system_prompt
+
     # prompt_cycle：保留与调用方签名对齐（当前直连模板未使用）。
     _ = prompt_cycle
     _dc_ctx = desktop_companion_context if isinstance(desktop_companion_context, dict) else {}
     _voice_fast_prompt = bool(voice_fast_lane_prompt or _dc_ctx.get("voice_fast_lane") or _dc_ctx.get("server_voice_fast_lane"))
-    _nexus_prompt_disabled = _voice_fast_prompt or os.environ.get("JACHIN_MEMORY_NEXUS_PROMPT_DISABLE", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
-    # 【闲聊避让】纯寒暄且非 JSON：跳过 L0/L1（Memory Nexus），仅轻量 system + 工作区规则
+    # 【闲聊避让】纯寒暄且非 JSON：仅轻量 system + 工作区规则
     _dc_just_interrupted = bool(
         _dc_ctx.get("just_interrupted") or _dc_ctx.get("barge_in") or _dc_ctx.get("just_barged_in")
     )
     if general_chitchat and not json_mode:
         lines: list[str] = [
-            "你是 Jachin 通用智能助手，语气自然、简洁、友善。",
+            build_user_facing_reply_agent_system_prompt(),
+            "本轮由认知内核授权给 UserFacingReplyAgent 回复；不得执行或声称执行任何外部动作。",
+            "语气自然、简洁、友善。",
             "用户本轮多为寒暄或简短礼貌用语：用一两句自然中文回应即可，可适度用常见礼貌用语。",
             "围绕用户话题简短回应，避免主动引入与当前消息无关的长篇领域话术。",
             "不要输出 Thought、Action、Observation、Final Answer 等 ReAct 标签行。",
@@ -7057,24 +7016,14 @@ async def _build_direct_system_prompt(
             pass
         return "\n".join(lines)
 
-    l0_persona_prefix = ""
-    if not _nexus_prompt_disabled:
-        try:
-            _pc = await async_build_l0_persona_block()
-            if (_pc or "").strip():
-                l0_persona_prefix = (
-                    "你是 Jachin AI OS。以下是你的最高指挥官(统帅)的专属行为侧写与偏好，你必须在接下来的所有交互中严格遵守这些习惯：\n"
-                    f"{_pc.strip()}\n\n"
-                )
-        except Exception as e:
-            logger.debug("[Memory Nexus] L0 直连灵魂侧写注入失败: %s", e)
-
+    # Memory SSOT: direct completions do not pull L0/L1 from Nexus.
+    # The top-level cognitive context carries memory through RelevantMemoryBundle.
     lines: list[str] = []
-    if (l0_persona_prefix or "").strip():
-        lines.append(l0_persona_prefix.rstrip())
     lines.extend(
         [
-            "你是高精度指令遵从助手。不要问候语，不要输出可见的思考过程，不要使用 Markdown 章节标题行作开场。",
+            build_user_facing_reply_agent_system_prompt(),
+            "本轮由认知内核授权给 UserFacingReplyAgent 回复；不得执行或声称执行任何外部动作。",
+            "高精度遵从用户指令。不要问候语，不要输出可见的思考过程，不要使用 Markdown 章节标题行作开场。",
             "不要输出 Thought、Action、Observation、Final Answer 等 ReAct 套话。",
         ]
     )
@@ -7098,14 +7047,6 @@ async def _build_direct_system_prompt(
         if str(_dc_ctx.get("voice_fast_lane_kind") or "").strip().lower() == "light_query":
             lines.append("\u8fd9\u4e00\u8f6e\u662f\u8bed\u97f3\u8f7b\u95ee\u7b54\uff0c\u5fc5\u987b\u56de\u7b54\u7528\u6237\u95ee\u7684\u5177\u4f53\u95ee\u9898\uff0c\u4e0d\u8981\u53ea\u8bf4\u2018\u6211\u5728\u2019\u3001\u2018\u542c\u7740\u5462\u2019\u6216\u5176\u4ed6 presence ack\u3002")
     lines.append(_MERMAID_SAFE_RULES_SYSTEM_BLOCK_SLIM.strip())
-
-    if not _nexus_prompt_disabled:
-        try:
-            lm = await async_build_l1_system_memory_block(recall_room)
-            if (lm or "").strip():
-                lines.append("\n" + lm.strip())
-        except Exception as e:
-            logger.debug("[Memory Nexus] L1 直连 system 注入失败: %s", e)
 
     try:
         from l3_node.jachin_workspace_rules import get_jachin_workspace_rules_snippet
@@ -7153,7 +7094,7 @@ async def _run_direct_llm_completion(
         except (TypeError, ValueError):
             _voice_fast_max_tokens = 64
     base_kw: dict[str, Any] = {
-        "l3_call_purpose": "voice_fast_lane_direct_llm" if _voice_fast_direct else "direct_llm_bypass",
+        "l3_call_purpose": "voice_fast_lane_user_facing_reply_agent" if _voice_fast_direct else "user_facing_reply_agent",
         "l3_token_accumulator": token_acc,
         "l3_token_budget_max": token_budget,
         "l3_cancel_event": cancel_event,
@@ -7200,7 +7141,7 @@ async def _run_direct_llm_completion(
                 )
                 continue
             raise
-    raise last_err or RuntimeError("direct_llm_bypass failed")
+    raise last_err or RuntimeError("user_facing_reply_agent failed")
 
 
 async def _paraphrase_abort_slot_reply_async(
@@ -7277,8 +7218,8 @@ async def run_agent(
     _delegate_depth: delegate 嵌套深度（子 Agent 由 delegate 路径传入，用于 max_delegate_depth 与 Token 子预算）。
     attachments_metadata: §12.1 附件列表（元数据 + 可选 local_path/base64 等实体），入 GatewayContextBundle；
         run_agent 内会组装 OpenAI 多模态 user content（图片 data URL；PDF/docx/txt 抽文本拼入）。
-    gateway_context_bundle: 若传入则沿用；否则由 user_input + 会话摘要自动构造（战役一 GatewayContextBundle）。
-    short_memory_context: 显式覆盖网关用短记忆；空则取最近若干轮截断摘要。
+    gateway_context_bundle: 若传入则沿用；否则由 user_input 构造（战役一 GatewayContextBundle）。
+    short_memory_context: 兼容旧签名；主循环短期记忆只通过 MemoryRecallAgent 进入 RelevantMemoryBundle。
     gateway_system_state: 如 AWAITING_CLARIFICATION，配合 gateway_clarification_* 驱动澄清门控（仅在未传 gateway_context_bundle 时生效）。
     gateway_workspace_dir: 显式 Git/嗅探工作区目录（绝对路径为佳）；空则尝试 implicit_attribution 的
         workspace_dir / git_workspace_dir / effective_workspace_root，再回退 ~/.jachin/workspace。
@@ -7507,12 +7448,37 @@ async def run_agent(
             desktop_companion_context=_desktop_companion_ctx,
             gateway_system_state=_gateway_sniffer_ws,
         )
+        try:
+            from l3_node.terminal_turn_debug_log import log_cognitive_mainline_context
+
+            log_cognitive_mainline_context(_cognitive_ctx)
+        except Exception:
+            pass
         _cognitive_kernel_plan = plan_cognitive_turn(_cognitive_ctx, emit_non_execution_closure=False)
+        try:
+            from l3_node.terminal_turn_debug_log import log_cognitive_mainline_plan
+
+            log_cognitive_mainline_plan(_cognitive_kernel_plan)
+        except Exception:
+            pass
         _cognitive_kernel_prompt_block = (
             _cognitive_ctx.prompt_block(max_chars=4000)
             + "\n[Cognitive Kernel Plan]\n"
             + json.dumps(_cognitive_kernel_plan.to_dict(), ensure_ascii=False, default=str)[:5000]
         )
+        try:
+            from l3_node.terminal_turn_debug_log import log_main_agent_effective_prompt
+
+            log_main_agent_effective_prompt(
+                stage="cognitive_kernel_planning_context",
+                cognitive_kernel_prompt_block=_cognitive_kernel_prompt_block,
+                tools_count=0,
+                messages_count=len(prior_messages),
+                sent_to_llm=False,
+                note="Cognitive Kernel is the only top-level main loop. Text LLM paths run only as authorized role agents after kernel planning.",
+            )
+        except Exception:
+            pass
         logger.info(
             "[CognitiveKernel] planned turn=%s task=%s workflow=%s work_orders=%d",
             run_id[:12],
@@ -7644,7 +7610,9 @@ async def run_agent(
             from l3_node.intent_gateway.bundle import build_gateway_bundle
             from l3_node.intent_gateway.gateway_pipeline import apply_gateway_ingress_pipeline
 
-            _gw_mem = (short_memory_context or "").strip() or _gateway_prior_brief(prior_messages)
+            # Memory SSOT: Gateway no longer receives a separate short-memory summary.
+            # Conversation history is recalled by MemoryRecallAgent into RelevantMemoryBundle.
+            _gw_mem = ""
             if _gateway_bundle is None:
                 _gateway_bundle = build_gateway_bundle(
                     user_input=user_input or "",
@@ -8309,57 +8277,8 @@ async def run_agent(
             _semantic_layer = _sl_gw
 
     _experience_few_shots = ""
-    _exp_query = (user_input or "").strip()
-    # 仅用本轮用户表面句做经验检索 query 文本
-    if not _exp_query and _gateway_bundle is not None:
-        _exp_query = str(_gateway_bundle.user_input or _gateway_bundle.routing_utterance or "").strip()
-    # 门控表面：与网关纯净 classification_text 对齐（与 short_memory 解耦，见 bundle.rebuild_classification_text）
-    _exp_intent_surface = (
-        str(_gateway_bundle.classification_text or "").strip()
-        if _gateway_bundle is not None
-        else _exp_query
-    )
-    # 经验检索 query：与纯净意图面一致（勿用含摘要的拼接串）；无网关时回退 user_input
-    _exp_rag_query = (
-        _exp_intent_surface if (_exp_intent_surface or "").strip() else _exp_query
-    )
-    _attachment_has_image = bool(_gateway_bundle and _gateway_bundle.extra.get("attachment_has_image"))
-    try:
-        from l3_node.experience_memory import (
-            experience_rag_enabled,
-            format_experience_block_for_prompt,
-            should_bypass_experience_rag_for_intent,
-        )
-
-        _exp_bypass_short = should_bypass_experience_rag_for_intent(_exp_intent_surface) or _skip_experience_rag
-        # 直连 completion 不走带工具的 system；纯寒暄也不拉经验库（易混入招聘等域 Few-Shot）
-        if (
-            experience_rag_enabled()
-            and on_step
-            and not _try_direct
-            and not _trivial_chitchat
-            and not _attachment_has_image
-            and not _exp_bypass_short
-        ):
-            try:
-                on_step(
-                    "system_status",
-                    json.dumps({"status": "⏳ 正在检索历史经验…"}, ensure_ascii=False),
-                    run_id,
-                )
-            except Exception:
-                pass
-        # 含图像时禁用经验 Few-Shot；极短意图跳过检索（避免误命中 Few-Shot）
-        if (
-            experience_rag_enabled()
-            and not _try_direct
-            and not _trivial_chitchat
-            and not _attachment_has_image
-            and not _exp_bypass_short
-        ):
-            _experience_few_shots = format_experience_block_for_prompt(_exp_rag_query[:8000], top_k=2)
-    except Exception:
-        _experience_few_shots = ""
+    # Memory SSOT: experience_rag is consumed by MemoryRecallAgent as evidence.
+    # Do not build or inject a standalone HISTORY_FEW_SHOTS prompt block here.
 
     _realtime_grounding_block = ""
     try:
@@ -8531,7 +8450,7 @@ async def run_agent(
             "lark_chat_id_suffix": (_lark_cid[-16:] if len(_lark_cid) > 16 else _lark_cid) or None,
             "prompt_style": _prompt_style,
             "pure_json_contract": _pure_json_contract,
-            "try_direct_llm_bypass": _try_direct,
+            "user_facing_reply_agent_fast_path": _try_direct,
             "system_prompt_chars": len(system_prompt or ""),
             "chief_advisor_mode": _chief_advisor_mode,
             "execution_tier": _tier_dbg,
@@ -8539,7 +8458,7 @@ async def run_agent(
             "allowlist_is_set": allowed is not None,
         }
         append_section(
-            "[run_agent] 进入网关/OOD/ReAct 前的配置摘要",
+            "[run_agent] 进入认知内核文本角色前的配置摘要",
             json.dumps(_dbg_body, ensure_ascii=False, indent=2),
         )
         from l3_node.terminal_turn_debug_log import log_human_run_config
@@ -8932,12 +8851,12 @@ async def run_agent(
             # 直连路径仍用主 engine；ReAct 含图时已由 _react_engine_for_iteration 切至 INTENT_GATEWAY_MULTIMODAL_MODEL（默认 qwen3.5-plus）
             _direct_model_ov: str | None = None
             logger.info(
-                "[L3 Agent] direct_llm_bypass run_id=%s json_object=%s model_override=%s",
+                "[L3 Agent] UserFacingReplyAgent fast path run_id=%s json_object=%s model_override=%s",
                 run_id,
                 _direct_json,
                 _direct_model_ov or "-",
             )
-            exec_trace(logger, "direct_llm_bypass 开始 run_id=%s json_object=%s", run_id[:12], _direct_json)
+            exec_trace(logger, "UserFacingReplyAgent fast path 开始 run_id=%s json_object=%s", run_id[:12], _direct_json)
             try:
                 # 纯寒暄直连：不传完整 history（其中常含【历史摘要】里的错误人设、旧轮「招聘总监」回复），否则模型会复读
                 _direct_chitchat = bool(_trivial_chitchat and not _direct_json)
@@ -8969,7 +8888,7 @@ async def run_agent(
                     _session_messages.clear()
                     _recent_db = messages[-30:] if len(messages) > 30 else messages
                     _session_messages.extend(_recent_db)
-                exec_trace(logger, "direct_llm_bypass 完成 run_id=%s out_len=%d", run_id[:12], len(_db_out or ""))
+                exec_trace(logger, "UserFacingReplyAgent fast path 完成 run_id=%s out_len=%d", run_id[:12], len(_db_out or ""))
                 try:
                     schedule_nexus_turn_commit_async(user_input or "", _db_out or "")
                 except Exception:
@@ -8979,7 +8898,7 @@ async def run_agent(
                         intent=user_input or "",
                         source="l3_agent",
                         run_id=run_id,
-                        metadata={"_implicit_channel": _bg_channel, "path": "direct_llm_bypass"},
+                        metadata={"_implicit_channel": _bg_channel, "path": "user_facing_reply_agent"},
                     )
                     await global_hooks.run(HOOK_ON_MEMORY_COMMIT, _mctx)
                 except Exception:
@@ -8999,8 +8918,8 @@ async def run_agent(
                     pass
                 return _apply_hr_recruitment_final_answer_table_sync(_db_out, _DirectBypassCtx())
             except Exception as _e_db:
-                logger.warning("[L3 Agent] direct_llm_bypass 失败，回退 ReAct: %s", _e_db)
-                exec_trace(logger, "direct_llm_bypass 失败回退 ReAct run_id=%s err=%s", run_id[:12], str(_e_db)[:200])
+                logger.warning("[L3 Agent] UserFacingReplyAgent fast path 失败，转入 TextReasoningAgent: %s", _e_db)
+                exec_trace(logger, "UserFacingReplyAgent fast path 失败转入 TextReasoningAgent run_id=%s err=%s", run_id[:12], str(_e_db)[:200])
                 if (
                     _gateway_bundle is not None
                     and getattr(_gateway_bundle, "requires_realtime_knowledge", False)
@@ -9166,6 +9085,21 @@ async def run_agent(
         )
         ctx.messages = messages
         ctx.system_prompt = system_prompt
+        try:
+            from l3_node.terminal_turn_debug_log import log_main_agent_effective_prompt
+
+            log_main_agent_effective_prompt(
+                stage="cognitive_kernel_text_reasoning_role",
+                system_prompt=system_prompt or "",
+                gateway_inject=_gw_inject or "",
+                cognitive_kernel_prompt_block=_cognitive_kernel_prompt_block or "",
+                tools_count=len(tools or []),
+                messages_count=len(messages or []),
+                sent_to_llm=bool((system_prompt or "").strip()),
+                note="This is the authorized TextReasoningAgent/UserFacingReplyAgent prompt. It is not the old top-level main-agent loop; tool actions still pass through WorkOrder dispatch.",
+            )
+        except Exception:
+            pass
 
         pipeline = Pipeline()
 
@@ -9174,7 +9108,7 @@ async def run_agent(
             if not c.aborted:
                 await next_fn()
 
-        async def react_mw(c: PipelineContext, next_fn) -> None:
+        async def text_reasoning_role_mw(c: PipelineContext, next_fn) -> None:
             await _run_text_transport_core(c, engine, on_step=on_step)
             if not c.aborted:
                 await next_fn()
@@ -9183,10 +9117,10 @@ async def run_agent(
             await global_hooks.run(HOOK_BEFORE_RESPONSE, c)
             await next_fn()
 
-        pipeline.use(on_intent_mw).use(react_mw).use(pre_resp_mw)
+        pipeline.use(on_intent_mw).use(text_reasoning_role_mw).use(pre_resp_mw)
         exec_trace(
             logger,
-            "ReAct 管道开始 run_id=%s max_iter=%d tools=%d",
+            "TextReasoningAgent 管道开始 run_id=%s max_iter=%d tools=%d",
             run_id[:12],
             max_iterations,
             len(tools),
@@ -9194,7 +9128,7 @@ async def run_agent(
         await pipeline.execute(ctx)
         exec_trace(
             logger,
-            "ReAct 管道结束 run_id=%s aborted=%s final_len=%d",
+            "TextReasoningAgent 管道结束 run_id=%s aborted=%s final_len=%d",
             run_id[:12],
             bool(getattr(ctx, "aborted", False)),
             len(ctx.final_answer or ""),

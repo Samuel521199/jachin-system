@@ -1530,6 +1530,46 @@ def test_environment_verifier_accepts_matching_target_environment() -> None:
     assert result.checks["title_ok"] is True or result.checks["process_ok"] is True
 
 
+def test_environment_verifier_accepts_chrome_as_browser_title() -> None:
+    from l3_client.local_mcps.windows_uia_mcp.os_tasks import EnvironmentVerifier, _app_contract
+
+    class FakeWin:
+        def active_snapshot(self):
+            return {
+                "title": "New Tab - Google Chrome",
+                "process": "",
+                "pid": 123,
+                "hwnd": 456,
+                "rect": {"left": 0, "top": 0, "width": 1200, "height": 800},
+            }
+
+    result = EnvironmentVerifier(FakeWin()).verify(_app_contract("Browser"), stage="open_app", action="verify_foreground")
+
+    assert result.ok is True
+    assert result.detail == "environment_verified"
+    assert result.checks["title_ok"] is True
+
+
+def test_environment_verifier_accepts_chrome_as_browser_process() -> None:
+    from l3_client.local_mcps.windows_uia_mcp.os_tasks import EnvironmentVerifier, _app_contract
+
+    class FakeWin:
+        def active_snapshot(self):
+            return {
+                "title": "New Tab",
+                "process": "chrome.exe",
+                "pid": 123,
+                "hwnd": 456,
+                "rect": {"left": 0, "top": 0, "width": 1200, "height": 800},
+            }
+
+    result = EnvironmentVerifier(FakeWin()).verify(_app_contract("browser"), stage="open_app", action="verify_foreground")
+
+    assert result.ok is True
+    assert result.detail == "environment_verified"
+    assert result.checks["process_ok"] is True
+
+
 def test_environment_verifier_falls_back_when_active_snapshot_is_missing() -> None:
     from l3_client.local_mcps.windows_uia_mcp.os_tasks import EnvironmentVerifier, _app_contract
 

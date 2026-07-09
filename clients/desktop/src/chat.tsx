@@ -14,7 +14,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import {
   appendL3VoiceDiagnostics,
-  composeVoiceReply,
   synthesizeSpeech,
   streamChatMessage,
   tryL3AgentForIntent,
@@ -72,7 +71,7 @@ import {
   type VoiceTranscriptionResult,
   VOICE_UNAVAILABLE_HINT,
 } from "./voice/voiceCore";
-import { VOICE_PROFILES, resolveChatSpeakSentences } from "./voice/voiceProfiles";
+import { VOICE_PROFILES } from "./voice/voiceProfiles";
 import {
   beginVoiceChatTrace,
   endVoiceChatTrace,
@@ -88,11 +87,6 @@ import { voicePlaybackController } from "./voice/voicePlaybackController";
 import { voiceSessionStore } from "./voice/voiceSessionStore";
 import { initVoiceCompanionDebugLog, truncVoiceLog, voiceCompanionDebug } from "./voice/voiceCompanionDebugLog";
 import { DEFAULT_KOKORO_TTS_VOICE } from "./voice/voiceDefaults";
-import {
-  dispatchVoiceIntent,
-  type VoiceDispatcherDecision,
-  type VoiceTaskRef,
-} from "./voice/voiceIntentRouter";
 import { l3RunIdsSameTurn } from "./utils/l3RunIdCompat";
 import {
   buildAttachmentsMetadataPayload,
@@ -120,6 +114,11 @@ import "./styles/globals.css";
 
 /** 与 Rust `HideChatWindowResult` 对齐（camelCase） */
 type HideChatWindowResult = { companion: boolean; fullyHidden: boolean };
+
+type VoiceTaskRef = {
+  id: string;
+  title?: string;
+};
 
 /**
  * 是否像「从资源管理器 / 桌面拖入文件」。
@@ -944,6 +943,7 @@ function ChatApp() {
       displayContent?: string;
       assistantCueText?: string;
       assistantCueReason?: string;
+      voiceTriggered?: boolean;
     },
   ) => {
     if (content.trim() === "/clear") {
@@ -1017,10 +1017,11 @@ function ChatApp() {
     setState("thinking");
     setIsTyping(true); /* 无附件时此处首次进入 typing；有附件时与编码阶段一致保持为 true */
     l3ActiveRunIdRef.current = "";
-    const chatVoiceSpeakSentences = chatJvsVoiceActiveRef.current
+    const voiceTriggered = Boolean(opts?.voiceTriggered);
+    const chatVoiceSpeakSentences = voiceTriggered
       ? VOICE_PROFILES.chat_ptt.maxSpeakSentences
-      : resolveChatSpeakSentences(ttsEnabled);
-    const forceCompanionVoice = voiceCompanionActiveRef.current || companionModeRef.current;
+      : 0;
+    const forceCompanionVoice = voiceTriggered && (voiceCompanionActiveRef.current || companionModeRef.current);
     const companionJvsVoice = resolveCompanionJvsVoice(ttsVoice);
     if (forceCompanionVoice) {
       // 陪伴窗内优先保持 companion 语音链路，避免 HUD 会话事件抖动导致 ref 短暂 false 而丢播报。
@@ -1038,7 +1039,7 @@ function ChatApp() {
         ttsVoiceResolved: companionJvsVoice,
       });
       void emitCompanionL3ToHud({ kind: "thinking" });
-    } else if (chatJvsVoiceActiveRef.current && chatVoiceSpeakSentences > 0) {
+    } else if (voiceTriggered && chatJvsVoiceActiveRef.current && chatVoiceSpeakSentences > 0) {
       voiceOrchestrator.startSession(`chat-voice-${turnSessionId}-${Date.now()}`, {
         maxSpeakSentences: chatVoiceSpeakSentences,
         companionUi: false,
@@ -1060,10 +1061,10 @@ function ChatApp() {
 
     const audioEl = chatAudioRef.current;
     const useJvsCompanionVoice = forceCompanionVoice;
-    const useJvsChatVoice = chatJvsVoiceActiveRef.current && chatVoiceSpeakSentences > 0;
+    const useJvsChatVoice = voiceTriggered && chatJvsVoiceActiveRef.current && chatVoiceSpeakSentences > 0;
     const useJvsOrchestrator = useJvsCompanionVoice || useJvsChatVoice;
     const ttsQueue =
-      !useJvsOrchestrator && ttsEnabled && audioEl ? createAudioQueue(audioEl, () => setState("idle")) : null;
+      voiceTriggered && !useJvsOrchestrator && ttsEnabled && audioEl ? createAudioQueue(audioEl, () => setState("idle")) : null;
     let accumulatedForTts = "";
 
     const assistantCueText = opts?.assistantCueText?.trim() || "";
@@ -1430,7 +1431,7 @@ function ChatApp() {
           void voiceOrchestrator.onL3Chunk(safeAnswerContent);
         }
         endTraceAfterVoiceDrain();
-      } else if (chatJvsVoiceActiveRef.current && chatVoiceSpeakSentences > 0) {
+      } else if (useJvsChatVoice) {
         if (
           typeof answerContent === "string" &&
           shouldSpeakFinalAnswer(safeAnswerContent, meta)
@@ -1492,7 +1493,7 @@ function ChatApp() {
 
     // 优先 L3（L3 直连大模型，自有 API Key），未连接时兜底 L2
     const implicitSignals: Record<string, unknown> = { ...(opts?.extraImplicitSignals || {}) };
-    if (voiceCompanionActiveRef.current || chatJvsVoiceActiveRef.current) {
+    if (voiceTriggered && (voiceCompanionActiveRef.current || chatJvsVoiceActiveRef.current)) {
       implicitSignals.desktop_companion = true;
       implicitSignals.source = "desktop_voice_companion";
       if (justBargedInRef.current) {
@@ -1504,7 +1505,7 @@ function ChatApp() {
     }
     justBargedInRef.current = false;
     const hasImplicitSignals = Object.keys(implicitSignals).length > 0;
-    const voiceDiagnostics = voiceCompanionActiveRef.current || chatJvsVoiceActiveRef.current
+    const voiceDiagnostics = voiceTriggered && (voiceCompanionActiveRef.current || chatJvsVoiceActiveRef.current)
       ? getVoiceTurnDiagnosticsSnapshot()
       : null;
     const attExtras =
@@ -1605,36 +1606,25 @@ function ChatApp() {
     }
   };
 
-  const buildVoiceAssistantCue = useCallback((decision: VoiceDispatcherDecision): { text: string; reason: string } | null => {
-    if (!decision.latency_masking.play_task_ack) return null;
-    if (decision.tier === "LONG_TASK" || decision.execution_lane === "background_submit") {
-      return { text: "收到，我来处理。", reason: "voice_task_background_ack" };
-    }
-    return { text: "我想想。", reason: "voice_task_foreground_ack" };
-  }, []);
-
   const dispatchVoiceUtterance = useCallback(
     async (
       text: string,
       source: "sim" | "hud" | "ptt" | "companion_quick_send",
       sttTrace?: Partial<VoiceTranscriptionResult> & { source?: string },
     ) => {
-      const t = stripDefaultSadEmojiSuffix(text.trim());
-      if (!t) return;
-      const activeTasks = Array.from(activeVoiceTasksRef.current.values());
-      const decision: VoiceDispatcherDecision = dispatchVoiceIntent(t, {
-        activeTasks,
-        lastFocusTaskId: lastFocusVoiceTaskIdRef.current,
-      });
-      if (decision.target_task_id) {
-        lastFocusVoiceTaskIdRef.current = decision.target_task_id;
-      }
-      voiceCompanionDebug("chat.voice_dispatch_decision", {
+      const displayText = stripDefaultSadEmojiSuffix(text.trim());
+      const transcriptText = stripDefaultSadEmojiSuffix(
+        String(sttTrace?.text || sttTrace?.correctedText || displayText || "")
+          .replace(/^🎤\s*/u, "")
+          .trim(),
+      );
+      if (!transcriptText) return;
+      voiceCompanionDebug("chat.voice_stt_forward_l3", {
         source,
-        text: truncVoiceLog(t, 100),
-        rawText: truncVoiceLog(sttTrace?.rawText || t, 100),
-        correctedText: truncVoiceLog(sttTrace?.correctedText || sttTrace?.text || t, 100),
-        finalText: truncVoiceLog(sttTrace?.text || t, 100),
+        displayText: truncVoiceLog(displayText, 100),
+        rawText: truncVoiceLog(sttTrace?.rawText || transcriptText, 100),
+        correctedText: truncVoiceLog(sttTrace?.correctedText || sttTrace?.text || transcriptText, 100),
+        finalText: truncVoiceLog(sttTrace?.text || transcriptText, 100),
         streamText: truncVoiceLog(sttTrace?.streamText || "", 100),
         sttSource: sttTrace?.source || "",
         sttFinalized: sttTrace?.finalized,
@@ -1643,54 +1633,19 @@ function ChatApp() {
         hotwordStatus: sttTrace?.hotwordStatus,
         hotwordDominated: sttTrace?.hotwordDominated,
         hotwordDominationReasons: (sttTrace as any)?.hotwordDominationReasons,
-        routedText: truncVoiceLog(decision.normalized_text || t, 140),
-        tier: decision.tier,
-        intent: decision.intent_class,
-        verdict: decision.interrupt_verdict,
-        lane: decision.execution_lane,
-        routeSource: decision.route_source,
-        confidence: decision.confidence,
-        targetTaskId: decision.target_task_id ?? "",
-        taskTitle: decision.task_title ?? "",
-        activeTaskCount: decision.active_task_ids.length,
-        routeNotes: decision.route_notes,
-        fastLane: decision.router_hints.fast_lane,
-        fastLaneKind: decision.router_hints.fast_lane_kind,
-        allowTemplateReply: decision.router_hints.allow_template_reply,
-        routeEvidence: decision.route_evidence,
-        injectLightTaskContext: decision.router_hints.inject_light_task_context,
-        skipContextRetrieval: decision.router_hints.skip_context_retrieval,
-        skipContextSniffer: decision.router_hints.skip_context_sniffer,
-        skipExperienceRag: decision.router_hints.skip_experience_rag,
-        skipGatewayEnrich: decision.router_hints.skip_gateway_enrich,
       });
-      const assistantCue = buildVoiceAssistantCue(decision);
-      const leadTask = activeTasks.find((it) => it.id === (decision.target_task_id || "")) ?? activeTasks[0];
-      const taskSummary = leadTask?.title
-        ? `${leadTask.title}${activeTasks.length > 1 ? `（另有${activeTasks.length - 1}个任务）` : ""}`
-        : "";
-      const lightTaskContext = decision.router_hints.inject_light_task_context && activeTasks.length > 0
-        ? {
-            active_tasks: activeTasks.slice(0, 3).map((task) => ({
-              id: task.id,
-              title: task.title || "",
-            })),
-            focused_task_id: decision.target_task_id || lastFocusVoiceTaskIdRef.current || activeTasks[0]?.id || null,
-            summary: taskSummary || undefined,
-            source: "voice_intent_router",
-          }
-        : undefined;
-      const routedText = decision.normalized_text?.trim() || t;
-      await doActualSend(routedText, [], {
-        displayContent: t,
-        assistantCueText: assistantCue?.text,
-        assistantCueReason: assistantCue?.reason,
+      await doActualSend(transcriptText, [], {
+        voiceTriggered: true,
+        displayContent: displayText || transcriptText,
         extraImplicitSignals: {
-          voice_raw_stt_text: t,
-          voice_asr_raw_text: sttTrace?.rawText || t,
-          voice_corrected_text: sttTrace?.correctedText || sttTrace?.text || t,
-          voice_final_text: sttTrace?.text || t,
-          voice_stt_user_message: sttTrace?.userMessage || "",
+          source,
+          desktop_companion: true,
+          voice_input_mode: "stt_only",
+          voice_raw_stt_text: sttTrace?.rawText || transcriptText,
+          voice_asr_raw_text: sttTrace?.rawText || transcriptText,
+          voice_corrected_text: sttTrace?.correctedText || sttTrace?.text || transcriptText,
+          voice_final_text: sttTrace?.text || transcriptText,
+          voice_display_text: displayText || transcriptText,
           voice_stt_confidence: sttTrace?.confidence,
           voice_stt_backend: sttTrace?.backend,
           voice_stt_source: sttTrace?.source || "",
@@ -1704,123 +1659,11 @@ function ChatApp() {
           voice_stt_hotword_dominated: sttTrace?.hotwordDominated,
           voice_stt_hotword_domination_reasons: (sttTrace as any)?.hotwordDominationReasons,
           voice_stt_understanding: sttTrace?.understanding,
-          voice_routed_text: routedText,
-          voice_dispatcher_decision: decision,
-          voice_decision_id: decision.decision_id,
-          voice_dispatch_tier: decision.tier,
-          voice_intent_class: decision.intent_class,
-          voice_dispatch_lane: decision.execution_lane,
-          voice_interrupt_verdict: decision.interrupt_verdict,
-          voice_route_source: decision.route_source,
-          voice_route_notes: decision.route_notes,
-          voice_confidence: decision.confidence,
-          voice_task_title: decision.task_title,
-          voice_active_task_ids: decision.active_task_ids,
-          voice_fast_lane: decision.router_hints.fast_lane,
-          voice_fast_lane_kind: decision.router_hints.fast_lane_kind,
-          voice_allow_template_reply: decision.router_hints.allow_template_reply,
-          voice_route_evidence: decision.route_evidence,
-          skip_context_retrieval: decision.router_hints.skip_context_retrieval,
-          skip_context_sniffer: decision.router_hints.skip_context_sniffer,
-          skip_experience_rag: decision.router_hints.skip_experience_rag,
-          skip_gateway_enrich: decision.router_hints.skip_gateway_enrich,
-          prefer_direct_llm: decision.router_hints.prefer_direct_llm,
-          force_background: decision.router_hints.force_background,
-          acceptance_round: decision.router_hints.acceptance_round,
-          inject_task_context: decision.router_hints.inject_task_context,
-          inject_light_task_context: decision.router_hints.inject_light_task_context,
-          light_task_context: lightTaskContext,
-          max_foreground_tool_sec: decision.router_hints.max_foreground_tool_sec,
-          awaiting_confirmation: decision.router_hints.awaiting_confirmation,
-          clarification_pending: decision.router_hints.clarification_pending,
-          target_task_id: decision.target_task_id,
-          task_context_summary: taskSummary || undefined,
-          source,
         },
       });
     },
-    [buildVoiceAssistantCue, doActualSend],
+    [doActualSend],
   );
-
-  const buildVoiceReplyComposerPrompt = useCallback((payload: Record<string, unknown>, userText: string) => {
-    const replyPlan = payload.replyPlan && typeof payload.replyPlan === "object" ? payload.replyPlan : {};
-    return [
-      "【语音追问生成任务】",
-      "你不是在执行用户原始任务，而是在根据规则层给出的 ReplyPlan 生成一句自然追问/确认话术。",
-      "规则层只负责边界，最终对用户说的话由你来写。",
-      "禁止调用工具，禁止声称已经执行，禁止补全用户没说的信息。",
-      "请只输出最终要对用户说的一句话，不要 Markdown。",
-      "",
-      `用户原始语音文本：${userText}`,
-      "ReplyPlan JSON：",
-      JSON.stringify(replyPlan, null, 2),
-    ].join("\n");
-  }, []);
-
-  const deliverVoiceReplyComposerResult = useCallback(
-    async (args: {
-      userText: string;
-      reply: string;
-      companionUi: boolean;
-      source?: string;
-      model?: string;
-      elapsedMs?: number;
-    }) => {
-      const userText = stripDefaultSadEmojiSuffix((args.userText || "").trim());
-      const reply = stripDefaultSadEmojiSuffix((args.reply || "").trim());
-      if (!reply) return;
-      const turnSessionId = currentSessionIdRef.current;
-      updateSessionMessagesById(turnSessionId, (prev) => [
-        ...prev,
-        { role: "user", content: userText || "语音追问", timestamp: Date.now() },
-        { role: "assistant", content: reply, reasoning: "", timestamp: Date.now(), source: "L3" },
-      ]);
-      setInput("");
-      setPendingFiles([]);
-      setAttachmentHint(null);
-      setRecordingStatus("");
-      setIsLoading(false);
-      setIsTyping(false);
-      setLocalStreamChunkKind(null);
-      setRiskLevel("safe");
-      setState("thinking");
-
-      const companionVoice = resolveCompanionJvsVoice(ttsVoice);
-      if (args.companionUi) {
-        voiceCompanionActiveRef.current = true;
-        voiceOrchestrator.startSession(`companion-fast-reply-${turnSessionId}-${Date.now()}`, {
-          ttsVoice: companionVoice,
-        });
-        startCompanionJvsIfNeeded();
-        voiceCompanionDebug("chat.voice_reply_composer_fast", {
-          source: args.source || "",
-          model: args.model || "",
-          elapsedMs: args.elapsedMs ?? null,
-          reply: truncVoiceLog(reply, 120),
-        });
-        void emitCompanionL3ToHud({ kind: "answer", content: reply });
-        void voiceOrchestrator.onL3Chunk(reply);
-        void voiceOrchestrator.finishStream().finally(() => setState("idle"));
-      } else {
-        chatJvsVoiceActiveRef.current = true;
-        voiceOrchestrator.startSession(`chat-voice-fast-reply-${turnSessionId}-${Date.now()}`, {
-          maxSpeakSentences: VOICE_PROFILES.chat_ptt.maxSpeakSentences,
-          companionUi: false,
-          ttsVoice: DEFAULT_KOKORO_TTS_VOICE,
-        });
-        startCompanionJvsIfNeeded();
-        voiceChatTraceIfActive("tts.fast_reply_session_armed", {
-          source: args.source || "",
-          model: args.model || "",
-          elapsedMs: args.elapsedMs ?? null,
-        });
-        void voiceOrchestrator.onL3Chunk(reply);
-        void voiceOrchestrator.finishStream().finally(() => setState("idle"));
-      }
-    },
-    [startCompanionJvsIfNeeded, ttsVoice, updateSessionMessagesById, setState],
-  );
-
 
   // 语音陪伴：HUD / Orb / 模拟脚本注入用户文本 → chat 单一 L3 发送方
   useEffect(() => {
@@ -2218,8 +2061,7 @@ function ChatApp() {
         (sttTrace as Partial<VoiceTranscriptionResult> & { hotwordDominationReasons?: string[] }).hotwordDominationReasons = hotwordRisk.reasons;
         const text = sttTrace.text || "";
         if (hotwordRisk.dominated) {
-          const question = `我刚才听到的是“${text}”，但这段语音像是被热词影响了。你可以再说一遍，或者确认这就是你要做的吗？`;
-          voiceChatTrace("stt.hotword_dominated_blocked", {
+          voiceChatTrace("stt.hotword_dominated_observed", {
             profile,
             text,
             rawText: sttTrace.rawText || text,
@@ -2229,24 +2071,6 @@ function ChatApp() {
             hotwordCount: sttTrace.hotwordCount,
             hotwordStatus: sttTrace.hotwordStatus,
             reasons: hotwordRisk.reasons,
-          });
-          throw new VoiceServiceError(question, "clarification", {
-            rawText: sttTrace.rawText || text,
-            correctedText: sttTrace.correctedText || text,
-            userMessage: question,
-            userMessageSource: "hotword_domination_gate",
-            replyPlan: {
-              reply_intent: "confirm_hotword_dominated_stt",
-              question,
-              candidate_text: text,
-              reasons: hotwordRisk.reasons,
-            },
-            understanding: sttTrace.understanding,
-            confidence: sttTrace.confidence,
-            durationMs: sttTrace.durationMs,
-            language: sttTrace.language,
-            backend: sttTrace.backend,
-            source: sttTrace.source,
           });
         }
         voiceChatTrace("stt.recognized", {
@@ -2297,123 +2121,6 @@ function ChatApp() {
         await dispatchVoiceUtterance(sendText, "ptt", sttTrace);
       } catch (e) {
         const msg = e instanceof VoiceServiceError ? e.message : VOICE_UNAVAILABLE_HINT;
-        if (e instanceof VoiceServiceError && e.code === "clarification") {
-          const details = (e.details || {}) as Record<string, unknown>;
-          const rawText = String(details.rawText || "").trim();
-          const correctedText = String(details.correctedText || rawText || msg || "").trim();
-          const displayText = correctedText || rawText || msg;
-          voiceChatTrace("stt.clarification_required", {
-            profile,
-            question: msg,
-            replyPlan: details.replyPlan,
-            userMessageSource: details.userMessageSource,
-            rawText,
-            correctedText,
-            displayText,
-          });
-          const clarificationCompanionUi = companionModeRef.current || voiceCompanionActiveRef.current;
-          chatJvsVoiceActiveRef.current = true;
-          voiceCompanionActiveRef.current = clarificationCompanionUi || voiceCompanionActiveRef.current;
-          startCompanionJvsIfNeeded();
-          if (clarificationCompanionUi && displayText) {
-            void emitCompanionUserToHud(displayText);
-          }
-          setRecordingStatus("");
-          const replyPlan = details.replyPlan && typeof details.replyPlan === "object"
-            ? (details.replyPlan as Record<string, unknown>)
-            : {};
-          if (Object.keys(replyPlan).length > 0) {
-            const fastStarted = Date.now();
-            const fastComposer = await composeVoiceReply({
-              reply_plan: replyPlan,
-              user_text: displayText,
-              fallback_text: msg,
-              timeout_sec: 5,
-              max_tokens: 80,
-            }).catch((err) => {
-              voiceChatTrace("reply_composer.fast_error", {
-                error: err instanceof Error ? err.message : String(err),
-                latencyMs: Date.now() - fastStarted,
-              });
-              return null;
-            });
-            if (
-              fastComposer?.ok &&
-              fastComposer.source === "qwen_flash" &&
-              typeof fastComposer.reply === "string" &&
-              fastComposer.reply.trim()
-            ) {
-              voiceChatTrace("reply_composer.fast_ok", {
-                source: fastComposer.source,
-                model: fastComposer.model || "",
-                elapsedMs: fastComposer.elapsed_ms ?? null,
-                latencyMs: Date.now() - fastStarted,
-              });
-              await deliverVoiceReplyComposerResult({
-                userText: displayText || msg,
-                reply: fastComposer.reply,
-                companionUi: clarificationCompanionUi,
-                source: fastComposer.source,
-                model: fastComposer.model,
-                elapsedMs: fastComposer.elapsed_ms,
-              });
-              endVoiceChatTrace("clarification_required", {
-                question: fastComposer.reply,
-                source: "qwen_flash_reply_composer",
-                model: fastComposer.model || "",
-                elapsedMs: fastComposer.elapsed_ms ?? null,
-              });
-              return;
-            }
-            voiceChatTrace("reply_composer.fast_miss", {
-              source: fastComposer?.source || "none",
-              error: fastComposer?.error || "",
-              latencyMs: Date.now() - fastStarted,
-            });
-          }
-          if (msg) {
-            await deliverVoiceReplyComposerResult({
-              userText: displayText || msg,
-              reply: msg,
-              companionUi: clarificationCompanionUi,
-              source: Object.keys(replyPlan).length
-                ? "stt_clarification_question_after_composer_miss"
-                : "stt_clarification_question",
-            });
-            endVoiceChatTrace("clarification_required", {
-              question: msg,
-              source: Object.keys(replyPlan).length
-                ? "stt_clarification_question_after_composer_miss"
-                : "stt_clarification_question",
-            });
-            return;
-          }
-          const composerPrompt = buildVoiceReplyComposerPrompt(details, displayText);
-          await doActualSend(composerPrompt, [], {
-            displayContent: displayText || msg,
-            extraImplicitSignals: {
-              desktop_companion: true,
-              source: "desktop_voice_reply_composer",
-              voice_reply_composer: true,
-              voice_reply_plan: details.replyPlan || {},
-              voice_raw_stt_text: rawText || displayText,
-              voice_asr_raw_text: details.rawText || rawText || displayText,
-              voice_corrected_text: correctedText || displayText,
-              voice_final_text: displayText,
-              voice_stt_user_message: msg,
-              voice_stt_user_message_source: details.userMessageSource || "",
-              voice_stt_understanding: details.understanding,
-              prefer_direct_llm: true,
-              skip_context_retrieval: true,
-              skip_context_sniffer: true,
-              skip_experience_rag: true,
-              skip_gateway_enrich: true,
-              clarification_pending: true,
-            },
-          });
-          endVoiceChatTrace("clarification_required", { question: msg, source: "l3_reply_composer" });
-          return;
-        }
         voiceChatTrace("stt.pipeline_fail", {
           profile,
           error: msg,
@@ -2429,7 +2136,7 @@ function ChatApp() {
         chatJvsVoiceActiveRef.current = false;
       }
     },
-    [dispatchVoiceUtterance, setMessages, startCompanionJvsIfNeeded, setState, ttsEnabled, clearPttAudioWaitTimer, buildVoiceReplyComposerPrompt, deliverVoiceReplyComposerResult, doActualSend, ensureCompanionSurfaceVisible],
+    [dispatchVoiceUtterance, setMessages, startCompanionJvsIfNeeded, setState, ttsEnabled, clearPttAudioWaitTimer, ensureCompanionSurfaceVisible],
   );
 
   useSttAudioReady({
@@ -2946,7 +2653,3 @@ if (rootEl) {
     </React.StrictMode>
   );
 }
-
-
-
-

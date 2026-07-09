@@ -39,7 +39,8 @@ class GatewayContextBundle:
     attachments_sanitized: list[SanitizedFileMeta] = field(default_factory=list)
     routing_utterance: str = ""  # §6.1 供分类/L2 的路由文本（澄清挂接时可异于 user_input）
     #: 仅本轮意图表面句（routing_utterance / user_input）经截断后的文本；**不含** short_memory。
-    #: 供路由、OOD、语义缓存键、embedding 分类面等；与 LLM 最终 system 中可单独注入的摘要解耦。
+    #: 供路由、OOD、语义缓存键、embedding 分类面等；记忆统一由 Cognitive Kernel 的
+    #: MemoryRecallAgent 进入 RelevantMemoryBundle。
     classification_text: str = ""
     classification_truncated: bool = False
     #: 网关小模型判定：本轮是否需要实时外部知识（新闻/行情/文档/天气事实等）
@@ -68,9 +69,10 @@ class GatewayContextBundle:
         """
         意图分类面（Intent-Context Decoupling）：
         **仅**截断 ``routing_utterance`` 或 ``user_input``。
-        ``short_memory_context`` 仍保留在 Bundle 上，供 System Prompt / 嗅探等**独立**注入，
-        但**不得**拼入本字段（旧逻辑 ``short_memory + "---" + tail`` 已移除），以免污染
-        路由、Semantic Cache 键、Embedding、Experience RAG 门控面。
+        ``short_memory_context`` 仅保留为兼容字段，不再作为 System Prompt / 嗅探的
+        独立记忆入口。主循环短期记忆必须通过 MemoryRecallAgent 进入 RelevantMemoryBundle。
+        旧逻辑 ``short_memory + "---" + tail`` 已移除，以免污染路由、Semantic Cache 键和
+        Embedding 分类面。
         """
         cfg = get_intent_gateway_config()
         max_tok = int(cfg.get("classification_max_tokens", 2000))

@@ -1,0 +1,29 @@
+# PMO Bitable change monitor config.
+# Installed to: ~/.jachin/config/skills/pmo-copilot/pmo_bitable_watch.yaml
+# User edits live under ~/.jachin and will not be overwritten by package upgrades.
+
+enabled: false
+mode: hybrid
+
+# Default PMO personnel task board.
+table_id: tblfK9gk6vTQpJtB
+view_id: vewCz1FFJi
+wiki_url: "https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0P?table=tblfK9gk6vTQpJtB&view=vewCz1FFJi"
+
+# Chat targets and credentials are resolved from ~/.jachin/.env first.
+chat_id: "${PMO_CHANGE_ALERT_CHAT_ID}"
+monitor_chat_id: "${PMO_CHANGE_ALERT_MONITOR_CHAT_ID}"
+app_id: "${PMO_BITABLE_WATCH_APP_ID}"
+app_secret: "${PMO_BITABLE_WATCH_APP_SECRET}"
+notify_app_id: "${PMO_BITABLE_WATCH_NOTIFY_APP_ID}"
+notify_app_secret: "${PMO_BITABLE_WATCH_NOTIFY_APP_SECRET}"
+
+idle_seconds: 20
+debounce_check_seconds: 5
+poll_interval_seconds: 15
+max_records: 5000
+
+push_change_summary: false
+change_alert_push_monitor: false
+run_change_alert: false
+persist_local: true

@@ -1,9 +1,9 @@
 """
 L3 记忆宿主：核心写入已迁移 **Memory Nexus（SQLite + FastEmbed）**；**l3_local.json 仅保留读取/合并器/历史诊断**。
 
-- 被动注入：见 `memory_nexus_bridge.build_l1_system_memory_block` / `get_local_memory_for_prompt`
-- `add_local_memory` → `commit_drawer`（User_Persona / Learned_Skills）
-架构入口: docs/07_memory_first_main_agent_and_voice_app_agents.md；记忆检索由 Cognitive Kernel 前置消费。
+- 被动记忆读取统一由 Cognitive Kernel 的 `MemoryRecallAgent -> RelevantMemoryBundle` 完成。
+- `add_local_memory` → `commit_drawer`（User_Persona / Learned_Skills）。
+架构入口: docs/07_memory_first_main_agent_and_voice_app_agents.md；禁止旧被动记忆直接注入 prompt。
 """
 from __future__ import annotations
 
@@ -183,17 +183,12 @@ def get_local_memory_for_prompt(
     max_idle_prompt_cycles: int | None = None,
 ) -> str:
     """
-    兼容旧 API：现为 L1 Memory Nexus 块（与 agent_core 中 `build_l1_system_memory_block` 一致）。
-    limit / prompt_cycle 等 JSON 衰减参数已失效。
-    """
-    try:
-        from l3_client.local_mcps.jachin_memory_nexus.memory_backend import recall_room as _recall_room
-        from l3_node.memory_nexus_bridge import build_l1_system_memory_block
+    兼容旧 API：被动记忆 prompt 快照已停用。
 
-        return build_l1_system_memory_block(recall_room_fn=_recall_room)
-    except Exception as e:
-        logger.debug("[L3 LocalMemory] get_local_memory_for_prompt Nexus 路径失败: %s", e)
-        return ""
+    所有主循环记忆读取必须通过 MemoryRecallAgent 进入 RelevantMemoryBundle。
+    limit / prompt_cycle 等参数保留签名兼容，但不再触发 Memory Nexus 读取。
+    """
+    return ""
 
 
 def merge_from_l2(items: list[dict]) -> None:

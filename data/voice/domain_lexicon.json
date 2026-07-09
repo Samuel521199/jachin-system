@@ -16,14 +16,17 @@
   "contacts": {
     "Vivian": {
       "aliases": ["vivian", "vivi", "viian", "vivan", "vivien", "薇薇安", "微微安", "v薇m", "v 薇 m"],
+      "phonetic_aliases": ["威廉", "飞蕊", "媳帘", "里面"],
       "active": true
     },
     "Neil": {
-      "aliases": ["你用法", "你用", "neil", "neal", "niel", "尼尔"],
+      "aliases": ["neil", "neal", "niel", "尼尔", "妮尔"],
+      "phonetic_aliases": ["牛", "你用", "你用法", "尼奥"],
       "active": true
     },
     "Ethan": {
-      "aliases": ["ethan", "eason", "e than", "一分", "一份", "一芬"],
+      "aliases": ["ethan", "eason", "e than", "伊森", "一森"],
+      "phonetic_aliases": ["意思", "一分", "一份", "一芬", "Eason"],
       "active": true
     },
     "John": {
@@ -39,7 +42,8 @@
       "active": true
     },
     "Nathan": {
-      "aliases": ["nathan"],
+      "aliases": ["nathan", "内森"],
+      "phonetic_aliases": ["男生", "耐森"],
       "active": true
     },
     "Gavin": {
@@ -210,6 +214,7 @@
   "projects": {
     "Jachin": {
       "aliases": ["jachin", "jacking", "加勤", "嘉钦", "charge"],
+      "phonetic_aliases": ["家具"],
       "active": true
     }
   }

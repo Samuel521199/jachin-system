@@ -1,8 +1,8 @@
 # 07 Jarvis 目标下的记忆优先认知内核与角色化 Agent 网络设计
 
-生成时间：2026-07-08
-文档性质：设计规格，不涉及代码改动
-项目目标：把 Jachin 逐步建设成类似钢铁侠 Jarvis 的智能 AI 助手
+生成时间：2026-07-08  
+文档性质：设计规格，不涉及代码改动  
+项目目标：把 Jachin 逐步建设成类似钢铁侠 Jarvis 的智能 AI 助手  
 适用范围：语音输入、文字输入、桌面 APP 控制、闲聊、复杂任务拆分、角色化 Agent 编排、环境感知、记忆检索、认知内核提示词设计
 
 ## 0. 总目标：Jachin 要成为 Jarvis 型助手
@@ -468,6 +468,48 @@ Level 4: 目标实体
 Level 5: 执行策略
   direct_execute / confirm_then_execute / ask_clarification / delegate / background_task / refuse_or_safe_alternative
 ```
+
+候选意图和任务域的生成原则：
+
+```text
+规则/轻量分类器：快速生成 candidate_intent 和 candidate_domain
+记忆检索：使用候选意图、候选任务域、原句、状态快照扩展检索范围
+认知内核/意图 Agent：结合原句 + 记忆 + 状态 + 风险 + 角色会审，裁决最终意图和任务域
+```
+
+`归一化意图` 不是最终结论，而是把自然语言先映射成系统内部稳定的候选标签，用于检索和会审。例如：
+
+```text
+“打开 + 应用名” -> open_app
+“关闭 / 关掉 / 退出” -> close_app
+“继续 / 接着刚才” -> continue_task
+“发给 / 告诉 / 通知某人” -> send_message
+“撤回 / 算了 / 别这样” -> undo_or_revert
+```
+
+这些规则只能作为第一层粗判，不能可靠完成最终理解。真实用户会说：
+
+```text
+把刚才那个弄掉
+别开这个了
+算了，撤一下
+你刚刚那个窗口帮我收起来
+继续处理 Vivian 那个
+```
+
+如果只靠规则，会很快变成大量脆弱的 if-else。因此，规则层只能输出 `candidate_intent`，例如用户说“关掉”时先得到 `close_app`；最终到底关闭 Calculator、Chrome、当前窗口，还是需要追问，必须由认知内核结合记忆和状态裁决。
+
+任务域也是候选，不是规则阶段的最终事实。规则可以先粗分：
+
+```text
+open_app / close_app / switch_app -> desktop_app_control
+send_message -> communication
+read_file / write_file -> file_operation
+continue_task -> task_management
+你好 / 在吗 -> conversation
+```
+
+但遇到“帮我处理一下刚才那个”“把那个发出去”“整理一下这个”“打开上次那个东西”“继续昨天的工作”时，必须结合短期动作链、当前窗口、活跃任务栈、长期用户记忆和最近会话内容，才能确认最终 `task_domain`。
 
 路由评分信号：
 
@@ -1891,6 +1933,101 @@ risk_state:
 
 ## 6. 记忆检索与 Prompt 构造
 
+## 6.0 记忆分层总设计：短期记忆 + 长期记忆
+
+Jachin 的记忆系统必须先从工程上分成两层：**短期记忆 Short-term Memory** 和 **长期记忆 Long-term Memory**。它们不是按“重要不重要”区分，而是按访问速度、生命周期、写入条件和使用场景区分。
+
+```text
+短期记忆 = 快速工作层
+  存最近几轮对话、最近动作链、当前任务态、临时环境事件、待确认决策
+  目标：快，低延迟，主循环每轮必读
+
+长期记忆 = 持久知识层
+  存用户偏好、别名纠错、联系人、项目事实、工具习惯、安全偏好、失败经验、历史任务摘要
+  目标：准，可追踪，按需检索，不每轮全量读取
+```
+
+### 6.0.1 短期记忆放在哪里
+
+短期记忆应该放在**快速可读写的位置**，可以是内存缓存、进程内 ring buffer、Redis、本地轻量 KV、SQLite 热表，或这些组合。重点不是固定用某个技术，而是满足：
+
+- 每轮主循环读取延迟低。
+- 支持按 session / turn / task 快速读取最近 N 条。
+- 支持 TTL 自动过期。
+- 支持高频写入，不需要每次都进入长期向量库。
+- 支持崩溃后可选恢复最近任务，至少保留任务账本摘要。
+
+短期记忆建议包含：
+
+| 短期记忆类型 | 推荐存储位置 | 生命周期 | 每轮是否必读 | 作用 |
+| ------------ | ------------ | -------- | ------------ | ---- |
+| `conversation_short_term` | 会话 ring buffer / Redis / 本地 KV | 当前会话或数小时 | 是 | 解析当前讨论对象、代词、省略 |
+| `recent_action_chain` | 热缓存 + ledger 摘要 | 数小时到数天 | 是 | 解析“关闭它”“继续”“撤销” |
+| `active_task_state` | 任务态 KV / TaskLedger 热索引 | 任务结束前 | 是 | 继续当前任务、后台任务恢复 |
+| `pending_decision` | 快速 KV + TTL | 几分钟到数小时 | 是 | 用户确认/取消后恢复原决策 |
+| `environment_event_memory` | StateFabric 热历史 | 秒级到分钟级 | 是 | 当前窗口、最近 APP、风险状态 |
+| `current_turn_evidence` | 当前 turn context | 本轮内 | 是 | 语音置信度、附件、状态快照 |
+
+短期记忆的核心原则：**默认可自动写入，但必须有 TTL，不能无限膨胀，也不能把临时状态误写成长事实。**
+
+### 6.0.2 长期记忆放在哪里
+
+长期记忆应该放在 Jachin 的持久记忆系统中，例如 Memory Nexus、向量库、SQLite/关系索引、文档索引、联系人/实体库、项目事实库等。长期记忆不应该每轮全量拉取，而应该由 `MemoryRecallAgent` 根据候选意图、候选任务域、状态快照和短期记忆按需检索。
+
+长期记忆建议包含：
+
+| 长期记忆类型 | 推荐存储位置 | 写入条件 | 检索时机 | 作用 |
+| ------------ | ------------ | -------- | -------- | ---- |
+| `user_preference_memory` | Memory Nexus + 结构化偏好表 | 用户明确表达或多次稳定行为 | 需要默认选择时 | 默认浏览器、默认编辑器 |
+| `safety_preference_memory` | 结构化安全策略表 + 长期记忆 | 用户明确表达 | 发送、删除、关闭高风险对象时 | 是否总是确认 |
+| `communication_style_memory` | 长期用户画像 | 用户明确表达或长期统计 | 回复生成前 | 简短、先结论、少废话 |
+| `alias_memory` | 别名/实体映射表 | 用户纠错或明确别名 | 实体解析时 | “飞书” = Lark |
+| `correction_memory` | 纠错库，高优先级 | 用户明确纠错 | 每轮相关任务 | 覆盖错误理解 |
+| `contact_and_entity_memory` | 联系人/实体库 | 用户确认、通讯录同步、历史任务 | 发消息、找人、找对象 | Vivian 是谁 |
+| `project_fact_memory` | 项目知识库/工作区索引 | 项目任务确认后 | 项目、文件、报表任务 | 昨天报表属于哪个项目 |
+| `tool_habit_memory` | 工具经验库 | 执行成功统计或用户指定 | 工具选择时 | 优先用某个 MCP/tool |
+| `failure_experience_memory` | 失败经验库 | 失败恢复后验证有效 | 类似任务前 | 避免重复失败 |
+| `historical_task_summary` | 历史任务摘要库 | 任务结束/后台化/暂停时 | 继续长期任务时 | 上次做到哪一步 |
+
+长期记忆的核心原则：**不能因为一次猜测就写入长期事实。长期记忆必须带来源、时间、置信度、是否用户确认、可回滚/可纠错信息。**
+
+### 6.0.3 短期和长期如何配合
+
+每轮主循环不能只查长期记忆，也不能只看短期缓存。合理顺序是：
+
+```text
+1. 读取短期记忆
+   conversation_short_term
+   recent_action_chain
+   active_task_state
+   pending_decision
+   environment_event_memory
+
+2. 用短期记忆辅助生成候选
+   candidate_intents
+   candidate_task_domains
+   candidate_entities
+   candidate_recent_targets
+
+3. 按候选结果检索长期记忆
+   user preference
+   alias/correction
+   contact/entity
+   project facts
+   tool habits
+   safety preference
+   failure experience
+   historical task summary
+
+4. 合并短期 + 长期 + 状态快照
+   形成 RelevantMemoryBundle
+
+5. 交给认知内核
+   认知内核只消费打包结果，不亲自查库
+```
+
+短期记忆负责“刚刚发生了什么”，长期记忆负责“用户一直是怎样的、对象到底是谁、项目背景是什么、过去什么方法有效”。Jarvis 型体验必须同时依赖这两层。
+
 
 
 ## 6.1 记忆检索必须发生在 Prompt 前
@@ -1905,11 +2042,66 @@ risk_state:
 
 ```text
 query_1 = 用户原句
-query_2 = 归一化意图，例如 close_app / open_app / continue_task
-query_3 = 输入来源 + 任务域，例如 voice desktop app control
+query_2 = 候选归一化意图，例如 close_app / open_app / continue_task / send_message
+query_3 = 输入来源 + 候选任务域，例如 voice desktop_app_control / text communication
 query_4 = 最近动作链，例如 recent opened apps by Jachin
 query_5 = 当前状态快照中的 active_window / recent_app_events
-query_6 = 用户长期偏好，例如 preferred browser / preferred editor
+query_6 = 长期用户记忆，例如偏好、别名、纠错、联系人、项目事实、工具习惯、安全偏好
+```
+
+这里必须明确：`query_2` 和 `query_3` 不是最终意图和最终任务域，而是记忆检索阶段的候选线索。
+
+`query_2` 的生成方式：
+
+```text
+规则/轻量分类器先粗判:
+  打开计算器 -> candidate_intent=open_app
+  关掉它 -> candidate_intent=close_app
+  继续刚才那个 -> candidate_intent=continue_task
+  发给 Vivian -> candidate_intent=send_message
+
+MemoryRecallAgent 使用 candidate_intent 扩展检索:
+  close_app -> 检索最近打开/切换/前台窗口/未保存风险
+  continue_task -> 检索活跃任务栈/历史任务摘要/昨天任务进度
+  send_message -> 检索联系人/最近沟通对象/发送安全偏好
+
+认知内核最终裁决:
+  candidate_intent 只帮助检索，不直接决定执行。
+```
+
+`query_3` 的生成方式：
+
+```text
+规则/轻量分类器先粗分任务域:
+  open_app / close_app / switch_app -> desktop_app_control
+  send_message -> communication
+  read_file / write_file -> file_operation
+  continue_task -> task_management
+  闲聊问候 -> conversation
+
+MemoryRecallAgent 按候选任务域选择检索通道:
+  desktop_app_control -> recent_action_chain + environment_event_memory + alias memory
+  communication -> entity_memory + contact memory + safety preference
+  file_operation -> project memory + task_state_memory + correction memory
+
+认知内核/IntentAnalystAgent 最终确认 task_domain。
+```
+
+因此，记忆检索阶段可以用规则和轻量模型生成候选意图、候选任务域，但不能把它们当最终理解。真正的 Jarvis 级理解必须由规则、大模型、记忆和环境状态共同完成。
+
+`query_6` 也不能只理解成“用户长期偏好”。长期记忆应该是多通道检索，而不是只查 preference。至少要覆盖：
+
+```text
+用户偏好记忆：默认浏览器 Chrome、默认编辑器 VS Code
+用户别名/称呼记忆：“飞书” = Lark，“小薇” = Vivian
+用户纠错记忆：“不是浏览器，是 Chrome”
+长期项目事实：昨天的报表属于哪个项目、项目目录在哪里
+联系人/实体记忆：Vivian 是哪个联系人、常用收件人是谁
+常用工具习惯：某类任务优先用哪个 MCP/tool
+失败经验记忆：某工具打开微信经常失败，改用 UI 自动化
+安全偏好：发送消息前总是让我确认
+沟通风格偏好：简短回复、先给结论、不要自动发长文
+历史任务摘要：上次任务做到哪一步、为什么暂停
 ```
 
 标准请求结构：
@@ -1921,21 +2113,169 @@ MemoryRecallRequest
   normalized_text
   source: voice | text | api | watcher
   candidate_intents[]
+  candidate_task_domains[]
   candidate_entities[]
+  multi_queries
+  retrieval_channels[]
   state_snapshot_summary
   active_task_stack_summary
   retrieval_purpose:
     - resolve_reference
     - load_preferences
+    - load_long_term_user_memory
+    - resolve_aliases_and_contacts
+    - load_project_facts
+    - load_tool_habits
     - continue_task
     - check_recent_actions
     - find_corrections
+    - find_failure_experience
+    - load_safety_preferences
     - enrich_context
   max_results_per_channel
   freshness_requirement
 ```
 
 
+
+### 6.1.1.1 每轮主循环的记忆读取流程
+
+一次用户输入触发的主循环中，记忆读取应该是一个固定的工程流程，而不是让模型临时决定“要不要想起什么”。
+
+```text
+InputEnvelope
+  -> ReadShortTermMemory
+  -> GenerateCandidateQueries
+  -> LongTermMemoryFanout
+  -> RankAndResolveConflicts
+  -> BuildRelevantMemoryBundle
+  -> BuildCognitiveKernelPrompt
+```
+
+| 步骤 | 输入 | 读取对象 | 输出 | 说明 |
+| ---- | ---- | -------- | ---- | ---- |
+| 1. 读取短期会话 | `session_id`、最近消息 | `conversation_short_term` | 最近对话片段 | 理解“这个”“刚才说的” |
+| 2. 读取最近动作链 | `session_id`、用户 id、设备 id | `recent_action_chain` | 最近打开/关闭/发送/搜索/切换动作 | 理解“关闭”“撤销”“继续” |
+| 3. 读取任务态 | `active_task_stack` | `active_task_state`、`pending_decision` | 当前任务、后台任务、待确认决策 | 继续任务或恢复确认 |
+| 4. 读取环境短记忆 | `StateSnapshot` | `environment_event_memory` | 当前窗口、最近 APP、风险状态 | 桌面控制和风险判断 |
+| 5. 生成候选查询 | 原句 + 短期记忆 + 状态 | 规则/轻量分类器 | `candidate_intents`、`candidate_task_domains`、`candidate_entities` | 只生成候选，不做最终裁决 |
+| 6. 检索长期记忆 | 候选查询 + 多路 query | Memory Nexus / 向量库 / 结构化索引 | 长期记忆证据 | 按需查偏好、别名、联系人、项目事实、工具经验等 |
+| 7. 排序和冲突检测 | 全部证据 | 排序器/冲突检测器 | ranked evidence + conflicts | 标注而不是直接裁决 |
+| 8. 打包 | 短期 + 长期 + 状态 | `RelevantMemoryBundle` | 给认知内核的记忆包 | 认知内核只消费此包 |
+
+### 6.1.1.2 每轮必须读取哪些短期记忆
+
+短期记忆是主循环每轮的热路径，原则上应该默认读取，但要限制数量和大小。
+
+```text
+short_term_read_set:
+  conversation_short_term:
+    limit: 最近 6-12 条消息或最近 3-5 分钟摘要
+    用途: 当前对话上下文、代词、省略
+
+  recent_action_chain:
+    limit: 最近 10-30 个由 Jachin 执行或用户确认的重要动作
+    用途: 打开/关闭/继续/撤销/刚才那个
+
+  active_task_state:
+    limit: 当前活跃任务 + 最近 3 个后台任务
+    用途: 继续任务、恢复 DAG、找到下一步
+
+  pending_decision:
+    limit: 当前 session 未过期的确认项
+    用途: 用户说“确认/取消/算了”时恢复原始 WorkOrder
+
+  environment_event_memory:
+    limit: 最新 StateSnapshot + 最近 5-20 条窗口/APP 状态事件
+    用途: 当前窗口、最近 APP、未保存风险
+```
+
+短期记忆读取后，不应该直接塞满 prompt。`MemoryRecallAgent` 要先摘要、去重、打分，再把最相关的部分放入 `RelevantMemoryBundle`。
+
+### 6.1.1.3 每轮按需读取哪些长期记忆
+
+长期记忆不是每轮全量读取，而是根据候选意图和候选任务域触发：
+
+| 候选任务域 | 必查长期记忆 | 可能补查 | 示例 |
+| ---------- | ------------ | -------- | ---- |
+| `desktop_app_control` | `alias_memory`、`user_preference_memory`、`tool_habit_memory`、`failure_experience_memory` | `safety_preference_memory` | “打开浏览器”要知道默认 Chrome |
+| `communication` | `contact_and_entity_memory`、`safety_preference_memory`、`communication_style_memory` | `project_fact_memory`、`historical_task_summary` | “发给 Vivian”要知道联系人和发送确认偏好 |
+| `file_operation` | `project_fact_memory`、`workspace_fact_memory`、`correction_memory` | `safety_preference_memory`、`failure_experience_memory` | “打开昨天报表”要知道项目目录 |
+| `task_management` | `historical_task_summary`、`active_task_state`、`project_fact_memory` | `tool_habit_memory` | “继续昨天的”要知道任务进度 |
+| `conversation` | `communication_style_memory`、`user_preference_memory` | `conversation_short_term` | “你觉得呢”要沿用上下文和风格 |
+| `undo_or_revert` | `recent_action_chain`、`historical_task_summary`、`failure_experience_memory` | `safety_preference_memory` | “撤回刚才的”要知道刚才动作是否可逆 |
+
+长期记忆检索必须返回证据，而不是只返回自然语言摘要。每条证据至少包含：
+
+```text
+memory_id
+memory_type
+content
+source
+created_at / updated_at
+confidence
+confirmed_by_user
+ttl
+relevance_reason
+```
+
+### 6.1.1.4 记忆如何拼装给认知内核
+
+`MemoryRecallAgent` 不能把所有命中的记忆原封不动塞给认知内核。它要构造一个有结构、有优先级、有冲突标记的 `RelevantMemoryBundle`。
+
+推荐拼装顺序：
+
+```text
+RelevantMemoryBundle:
+  1. retrieval_summary
+     用 3-8 行说明本轮检索到了什么、缺了什么、是否有冲突
+
+  2. resolved_references
+     已解析的“它/刚才/那个/继续”的候选对象
+
+  3. short_term_context
+     recent_actions
+     active_tasks
+     conversation_short_term 摘要
+     environment_event_memory 摘要
+
+  4. long_term_context
+     user_preferences
+     safety_preferences
+     aliases
+     corrections
+     contact_matches
+     project_facts
+     tool_habits
+     failure_hints
+     historical_task_summaries
+
+  5. conflicts
+     memory_vs_state
+     memory_vs_memory
+     preference_vs_current_request
+
+  6. memory_gaps
+     需要澄清或记忆缺失的地方
+```
+
+Prompt 中给认知内核的内容应该是“结构化记忆包 + 少量高价值摘要”，而不是把数据库检索结果长篇粘贴进去。建议限制：
+
+```text
+prompt_memory_budget:
+  retrieval_summary: <= 800 tokens
+  short_term_context: <= 1200 tokens
+  long_term_context: <= 1600 tokens
+  conflicts_and_gaps: <= 600 tokens
+```
+
+如果超出预算，优先保留：
+
+```text
+用户明确纠错 > 用户明确偏好 > 当前 pending_decision
+> active_task_state > recent_action_chain > 当前 StateSnapshot
+> 联系人/项目事实 > 工具习惯/失败经验 > 普通语义相似记忆
+```
 
 ### 6.1.2 检索通道
 
@@ -1948,9 +2288,13 @@ MemoryRecallRequest
 | `conversation_short_term`     | 当前会话上下文             | 省略、代词、当前讨论对象       |
 | `task_state_memory`           | 未完成任务、后台任务、任务阶段     | “继续刚才的”“接着昨天的”     |
 | `user_preference_memory`      | 默认浏览器、编辑器、称呼、风格偏好   | 默认选择和个性化           |
+| `safety_preference_memory`    | 用户对确认、发送、删除、隐私的偏好   | 发送消息前是否必须确认        |
 | `alias_and_correction_memory` | 用户纠错、别名、称呼映射        | “不是浏览器，是 Chrome”   |
-| `entity_memory`               | 联系人、文件、项目、APP、网页    | Vivian 是谁、昨天报表在哪里  |
+| `contact_and_entity_memory`   | 联系人、文件、项目、APP、网页    | Vivian 是谁、昨天报表在哪里  |
+| `project_fact_memory`         | 长期项目事实、目录、命名规则、业务背景 | 昨天报表属于哪个项目         |
+| `tool_habit_memory`           | 常用工具、MCP、替代路径、用户习惯   | 默认用 Chrome 或某个 MCP   |
 | `failure_memory`              | 失败工具、有效替代路径         | 避免重复失败             |
+| `historical_task_summary`     | 历史任务摘要、暂停原因、下一步     | 继续昨天的任务             |
 | `environment_event_memory`    | 状态变化摘要              | 当前窗口、最近活跃 APP 辅助判断 |
 
 
@@ -1960,10 +2304,11 @@ MemoryRecallRequest
 
 ```text
 1. NormalizeQuery
-   把用户原句、语音转写、候选意图、候选实体统一成检索查询。
+   把用户原句、语音转写、候选意图、候选任务域、候选实体统一成检索查询。
+   这里的候选意图和候选任务域可以来自规则或轻量分类器，但只能作为检索线索。
 
 2. FanoutSearch
-   并行检索短期动作、任务态、偏好、纠错、实体、失败经验。
+   并行检索短期动作、会话上下文、任务态、长期用户记忆、偏好、别名、纠错、联系人、项目事实、工具习惯、安全偏好和失败经验。
 
 3. RankAndFilter
    按时间新鲜度、语义相关度、任务相关度、用户确认程度排序。
@@ -2014,10 +2359,15 @@ RelevantMemoryBundle
   recent_actions[]
   active_tasks[]
   user_preferences[]
+  safety_preferences[]
   aliases[]
   corrections[]
   entity_matches[]
+  contact_matches[]
+  project_facts[]
+  tool_habits[]
   failure_hints[]
+  historical_task_summaries[]
   conflicts[]
   confidence
   memory_gaps[]
@@ -2075,14 +2425,33 @@ MemoryRecallAgent 输出：
 ## 6.2 必须检索的记忆类型
 
 
-| 记忆类型   | 用途              | 示例             |
-| ------ | --------------- | -------------- |
-| 近期动作记忆 | 解析“关闭它”“继续”“撤销” | 上一次打开计算器       |
-| 会话短期记忆 | 当前对话上下文         | 刚才在讨论发邮件       |
-| 用户偏好记忆 | 默认选择            | 用户偏好 Chrome    |
-| 环境状态记忆 | 桌面状态补充          | 当前前台窗口是计算器     |
-| 任务进度记忆 | 继续长期任务          | 昨天报表做到数据清洗     |
-| 纠错记忆   | 学会用户说法          | 用户说“飞书”就是 Lark |
+| 记忆类型 | 层级 | 推荐存储 | 读取方式 | 用途 | 示例 |
+| -------- | ---- | -------- | -------- | ---- | ---- |
+| 会话短期记忆 | 短期 | 会话缓存 / ring buffer | 每轮必读，限最近 N 条或摘要 | 当前对话上下文 | 刚才在讨论发邮件 |
+| 近期动作记忆 | 短期 | 快速 KV / ledger 热索引 | 每轮必读，按 session/device/user 读取 | 解析“关闭它”“继续”“撤销” | 上一次打开计算器 |
+| 环境状态记忆 | 短期 | StateFabric 热历史 | 每轮必读最新快照和最近事件 | 桌面状态补充 | 当前前台窗口是计算器 |
+| 当前任务态记忆 | 短期/中期 | TaskLedger / task KV | 每轮读当前活跃任务 | 继续当前任务 | 正在写报表 |
+| 待确认决策记忆 | 短期 | pending decision KV + TTL | 用户确认/取消时必读 | 恢复原 WorkOrder | 等待确认是否关闭 VS Code |
+| 用户偏好记忆 | 长期 | Memory Nexus + 偏好表 | 需要默认选择时检索 | 默认选择 | 用户偏好 Chrome |
+| 用户别名/称呼记忆 | 长期 | 别名/实体映射索引 | 实体解析时检索 | 解析用户自己的叫法 | “飞书”就是 Lark |
+| 用户纠错记忆 | 长期，高优先级 | 纠错库 / Memory Nexus | 相关任务每轮检索 | 覆盖错误理解 | “不是浏览器，是 Chrome” |
+| 联系人/实体记忆 | 长期 | 联系人库 / 实体索引 | 通讯和实体任务按需检索 | 解析人名、项目、文件、APP | Vivian 是哪个联系人 |
+| 长期项目事实 | 长期 | 项目知识库 / 工作区索引 | 项目任务按需检索 | 定位业务背景 | 昨天报表属于销售项目 |
+| 常用工具习惯 | 长期经验 | 工具经验库 | 工具选择时检索 | 选择用户习惯的 MCP/tool | 打开网页默认用 Chrome |
+| 失败经验记忆 | 长期经验 | 失败经验库 | 相似任务前检索 | 避免重复失败 | 某工具打不开微信，改用 UIA |
+| 安全偏好记忆 | 长期策略 | 安全策略表 / Memory Nexus | 高风险动作前检索 | 判断是否确认、是否保守 | 发送消息前总是让我确认 |
+| 沟通风格偏好 | 长期画像 | 用户画像 / Memory Nexus | 回复生成前检索 | 控制回复风格 | 先给结论，少写长解释 |
+| 历史任务摘要 | 长期/中期 | 任务摘要库 | 继续长期任务时检索 | 恢复长期任务 | 上次任务暂停在数据清洗 |
+
+这里的“短期/长期”不是绝对物理实现名称，而是工程职责：
+
+```text
+短期记忆:
+  快速、热路径、默认读取、TTL 清理、可高频写入
+
+长期记忆:
+  持久、按需检索、需要来源和置信度、写入更谨慎、支持纠错和合并
+```
 
 
 
@@ -2146,11 +2515,20 @@ MemoryWriteRequest
   source_event
   memory_type:
     - short_term_action
+    - conversation_short_term
+    - environment_event
+    - pending_decision
     - task_state
     - user_preference
+    - safety_preference
+    - communication_style
     - alias
     - correction
-    - failure_hint
+    - contact_entity
+    - project_fact
+    - tool_habit
+    - failure_experience
+    - historical_task_summary
   content
   evidence[]
   confidence
@@ -2162,10 +2540,41 @@ MemoryWriteRequest
 写入规则：
 
 - 短期动作链可以自动写入，但要设置 TTL。
+- 会话短期记忆、最近动作链、环境事件、pending decision 默认写入短期快速层。
+- 短期记忆可以高频写入，但必须限制大小、TTL 和 session 范围。
 - 用户明确纠错必须写入纠错记忆。
 - 长期偏好不能凭一次猜测写入，必须来自用户明确表达或多次稳定行为。
-- 失败经验要记录失败工具、失败原因和有效替代路径。
+- 长期联系人、项目事实、安全偏好、沟通风格必须带证据来源和置信度。
+- 失败经验要记录失败工具、失败原因、有效替代路径和验证结果。
 - 写入前必须先查重和合并，避免同义偏好重复堆积。
+
+写回分层策略：
+
+| 写回对象 | 写入层级 | 是否可自动写 | TTL / 生命周期 | 说明 |
+| -------- | -------- | ------------ | --------------- | ---- |
+| 本轮对话摘要 | 短期 | 是 | session | 用于下一轮理解上下文 |
+| 最近动作链 | 短期 | 是 | 数小时到数天 | 用于“关闭/继续/撤销” |
+| 当前任务态 | 短期/中期 | 是 | 任务完成或取消前 | 用于恢复 DAG 和后台任务 |
+| pending decision | 短期 | 是 | 短 TTL | 用户确认/取消后清除 |
+| 用户明确纠错 | 长期 | 是 | 长期 | 优先级高于普通偏好 |
+| 用户明确偏好 | 长期 | 是 | 长期 | 如“以后都用 Chrome” |
+| 推断偏好 | 长期候选 | 否，需多次稳定行为或确认 | 候选期 | 不能一次行为就固化 |
+| 联系人/项目事实 | 长期 | 视来源而定 | 长期 | 通讯录/项目索引可自动，模型猜测不可直接写 |
+| 工具习惯 | 长期经验 | 可在多次成功后自动写 | 长期 | 要记录适用场景和替代路径 |
+| 失败经验 | 长期经验 | 失败恢复验证后可写 | 中长期 | 避免重复失败 |
+
+主循环结束时的写回顺序：
+
+```text
+1. TurnClosure 生成 memory_write_requests
+2. MemoryWriteAgent 按 memory_type 分流:
+   short_term_* -> 快速记忆层
+   task_state / pending_decision -> 任务态存储
+   user_preference / alias / correction / contact / project_fact -> 长期记忆系统
+   tool_habit / failure_experience -> 经验记忆系统
+3. 写入前查重、合并、更新置信度
+4. 写入后记录到 TaskLedger，供下一轮 recent_action_chain 和历史审计使用
+```
 
 
 

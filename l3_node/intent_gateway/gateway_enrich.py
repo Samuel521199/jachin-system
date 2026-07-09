@@ -78,7 +78,9 @@ async def enrich_gateway_async(
                 to = 4.0
             rewritten = await optional_rewrite_routing_utterance(
                 user_input=user_input or "",
-                short_memory=bundle.short_memory_context or "",
+                # Memory SSOT: Gateway rewrite must not consume a separate
+                # short-memory summary; memory enters via MemoryRecallAgent.
+                short_memory="",
                 prior_messages=prior_messages,
                 engine=engine,
                 timeout_sec=to,

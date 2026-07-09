@@ -56,6 +56,9 @@ _lock = threading.Lock()
 # IM 分发器在独立线程 send_reply 时无法读到 asyncio 的 contextvar；按 run_id / chat_id 索引日志路径。
 _turn_log_by_run_id: dict[str, Path] = {}
 _turn_log_by_lark_chat: dict[str, Path] = {}
+# 当前仍在执行的顶层用户 turn。内部线程/任务若丢失 contextvar，可在只有一个活跃 turn
+# 时安全落回同一日志文件，避免把同一用户请求拆成多个 orphan 文件。
+_active_turn_paths: dict[Path, int] = {}
 _LEGACY_FILE_NAME = "terminal_turn_debug.log"
 # 当前 asyncio 任务对应的日志文件（per-turn 模式）；单文件模式不使用
 _turn_log_path: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
@@ -91,6 +94,9 @@ _TOOL_WHERE_HINTS: dict[str, str] = {
     "recall_memory": "检索长期记忆（Memory Nexus）",
     "coordinate": "分布式多节点协调（L2）",
 }
+
+_NEW_LOG_ENCODING = "utf-8-sig"
+_APPEND_LOG_ENCODING = "utf-8"
 
 
 @dataclass
@@ -171,6 +177,8 @@ class _HumanJournal:
     end_tag: str = ""
     voice_diagnostics: dict[str, Any] = field(default_factory=dict)
     file_started: bool = False
+    file_header_user_message: str = ""
+    late_user_message_logged: bool = False
     recap_written: bool = False
     config_logged: bool = False
 
@@ -229,7 +237,7 @@ def _lazy_orphan_turn_path() -> Path:
     try:
         p.write_text(
             "=== terminal turn debug（未调用 begin_turn，首次写入时自动创建本文件）===\n",
-            encoding="utf-8",
+            encoding=_NEW_LOG_ENCODING,
             newline="\n",
         )
     except OSError:
@@ -252,7 +260,35 @@ def _path() -> Path | None:
     settled = _turn_log_path_settled.get()
     if settled is not None:
         return settled
+    active = _active_turn_fallback_path()
+    if active is not None:
+        return active
     return _lazy_orphan_turn_path()
+
+
+def _mark_turn_active(path: Path) -> None:
+    with _lock:
+        _active_turn_paths[path] = _active_turn_paths.get(path, 0) + 1
+
+
+def _mark_turn_inactive(path: Path | None) -> None:
+    if path is None:
+        return
+    with _lock:
+        count = _active_turn_paths.get(path, 0)
+        if count <= 1:
+            _active_turn_paths.pop(path, None)
+        else:
+            _active_turn_paths[path] = count - 1
+
+
+def _active_turn_fallback_path() -> Path | None:
+    """Return the sole active user-turn log path for context-less internal writes."""
+    with _lock:
+        paths = [p for p, count in _active_turn_paths.items() if count > 0]
+    if len(paths) == 1:
+        return paths[0]
+    return None
 
 
 def _register_turn_log_path(
@@ -300,7 +336,7 @@ def _append_section_to_path(path: Path, heading: str, body: str) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with _lock:
-            with path.open("a", encoding="utf-8", newline="\n") as f:
+            with path.open("a", encoding=_APPEND_LOG_ENCODING, newline="\n") as f:
                 f.write(block)
     except OSError:
         pass
@@ -464,8 +500,8 @@ def _append_human_block(lines: list[str]) -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
         with _lock:
             if not p.is_file():
-                p.write_text("", encoding="utf-8")
-            with p.open("a", encoding="utf-8", newline="\n") as f:
+                p.write_text("", encoding=_NEW_LOG_ENCODING)
+            with p.open("a", encoding=_APPEND_LOG_ENCODING, newline="\n") as f:
                 f.write(block)
     except OSError:
         pass
@@ -546,9 +582,10 @@ def _write_human_session_intro(j: _HumanJournal) -> None:
         f"  {j.user_message or '（启动时未记录用户句，见下方 messages 快照）'}",
         "",
         "【系统怎么接这个活】",
-        "  采用 ReAct 多轮推理：每一轮模型先「想一步」，再决定「调工具拿数据」或「直接回答」。",
+        "  先进入 Cognitive Kernel 主循环做理解、状态/记忆读取、裁决与授权。",
+        "  低风险明确任务可能走 cognitive_kernel_direct_mainline 直接执行；复杂或未命中任务会交给 TextReasoningAgent 文本角色循环。",
         f"  · 来源渠道：{ch_human}",
-        f"  · 本轮最多推理：{max_it} 轮",
+        f"  · TextReasoningAgent 最大轮数：{max_it} 轮（若走 direct mainline，可能为 0 轮）",
     ]
     if j.run_id:
         lines.append(f"  · 运行 ID：{j.run_id}")
@@ -574,8 +611,8 @@ def _write_human_session_intro(j: _HumanJournal) -> None:
         [
             "",
             "【日志怎么读】",
-            "  下面按「第 1 轮 / 第 2 轮 …」展开：每轮包含模型想法、调了什么工具、在哪执行、得到什么。",
-            "  更底层的 JSON / 完整 Observation 在「技术细节」分区（搜索 [ReAct 第 N 轮]）。",
+            "  先看「Cognitive Kernel 主循环」分区：输入/状态/记忆 → 会审/裁决/工单 → 执行/验证/闭环。",
+            "  如果本轮进入 TextReasoningAgent，再看「第 1 轮 / 第 2 轮 …」以及 [ReAct 第 N 轮] 技术分区（该标签仅代表内部工具协议格式）。",
             "",
         ]
     )
@@ -583,6 +620,54 @@ def _write_human_session_intro(j: _HumanJournal) -> None:
     if j.voice_diagnostics:
         _write_voice_diagnostics_human(j.voice_diagnostics, title="【本轮语音链路（进入 L3 前）】")
     j.file_started = True
+
+
+def _user_text_header_lines(text: str) -> list[str]:
+    user_text = (text or "").strip()
+    display = user_text or "（begin_turn 时尚未记录用户原话；后续拿到后会写入【本轮用户原话补记】）"
+    payload = {
+        "text": user_text,
+        "chars": len(user_text),
+        "empty_at_begin": not bool(user_text),
+    }
+    return [
+        "【本轮用户原话 / turn_user_text】",
+        _redact(display),
+        "",
+        "turn_user_text_json:",
+        _redact(json.dumps(payload, ensure_ascii=False, indent=2)),
+        "",
+        "user_message:",
+        _redact(user_text),
+        "",
+    ]
+
+
+def _write_late_user_message_capture(j: _HumanJournal, *, source: str = "") -> None:
+    text = (j.user_message or "").strip()
+    if not text or j.late_user_message_logged:
+        return
+    j.late_user_message_logged = True
+    lines = [
+        "",
+        "【本轮用户原话补记】",
+        "  日志文件创建时还没有拿到用户原话；后续入口补齐后记录在这里。",
+        f"  来源：{source or 'ensure_turn_started'}",
+        f"  用户原话：{text}",
+    ]
+    _append_human_block(lines)
+    append_section(
+        "[Turn Input] late captured user message",
+        json.dumps(
+            {
+                "source": source or "ensure_turn_started",
+                "user_message": text,
+                "chars": len(text),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+    )
 
 
 def _fmt_voice_value(value: Any) -> str:
@@ -714,7 +799,15 @@ def _write_human_session_recap(j: _HumanJournal) -> None:
     lines.extend(
         [
             "【一共跑了几轮】",
-            f"  共 {n_rounds} 轮 ReAct 步骤。",
+            (
+                f"  共 {n_rounds} 轮 TextReasoningAgent 工具协议步骤。"
+                if n_rounds
+                else (
+                    "  共 0 轮 TextReasoningAgent 步骤；本轮由 Cognitive Kernel direct mainline 直接完成。"
+                    if tools
+                    else "  共 0 轮 TextReasoningAgent 步骤；本轮未进入文本角色工具循环。"
+                )
+            ),
             "",
             "【调用了哪些工具】",
         ]
@@ -750,10 +843,16 @@ def ensure_turn_started(user_text: str, *, extra: dict[str, Any] | None = None) 
         return
     ex = extra or {}
     j = _journal()
+    run_id = str(ex.get("run_id") or "").strip()
+    lark_chat_id = _lark_chat_id_from_extra(ex) or _lark_reply_chat_id_from_extra(ex)
+    resolved_path = _resolve_turn_log_path(run_id=run_id, lark_chat_id=lark_chat_id)
+    if _turn_log_path.get() is None and resolved_path is not None and not _single_file_overwrite_mode():
+        _turn_log_path.set(resolved_path)
     path_exists = _turn_log_path.get() is not None or _single_file_overwrite_mode()
     if j is None:
         j = _reset_human_journal()
-    j.user_message = (user_text or j.user_message or "").strip()
+    incoming_user_text = (user_text or "").strip()
+    j.user_message = (incoming_user_text or j.user_message or "").strip()
     j.run_id = str(ex.get("run_id") or j.run_id or "")
     j.channel = str(ex.get("channel") or j.channel or "")
     if isinstance(ex.get("voice_diagnostics"), dict):
@@ -770,6 +869,8 @@ def ensure_turn_started(user_text: str, *, extra: dict[str, Any] | None = None) 
             return
     elif not j.file_started:
         _write_human_session_intro(j)
+    elif incoming_user_text and not (j.file_header_user_message or "").strip():
+        _write_late_user_message_capture(j, source="ensure_turn_started")
 
 
 def log_human_run_config(meta: dict[str, Any]) -> None:
@@ -841,10 +942,12 @@ def begin_turn(user_text: str, *, extra: dict[str, Any] | None = None) -> None:
     """新一轮用户提问：新建日志文件并写文件头（默认每轮独立文件；单文件模式则覆盖 legacy 文件）。"""
     if not _enabled():
         return
+    _mark_turn_inactive(_turn_log_path.get())
     reset_stream_accumulator()
     ex = extra or {}
     j = _journal() or _reset_human_journal()
     j.user_message = (user_text or "").strip()
+    j.file_header_user_message = j.user_message
     j.run_id = str(ex.get("run_id") or "")
     j.channel = str(ex.get("channel") or "")
     if isinstance(ex.get("voice_diagnostics"), dict):
@@ -860,8 +963,8 @@ def begin_turn(user_text: str, *, extra: dict[str, Any] | None = None) -> None:
         "=== terminal turn debug（本轮独立日志文件）===",
         f"utc={ts}",
         f"log_file_mode={'single_overwrite' if _single_file_overwrite_mode() else 'per_turn_new_file'}",
-        f"user_message:\n{_redact(text)}\n",
     ]
+    lines.extend(_user_text_header_lines(text))
     if extra:
         try:
             lines.append("extra:\n" + json.dumps(extra, ensure_ascii=False, indent=2) + "\n")
@@ -895,12 +998,13 @@ def begin_turn(user_text: str, *, extra: dict[str, Any] | None = None) -> None:
             lines[0] = f"=== terminal turn debug | log_path={p.name} ==="
         blob = "\n".join(lines)
         with _lock:
-            p.write_text(blob, encoding="utf-8", newline="\n")
+            p.write_text(blob, encoding=_NEW_LOG_ENCODING, newline="\n")
         _register_turn_log_path(
             p,
             run_id=j.run_id,
             lark_chat_id=j.lark_chat_id or j.lark_reply_chat_id,
         )
+        _mark_turn_active(p)
         _write_human_session_intro(j)
     except OSError:
         pass
@@ -919,8 +1023,8 @@ def append_section(heading: str, body: str) -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
         with _lock:
             if not p.is_file():
-                p.write_text("", encoding="utf-8")
-            with p.open("a", encoding="utf-8", newline="\n") as f:
+                p.write_text("", encoding=_NEW_LOG_ENCODING)
+            with p.open("a", encoding=_APPEND_LOG_ENCODING, newline="\n") as f:
                 f.write(block)
     except OSError:
         pass
@@ -943,10 +1047,396 @@ def append_line(step_type: str, content: str, *, max_chars: int | None = None) -
         p.parent.mkdir(parents=True, exist_ok=True)
         with _lock:
             if not p.is_file():
-                p.write_text("", encoding="utf-8")
-            with p.open("a", encoding="utf-8", newline="\n") as f:
+                p.write_text("", encoding=_NEW_LOG_ENCODING)
+            with p.open("a", encoding=_APPEND_LOG_ENCODING, newline="\n") as f:
                 f.write(line)
     except OSError:
+        pass
+
+
+def _to_log_dict(value: Any) -> Any:
+    if value is None:
+        return None
+    if hasattr(value, "to_dict") and callable(getattr(value, "to_dict")):
+        try:
+            return value.to_dict()
+        except Exception:
+            pass
+    if isinstance(value, dict):
+        return {str(k): _to_log_dict(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_log_dict(v) for v in value]
+    return value
+
+
+def _json_block(value: Any) -> str:
+    try:
+        return json.dumps(_to_log_dict(value), ensure_ascii=False, indent=2, default=str)
+    except Exception:
+        return repr(value)
+
+
+def log_cognitive_mainline_context(ctx: Any) -> None:
+    """Write the 07-doc cognitive-loop intake/context nodes into the turn log."""
+    if not _enabled() or ctx is None:
+        return
+    try:
+        envelope = getattr(ctx, "envelope", None)
+        state_snapshot = getattr(ctx, "state_snapshot", None)
+        memory_bundle = getattr(ctx, "memory_bundle", None)
+        payload = {
+            "audit_items_covered": [
+                "1_main_loop_step",
+                "2_input_normalization",
+                "3_state_snapshot",
+                "3_memory_recall_short_and_long_term",
+            ],
+            "node": "AgentInputEnvelope -> StateSnapshot -> MemoryRecall",
+            "input_envelope": _to_log_dict(envelope),
+            "state_snapshot": _to_log_dict(state_snapshot),
+            "relevant_memory_bundle": _to_log_dict(memory_bundle),
+            "memory_recall_breakdown": _memory_recall_breakdown(memory_bundle),
+        }
+        append_section("[Cognitive Kernel 主循环] 1. 输入/状态/记忆上下文", _json_block(payload))
+
+        env_d = _to_log_dict(envelope) or {}
+        state_d = _to_log_dict(state_snapshot) or {}
+        mem_d = _to_log_dict(memory_bundle) or {}
+        human = [
+            "",
+            "【Cognitive Kernel 主循环】",
+            "  1. 输入归一化：已生成 AgentInputEnvelope。",
+            f"     source={env_d.get('source') or ''} channel={env_d.get('channel') or ''}",
+            f"     raw_text={_truncate(str(env_d.get('raw_text') or ''), 160)}",
+            f"     normalized_text={_truncate(str(env_d.get('normalized_text') or ''), 160)}",
+            "  2. 状态快照：已读取 StateSnapshot。",
+            f"     active_window={_truncate(json.dumps(state_d.get('active_window') or {}, ensure_ascii=False, default=str), 240)}",
+            "  3. 记忆检索：已生成 RelevantMemoryBundle。",
+            f"     candidate_intents={mem_d.get('candidate_intents') or []}",
+            f"     candidate_task_domains={mem_d.get('candidate_task_domains') or []}",
+            f"     confidence={mem_d.get('confidence')}",
+            f"     short_term={_memory_bucket_count(mem_d, ('recent_actions', 'active_tasks'))}",
+            f"     long_term={_memory_bucket_count(mem_d, ('user_preferences', 'safety_preferences', 'aliases', 'corrections', 'entity_matches', 'contact_matches', 'project_facts', 'tool_habits', 'failure_hints', 'historical_task_summaries'))}",
+        ]
+        _append_human_block(human)
+    except Exception:
+        pass
+
+
+def _memory_bucket_count(bundle_d: dict[str, Any], keys: tuple[str, ...]) -> str:
+    parts: list[str] = []
+    for key in keys:
+        val = bundle_d.get(key)
+        if isinstance(val, list):
+            parts.append(f"{key}:{len(val)}")
+    return ", ".join(parts) if parts else "none"
+
+
+def _memory_recall_breakdown(memory_bundle: Any) -> dict[str, Any]:
+    data = _to_log_dict(memory_bundle) or {}
+    if not isinstance(data, dict):
+        return {}
+
+    def pick(keys: tuple[str, ...], limit: int = 5) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for key in keys:
+            rows = data.get(key)
+            if not isinstance(rows, list):
+                continue
+            previews: list[dict[str, Any]] = []
+            for row in rows[:limit]:
+                if isinstance(row, dict):
+                    previews.append(
+                        {
+                            "memory_id": str(row.get("memory_id") or ""),
+                            "memory_type": str(row.get("memory_type") or ""),
+                            "content": _truncate(str(row.get("content") or ""), 300),
+                            "confidence": row.get("confidence"),
+                            "relevance_reason": _truncate(str(row.get("relevance_reason") or ""), 200),
+                        }
+                    )
+                else:
+                    previews.append({"content": _truncate(str(row), 300)})
+            out[key] = {"count": len(rows), "items_preview": previews}
+        return out
+
+    return {
+        "retrieval_summary": data.get("retrieval_summary") or "",
+        "candidate_intents": data.get("candidate_intents") or [],
+        "candidate_task_domains": data.get("candidate_task_domains") or [],
+        "multi_queries": data.get("multi_queries") or {},
+        "short_term_memory": pick(("recent_actions", "active_tasks")),
+        "long_term_memory": pick(
+            (
+                "user_preferences",
+                "safety_preferences",
+                "aliases",
+                "corrections",
+                "entity_matches",
+                "contact_matches",
+                "project_facts",
+                "tool_habits",
+                "failure_hints",
+                "historical_task_summaries",
+            )
+        ),
+        "conflicts": data.get("conflicts") or [],
+        "memory_gaps": data.get("memory_gaps") or [],
+        "ranking_evidence": data.get("ranking_evidence") or [],
+    }
+
+
+def log_cognitive_mainline_plan(plan: Any) -> None:
+    """Write ReviewSummary -> DecisionContract -> WorkOrder planning nodes."""
+    if not _enabled() or plan is None:
+        return
+    try:
+        review = getattr(plan, "review_summary", None)
+        contract = getattr(plan, "decision_contract", None)
+        work_orders = list(getattr(plan, "work_orders", []) or [])
+        closure = getattr(plan, "closure", None)
+        task_dag = getattr(plan, "task_dag", None)
+        payload = {
+            "audit_items_covered": [
+                "1_main_loop_step",
+                "5_review_vote_arbitration",
+                "6_work_order_boundaries",
+            ],
+            "node": "ReviewSummary -> DecisionContract -> WorkOrder/TaskDag",
+            "review_summary": _to_log_dict(review),
+            "decision_contract": _to_log_dict(contract),
+            "work_orders": [_to_log_dict(x) for x in work_orders],
+            "task_dag": _to_log_dict(task_dag),
+            "non_execution_closure": _to_log_dict(closure),
+        }
+        append_section("[Cognitive Kernel 主循环] 2. 会审/裁决/工单计划", _json_block(payload))
+
+        review_d = _to_log_dict(review) or {}
+        contract_d = _to_log_dict(contract) or {}
+        wo_lines = []
+        for wo in work_orders[:5]:
+            wo_d = _to_log_dict(wo) or {}
+            wo_lines.append(
+                f"     - {wo_d.get('work_order_id')}: role={wo_d.get('role_agent')} task={wo_d.get('task')} tool={(wo_d.get('inputs') or {}).get('tool')}"
+            )
+        if not wo_lines:
+            wo_lines.append("     - 无 WorkOrder，本轮不会直接改变外部世界。")
+        human = [
+            "",
+            "【Cognitive Kernel 主循环】",
+            "  4. 角色会审：已生成 ReviewSummary。",
+            f"     top_intent={review_d.get('top_intent')} task_type={review_d.get('task_type')} confidence={review_d.get('confidence')}",
+            f"     target={_truncate(json.dumps(review_d.get('target') or {}, ensure_ascii=False, default=str), 240)}",
+            "     role_reviews:",
+        ]
+        for item in list(review_d.get("reviews") or [])[:8]:
+            if isinstance(item, dict):
+                human.append(
+                    "       - "
+                    + f"{item.get('role_id')}: confidence={item.get('confidence')} "
+                    + f"risk={item.get('risk_level')} proposed_tool={item.get('proposed_tool')} "
+                    + f"can_execute={item.get('can_execute')}"
+                )
+        human.extend([
+            "  5. 认知裁决：已生成 DecisionContract。",
+            f"     decision_id={contract_d.get('decision_id')} workflow={contract_d.get('selected_workflow')}",
+            f"     execution_allowed={contract_d.get('execution_allowed')} risk={contract_d.get('risk_level')}",
+            "  6. 工单计划：",
+            *wo_lines,
+        ])
+        _append_human_block(human)
+    except Exception:
+        pass
+
+
+def log_main_agent_effective_prompt(
+    *,
+    stage: str,
+    system_prompt: str = "",
+    gateway_inject: str = "",
+    cognitive_kernel_prompt_block: str = "",
+    tools_count: int = 0,
+    messages_count: int = 0,
+    sent_to_llm: bool = False,
+    note: str = "",
+) -> None:
+    """Write what the main agent was prompted with, or why no LLM prompt was sent."""
+    if not _enabled():
+        return
+    payload = {
+        "audit_items_covered": ["4_main_agent_system_prompt"],
+        "stage": stage,
+        "sent_to_llm": bool(sent_to_llm),
+        "note": note,
+        "tools_count": tools_count,
+        "messages_count": messages_count,
+        "system_prompt_chars": len(system_prompt or ""),
+        "gateway_inject_chars": len(gateway_inject or ""),
+        "cognitive_kernel_prompt_block_chars": len(cognitive_kernel_prompt_block or ""),
+        "system_prompt_full": system_prompt or "",
+        "gateway_inject": gateway_inject or "",
+        "cognitive_kernel_prompt_block": cognitive_kernel_prompt_block or "",
+    }
+    append_section("[Main Agent Prompt] 主 Agent 有效提示词/上下文", _json_block(payload))
+    human = [
+        "",
+        "【Main Agent Prompt】",
+        f"  stage={stage}",
+        f"  sent_to_llm={bool(sent_to_llm)}",
+        f"  system_prompt_chars={len(system_prompt or '')}",
+        f"  gateway_inject_chars={len(gateway_inject or '')}",
+        f"  cognitive_kernel_prompt_block_chars={len(cognitive_kernel_prompt_block or '')}",
+    ]
+    if note:
+        human.append(f"  note={_truncate(note, 240)}")
+    _append_human_block(human)
+
+
+def log_role_agent_work_order_prompt(
+    *,
+    contract: Any = None,
+    work_order: Any = None,
+    tool_id: str = "",
+    allowed_skills: Any = None,
+    available_tools: Any = None,
+    stage: str = "dispatch",
+) -> None:
+    """Write the structured prompt/boundary the kernel gives a role agent."""
+    if not _enabled():
+        return
+    contract_d = _to_log_dict(contract) or {}
+    work_order_d = _to_log_dict(work_order) or {}
+    tools: list[str] = []
+    if isinstance(available_tools, list):
+        for item in available_tools[:80]:
+            if isinstance(item, dict):
+                tools.append(str(item.get("id") or item.get("name") or "")[:120])
+            else:
+                tools.append(str(item)[:120])
+    payload = {
+        "audit_items_covered": ["6_role_agent_task_boundaries_and_tool_scope"],
+        "stage": stage,
+        "role_agent_prompt_equivalent": {
+            "role_agent": work_order_d.get("role_agent"),
+            "task": work_order_d.get("task"),
+            "goal": contract_d.get("goal"),
+            "selected_workflow": contract_d.get("selected_workflow"),
+            "risk_level": contract_d.get("risk_level"),
+            "inputs": work_order_d.get("inputs"),
+            "tool_policy": work_order_d.get("tool_policy") or contract_d.get("tool_policy"),
+            "expected_outputs": work_order_d.get("expected_outputs"),
+            "verification_criteria": work_order_d.get("verification_criteria") or contract_d.get("verification_criteria"),
+            "selected_tool": tool_id,
+            "allowed_skills": allowed_skills or [],
+            "available_tools_visible_to_mainline": tools,
+        },
+        "decision_contract": contract_d,
+        "work_order": work_order_d,
+    }
+    append_section("[Role Agent Prompt] 主 Agent 下发给子 Agent 的任务/边界/工具范围", _json_block(payload))
+    policy = work_order_d.get("tool_policy") if isinstance(work_order_d.get("tool_policy"), dict) else {}
+    _append_human_block(
+        [
+            "",
+            "【Role Agent Prompt】",
+            f"  role_agent={work_order_d.get('role_agent')}",
+            f"  task={work_order_d.get('task')}",
+            f"  selected_tool={tool_id}",
+            f"  risk={contract_d.get('risk_level')}",
+            f"  allowed_tools={policy.get('allowed_tools')}",
+            f"  verification={_truncate(json.dumps(work_order_d.get('verification_criteria') or contract_d.get('verification_criteria') or [], ensure_ascii=False, default=str), 260)}",
+        ]
+    )
+
+
+def log_role_agent_execution_detail(
+    *,
+    phase: str,
+    role_id: str = "",
+    adapter_kind: str = "",
+    work_order: Any = None,
+    context: Any = None,
+    result: Any = None,
+    evidence: Any = None,
+) -> None:
+    """Write each role agent's execution flow and details."""
+    if not _enabled():
+        return
+    payload = {
+        "audit_items_covered": ["7_each_role_agent_execution_flow"],
+        "phase": phase,
+        "role_id": role_id,
+        "adapter_kind": adapter_kind,
+        "work_order": _to_log_dict(work_order),
+        "role_execution_context": _to_log_dict(context),
+        "result": _to_log_dict(result),
+        "evidence": _to_log_dict(evidence),
+    }
+    append_section(f"[Role Agent Execution] {role_id or 'RoleAgent'} {phase}", _json_block(payload))
+
+
+def log_cognitive_direct_execution(
+    *,
+    stage: str,
+    contract: Any = None,
+    work_order: Any = None,
+    tool_id: str = "",
+    dispatch_result: Any = None,
+    closure: Any = None,
+    final_text: str = "",
+    reason: str = "",
+) -> None:
+    """Write direct-mainline execution, verification, recovery, and closure nodes."""
+    if not _enabled():
+        return
+    try:
+        verification = getattr(dispatch_result, "verification", None) if dispatch_result is not None else None
+        recovery = getattr(dispatch_result, "recovery_plan", None) if dispatch_result is not None else None
+        observation = getattr(dispatch_result, "observation", "") if dispatch_result is not None else ""
+        payload = {
+            "audit_items_covered": [
+                "7_each_role_agent_execution_flow_summary",
+                "8_verification_agent_result",
+                "9_rounds",
+                "10_final_reply",
+            ],
+            "node": "WorkOrder Execution -> VerificationReport -> Recovery/TurnClosure",
+            "stage": stage,
+            "reason": reason,
+            "tool_id": tool_id,
+            "decision_contract": _to_log_dict(contract),
+            "work_order": _to_log_dict(work_order),
+            "observation_preview": str(observation or "")[:2000],
+            "verification_report": _to_log_dict(verification),
+            "recovery_plan": _to_log_dict(recovery),
+            "turn_closure": _to_log_dict(closure),
+            "final_text": final_text,
+        }
+        append_section(f"[Cognitive Kernel 主循环] 3. 执行/验证/闭环 ({stage})", _json_block(payload))
+
+        v_d = _to_log_dict(verification) or {}
+        c_d = _to_log_dict(closure) or {}
+        wo_d = _to_log_dict(work_order) or {}
+        human = [
+            "",
+            "【Cognitive Kernel 主循环】",
+            f"  7. 执行阶段：{stage}",
+            f"     tool={tool_id or (wo_d.get('inputs') or {}).get('tool') or ''}",
+            f"     work_order={wo_d.get('work_order_id') or ''}",
+            f"     reason={reason}" if reason else "     reason=",
+            "  8. 结果验证：",
+            f"     ok={v_d.get('ok')} confidence={v_d.get('confidence')} failure_reason={v_d.get('failure_reason') or ''}",
+            "  9. TurnClosure：",
+            f"     closure_type={c_d.get('closure_type') or ''} verification_status={c_d.get('verification_status') or ''}",
+        ]
+        if final_text:
+            human.append(f"     final_text={_truncate(final_text, 220)}")
+        _append_human_block(human)
+        if tool_id:
+            j = _journal()
+            if j is not None and tool_id not in j.tools_used:
+                j.tools_used.append(tool_id)
+    except Exception:
         pass
 
 
@@ -1306,6 +1796,7 @@ def append_final(tag: str, text: str, *, extra: dict[str, Any] | None = None) ->
         p = _turn_log_path.get()
         if p is not None:
             _turn_log_path_settled.set(p)
+            _mark_turn_inactive(p)
         _turn_log_path.set(None)
         _human_journal.set(None)
 

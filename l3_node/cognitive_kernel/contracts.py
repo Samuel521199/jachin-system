@@ -90,7 +90,10 @@ class MemoryRecallRequest:
     turn_id: str
     input_envelope: AgentInputEnvelope
     candidate_intents: list[str] = field(default_factory=list)
+    candidate_task_domains: list[str] = field(default_factory=list)
     candidate_entities: list[str] = field(default_factory=list)
+    multi_queries: dict[str, str] = field(default_factory=dict)
+    retrieval_channels: list[str] = field(default_factory=list)
     state_snapshot_summary: dict[str, Any] = field(default_factory=dict)
     active_task_stack_summary: dict[str, Any] = field(default_factory=dict)
     retrieval_purpose: list[str] = field(default_factory=list)
@@ -124,14 +127,24 @@ class MemoryEvidence:
 class RelevantMemoryBundle:
     turn_id: str
     retrieval_summary: str = ""
+    recall_request: dict[str, Any] = field(default_factory=dict)
+    candidate_intents: list[str] = field(default_factory=list)
+    candidate_task_domains: list[str] = field(default_factory=list)
+    multi_queries: dict[str, str] = field(default_factory=dict)
     resolved_references: list[dict[str, Any]] = field(default_factory=list)
     recent_actions: list[MemoryEvidence] = field(default_factory=list)
     active_tasks: list[MemoryEvidence] = field(default_factory=list)
     user_preferences: list[MemoryEvidence] = field(default_factory=list)
+    safety_preferences: list[MemoryEvidence] = field(default_factory=list)
     aliases: list[MemoryEvidence] = field(default_factory=list)
     corrections: list[MemoryEvidence] = field(default_factory=list)
     entity_matches: list[MemoryEvidence] = field(default_factory=list)
+    contact_matches: list[MemoryEvidence] = field(default_factory=list)
+    project_facts: list[MemoryEvidence] = field(default_factory=list)
+    tool_habits: list[MemoryEvidence] = field(default_factory=list)
     failure_hints: list[MemoryEvidence] = field(default_factory=list)
+    historical_task_summaries: list[MemoryEvidence] = field(default_factory=list)
+    ranking_evidence: list[dict[str, Any]] = field(default_factory=list)
     conflicts: list[dict[str, Any]] = field(default_factory=list)
     confidence: float = 0.0
     memory_gaps: list[str] = field(default_factory=list)

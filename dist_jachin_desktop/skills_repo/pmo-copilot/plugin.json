@@ -1,0 +1,29 @@
+{
+  "description": "自动读飞书多维表，生成项目战报和变更风险预警。",
+  "entry": "SKILL.md",
+  "id": "com.jachin.skill.pmo-copilot",
+  "item_type": "SKILL",
+  "name": "PMO 项目治理中枢",
+  "preserve_user_data": [
+    "$JACHIN_HOME/config/skills/pmo-copilot",
+    "$JACHIN_HOME/workspace/pmo_lark_pull",
+    "$JACHIN_HOME/data/pmo",
+    "$JACHIN_HOME/logs/pmo"
+  ],
+  "required_mcps": [
+    "com.jachin.mcp.pmo-runtime",
+    "com.jachin.mcp.l3.atom-bi-project-context",
+    "com.jachin.mcp.l3.atom-lark-notifier",
+    "com.jachin.mcp.l3.atom-web-scraper"
+  ],
+  "runtime_tier": "L3_LOCAL",
+  "tags": [
+    "pmo",
+    "project-management",
+    "lark",
+    "bitable",
+    "business-skill"
+  ],
+  "type": "SKILL",
+  "version": "1.0.0"
+}

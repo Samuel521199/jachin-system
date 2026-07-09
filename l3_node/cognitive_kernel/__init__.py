@@ -23,6 +23,11 @@ from .contracts import (
 from .arbiter import arbitrate_review_summary, build_work_order_from_decision
 from .dispatcher import DispatchResult, dispatch_existing_work_order, dispatch_tool_work_order
 from .kernel_loop import KernelPlanningResult, plan_cognitive_turn
+from .kernel_prompts import (
+    build_cognitive_kernel_system_prompt,
+    build_text_reasoning_role_system_prefix,
+    build_user_facing_reply_agent_system_prompt,
+)
 from .memory_lifecycle import (
     LifecycleMemoryRecord,
     recall_lifecycle_memories,
@@ -89,10 +94,13 @@ __all__ = [
     "WorkOrder",
     "arbitrate_review_summary",
     "build_cognitive_turn_context",
+    "build_cognitive_kernel_system_prompt",
     "build_work_order_from_decision",
     "create_task_dag_from_work_orders",
     "build_fake_mcp_error_recovery_prompt",
     "build_fake_weather_error_recovery_prompt",
+    "build_text_reasoning_role_system_prefix",
+    "build_user_facing_reply_agent_system_prompt",
     "dispatch_tool_work_order",
     "dispatch_existing_work_order",
     "get_default_role_executor_registry",

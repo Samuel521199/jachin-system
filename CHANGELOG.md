@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.105] - 2026-07-09
+
+### Added / Changed
+
+- 修复记忆：认知内核 memory recall、review board 与角色执行链路补强；摘干净 agent 结构（direct mainline / kernel prompts / roles 收敛）。
+- 完善日志：`terminal_turn_debug_log` 与人读 journal 测试增强；语音热词与理解候选解析小幅更新。
+- **Version**: Desktop **0.9.105**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+- **Note**: 记忆修复尚未完整回归测试。
+
+---
+
 ## [v0.9.102] - 2026-07-09
 
 ### Added / Changed

@@ -164,3 +164,47 @@ def test_candidate_parser_does_not_match_short_initial_contact_inside_long_noise
     selected = result["understanding"]["selected"]
     assert selected["intent"] == "no_task"
     assert "KK" not in str(selected.get("slots") or {})
+
+
+def test_candidate_parser_recalls_phonetic_contact_aliases_with_confirmation() -> None:
+    cases = [
+        ("\u5e2e\u6211\u627e\u725b", "Neil"),
+        ("\u5e2e\u6211\u627e\u610f\u601d", "Ethan"),
+        ("\u5e2e\u6211\u627e\u7537\u751f", "Nathan"),
+    ]
+
+    for raw, contact in cases:
+        result = VoiceUnderstandingCorrector().correct(raw)
+        selected = result["understanding"]["selected"]
+        assert selected["type"] == "task_requires_confirmation"
+        assert selected["intent"] == "find_contact"
+        assert selected["slots"]["contact"] == contact
+        assert result["needs_confirmation"] is True
+
+
+def test_candidate_parser_uses_medium_contact_alias_in_send_clarification_slots() -> None:
+    result = VoiceUnderstandingCorrector().correct("\u5728\u62c9\u514b\u7ed9\u5a01\u5ec9\u53d1\u6d88\u606f")
+
+    selected = result["understanding"]["selected"]
+    assert selected["type"] == "clarification_required"
+    assert selected["intent"] == "send_message"
+    assert selected["slots"] == {"app": "Lark", "contact": "Vivian"}
+    assert selected["missing_slots"] == ["message_content"]
+    assert selected["can_execute"] is False
+
+
+def test_candidate_parser_does_not_fuzzy_route_calculator_to_chrome() -> None:
+    result = VoiceUnderstandingCorrector().correct("\u5e2e\u6211\u6253\u5f00\u8ba1\u7b97\u5668\u7b97\u4e00\u4e0b40*90")
+
+    selected = result["understanding"]["selected"]
+    assert selected["intent"] == "no_task"
+    assert "Chrome" not in str(result["understanding"]["entity_candidates"])
+
+
+def test_candidate_parser_recalls_jachin_phonetic_project_alias_with_confirmation() -> None:
+    result = VoiceUnderstandingCorrector().correct("\u5e2e\u6211\u770b\u4e00\u4e0b\u5bb6\u5177")
+
+    selected = result["understanding"]["selected"]
+    assert selected["type"] == "task_requires_confirmation"
+    assert selected["intent"] == "open_project"
+    assert selected["slots"]["project"] == "Jachin"

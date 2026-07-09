@@ -10,7 +10,7 @@ import { voiceChatTrace, voiceChatTraceIfActive } from "./voiceChatTraceLog";
 export class VoiceServiceError extends Error {
   constructor(
     message: string,
-    readonly code: "jvs" | "stt" | "l3" | "mic" | "clarification" | "unknown" = "unknown",
+    readonly code: "jvs" | "stt" | "l3" | "mic" | "unknown" = "unknown",
     readonly details?: Record<string, unknown>,
   ) {
     super(message);
@@ -157,50 +157,12 @@ export async function transcribeBlobDetailed(audioBlob: Blob, profile: VoiceUxPr
     const stt = await transcribeByJvs(wavBlob);
     const correctedText = (stt.text || "").trim();
     const rawText = (stt.raw_text || stt.text || "").trim();
-    const selected = stt.understanding?.selected;
-    const userMessage = (stt.user_message || selected?.question || "").trim();
-    const replyPlan = (stt.reply_plan || (stt.understanding as any)?.reply_plan || {}) as Record<string, unknown>;
-    if (selected?.type === "clarification_required" && userMessage) {
-      voiceChatTraceIfActive("stt.jvs_clarification_required", {
-        profile,
-        question: userMessage,
-        intent: selected.intent,
-        slots: selected.slots,
-        missingSlots: selected.missing_slots,
-        rawText,
-        correctedText: selected?.corrected_text || correctedText,
-        confidence: stt.confidence,
-        latencyMs: Date.now() - sttStarted,
-        pipelineMs: Date.now() - pipelineStartedAt,
-      });
-      throw new VoiceServiceError(userMessage, "clarification", {
-        rawText,
-        correctedText: selected?.corrected_text || correctedText,
-        userMessage,
-        userMessageSource: stt.user_message_source || "",
-        replyPlan,
-        understanding: stt.understanding,
-        confidence: stt.confidence,
-        durationMs: stt.duration_ms,
-        language: stt.language,
-        backend: stt.backend,
-        source: "jvs_http_transcribe",
-        finalized: true,
-        provisional: false,
-        hotwordCount: stt.hotword_count,
-        hotwordStatus: stt.hotword_status,
-        hotwordSources: stt.hotword_sources,
-      });
-    }
     const text = sanitizeSttText(correctedText);
     voiceChatTraceIfActive("stt.jvs_transcribe_ok", {
       profile,
       text,
       rawText,
       correctedText,
-      userMessage,
-      userMessageSource: stt.user_message_source,
-      replyPlan,
       confidence: stt.confidence,
       durationMs: stt.duration_ms,
       language: stt.language,
@@ -219,8 +181,8 @@ export async function transcribeBlobDetailed(audioBlob: Blob, profile: VoiceUxPr
     return {
       text,
       rawText,
-      correctedText: selected?.corrected_text || correctedText,
-      userMessage,
+      correctedText,
+      userMessage: "",
       confidence: stt.confidence,
       durationMs: stt.duration_ms,
       language: stt.language,
@@ -274,5 +236,4 @@ export function formatVoiceUserMessage(text: string, profile: VoiceUxProfile): s
   if (profile === "wake") return t;
   return `🎤 ${t}`;
 }
-
 
