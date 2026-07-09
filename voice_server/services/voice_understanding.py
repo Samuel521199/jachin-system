@@ -19,7 +19,6 @@ class LexiconEntry:
     kind: str
     canonical: str
     aliases: list[str]
-    phonetic_aliases: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -154,22 +153,13 @@ def load_lexicon(
             if isinstance(meta, dict) and meta.get("active", True) is False:
                 continue
             aliases: list[str] = []
-            phonetic_aliases: list[str] = []
             if isinstance(meta, dict):
                 aliases.extend(str(x) for x in meta.get("aliases", []) if str(x).strip())
-                phonetic_aliases.extend(str(x) for x in meta.get("phonetic_aliases", []) if str(x).strip())
             elif isinstance(meta, list | tuple):
                 aliases.extend(str(x) for x in meta if str(x).strip())
             aliases.extend(str(x) for x in (user_aliases.get(kind) or {}).get(canonical, []) if str(x).strip())
             aliases.append(str(canonical))
-            entries.append(
-                LexiconEntry(
-                    kind=kind,
-                    canonical=str(canonical),
-                    aliases=list(dict.fromkeys(x.strip() for x in aliases if x.strip())),
-                    phonetic_aliases=list(dict.fromkeys(x.strip() for x in phonetic_aliases if x.strip())),
-                )
-            )
+            entries.append(LexiconEntry(kind=kind, canonical=str(canonical), aliases=list(dict.fromkeys(x.strip() for x in aliases if x.strip()))))
     return entries
 
 
@@ -182,7 +172,7 @@ def extract_candidate_spans(text: str) -> list[tuple[int, int, str]]:
     for match in re.finditer(r"[\u4e00-\u9fff]{2,}", text):
         segment = match.group(0)
         base = match.start()
-        for size in range(1, min(6, len(segment)) + 1):
+        for size in range(2, min(6, len(segment)) + 1):
             for offset in range(0, len(segment) - size + 1):
                 start = base + offset
                 spans[(start, start + size)] = text[start : start + size]
@@ -223,17 +213,6 @@ def score_entity_span(span_text: str, alias: str) -> tuple[float, list[str]]:
     return best, evidence
 
 
-def score_phonetic_alias_span(span_text: str, alias: str) -> tuple[float, list[str]]:
-    score, evidence = score_entity_span(span_text, alias)
-    if "exact" in evidence:
-        return 0.84, ["phonetic_alias", "exact"]
-    if "substring" in evidence:
-        return min(score, 0.80), ["phonetic_alias", "substring"]
-    if score >= 0.72:
-        return min(score, 0.76), list(dict.fromkeys(["phonetic_alias", *evidence]))
-    return 0.0, []
-
-
 def entity_surface(entry: LexiconEntry, alias: str, matched_text: str) -> str:
     if entry.kind == "contacts":
         return entry.canonical
@@ -257,12 +236,6 @@ def is_pronoun_like_span(value: str) -> bool:
 
 def classify_entity_strength(kind: str, matched_text: str, score: float, evidence: list[str]) -> str:
     matched_norm = normalize_for_match(matched_text)
-    if "phonetic_alias" in evidence:
-        if kind == "contacts" and score >= 0.78 and len(matched_norm) >= 1:
-            return "medium"
-        if kind == "projects" and score >= 0.80 and len(matched_norm) >= 2:
-            return "medium"
-        return "weak"
     if "exact" in evidence or "substring" in evidence:
         return "strong"
     if kind == "contacts":
@@ -284,20 +257,13 @@ def global_entity_scan(text: str, entries: list[LexiconEntry]) -> list[EntityCan
         span_norm = normalize_for_match(span_text)
         span_is_short_ascii_fragment = is_ascii_like(span_text) and len(span_norm) <= 2
         for entry in entries:
-            alias_items = [(entry.canonical, False), *[(alias, False) for alias in entry.aliases], *[(alias, True) for alias in entry.phonetic_aliases]]
-            for alias, is_phonetic_alias in alias_items:
-                score, evidence = score_phonetic_alias_span(span_text, alias) if is_phonetic_alias else score_entity_span(span_text, alias)
+            for alias in [entry.canonical, *entry.aliases]:
+                score, evidence = score_entity_span(span_text, alias)
                 if score < 0.62:
-                    continue
-                if len(span_norm) <= 1 and "phonetic_alias" not in evidence:
                     continue
                 if span_is_short_ascii_fragment and "exact" not in evidence:
                     continue
                 if entry.kind == "projects" and score < 0.72:
-                    continue
-                if entry.kind == "apps" and not any(x in evidence for x in ("exact", "substring")) and score < 0.86:
-                    continue
-                if entry.kind == "apps" and "phonetic_alias" in evidence and score < 0.88:
                     continue
                 if not evidence:
                     evidence = ["fuzzy_similarity"]
@@ -543,11 +509,7 @@ def generate_task_candidates(text: str, entities: list[EntityCandidate], utteran
     }
     by_kind = {
         "apps": [e for e in by_kind_all["apps"] if is_medium_or_strong_entity(e)],
-        "contacts": [
-            e
-            for e in by_kind_all["contacts"]
-            if is_medium_or_strong_entity(e) or (e.strength == "weak" and is_ascii_like(e.matched_text) and len(normalize_for_match(e.matched_text)) >= 4)
-        ],
+        "contacts": by_kind_all["contacts"],
         "projects": [e for e in by_kind_all["projects"] if is_medium_or_strong_entity(e)],
     }
     tasks: list[TaskCandidate] = [no_task_candidate(text, utterance)]
@@ -567,11 +529,10 @@ def generate_task_candidates(text: str, entities: list[EntityCandidate], utteran
 
     if send_context:
         app = by_kind["apps"][0] if by_kind["apps"] else None
-        strong_contacts = [e for e in by_kind_all["contacts"] if is_strong_entity(e)]
-        medium_contacts = [e for e in by_kind_all["contacts"] if e.strength == "medium"]
-        weak_contacts = [e for e in by_kind_all["contacts"] if e.strength == "weak"]
-        medium_contact_in_slot = bool(medium_contacts) and (give_marker_present or app is not None)
-        usable_contact = strong_contacts[0] if strong_contacts else (medium_contacts[0] if (medium_contacts and (message_content or medium_contact_in_slot)) else None)
+        strong_contacts = [e for e in by_kind["contacts"] if is_strong_entity(e)]
+        medium_contacts = [e for e in by_kind["contacts"] if e.strength == "medium"]
+        weak_contacts = [e for e in by_kind["contacts"] if e.strength == "weak"]
+        usable_contact = strong_contacts[0] if strong_contacts else (medium_contacts[0] if (medium_contacts and message_content) else None)
         missing_slots: list[str] = []
         if usable_contact is None:
             missing_slots.append("contact")
@@ -688,28 +649,23 @@ class VoiceUnderstandingCorrector:
         return self._entries
 
     def correct(self, text: str) -> dict[str, Any]:
-        entities = global_entity_scan(text, self._load_entries())
-        correction_entities = [entity for entity in entities if is_medium_or_strong_entity(entity)]
-        corrected = replace_entity_spans(text, correction_entities) if correction_entities else text
-        confidence = max((entity.score for entity in correction_entities), default=0.0)
-        entity_only_understanding = {
-            "strategy": "stt_entity_correction_only",
-            "asr_texts": [{"engine": "jvs", "text": text}],
-            "entity_candidates": [asdict(item) for item in entities],
-            "task_candidates": [],
-            "selected": {},
-            "reply_plan": {},
-            "reply_source": "none",
-            "voice_layer_scope": "stt_only",
-            "note": "Voice layer only performs STT/entity correction/hotword support; L3 owns intent, slot filling, clarification, and task decisions.",
-        }
+        understanding = understand_voice_text(text, self._load_entries())
+        selected = understanding.get("selected") or {}
+        if selected.get("intent") == "no_task":
+            corrected = text
+            confidence = float(selected.get("score") or 0.0)
+            needs_confirmation = False
+        else:
+            corrected = str(selected.get("corrected_text") or text)
+            confidence = float(selected.get("score") or 0.0)
+            needs_confirmation = bool(selected.get("needs_confirmation"))
         return {
             "raw_text": text,
             "corrected_text": corrected,
-            "user_message": "",
-            "user_message_source": "",
+            "user_message": str(understanding.get("user_message") or "").strip(),
+            "user_message_source": str(understanding.get("user_message_source") or "").strip(),
             "confidence": round(confidence, 3),
-            "needs_confirmation": False,
-            "understanding": entity_only_understanding,
-            "reply_plan": {},
+            "needs_confirmation": needs_confirmation,
+            "understanding": understanding,
+            "reply_plan": understanding.get("reply_plan") or {},
         }
