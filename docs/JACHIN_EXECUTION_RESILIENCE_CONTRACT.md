@@ -2,7 +2,7 @@
 
 **版本**: 1.0  
 **状态**: 系统设计规范（与实现渐进对齐）  
-**关联**: [JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md](./JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md)（编排与工作流）、[ORCHESTRATION_ARCHITECTURE.md](./ORCHESTRATION_ARCHITECTURE.md)（若存在）、Cursor 规则 `.cursor/rules/080-jachin-execution-resilience.mdc`
+**关联**: [07_memory_first_main_agent_and_voice_app_agents.md](./07_memory_first_main_agent_and_voice_app_agents.md)、Cursor 规则 `.cursor/rules/080-jachin-execution-resilience.mdc`
 
 ---
 

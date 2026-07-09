@@ -1,11 +1,12 @@
 """
-Jachin Nexus V2 — L3 **单主轴 ReAct**（run_agent）；跨会话记忆由 **Memory Nexus（SQLite + FastEmbed）** 在 L3 内闭环；可选 delegate 子 Agent。
+Jachin L3 compatibility transport.
 
-混合架构（语义层、SOP、内联 Critic、Experience RAG）：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md
-
-工具清单以 load_tools、assemble_tool_pool（MCP 合并）、build_tools_description 为准。
-相关规格：docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md、docs/L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md；
-薄弱点与实现快照：docs/L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md（§〇）。
+The active architecture is the Memory-first Cognitive Kernel described in
+``docs/07_memory_first_main_agent_and_voice_app_agents.md``. This module keeps
+the historical text/stream transport and tool-text parsing needed by existing
+clients, but every real tool invocation must be converted to
+DecisionContract -> WorkOrder -> Dispatcher -> RoleExecutor before it can touch
+the external world.
 """
 from __future__ import annotations
 
@@ -81,6 +82,9 @@ from l3_node.memory_nexus_bridge import (
     async_build_l1_system_memory_block,
     schedule_nexus_turn_commit_async,
 )
+from l3_node.cognitive_kernel.direct_mainline import try_execute_cognitive_direct_plan
+from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+from l3_node.cognitive_kernel.pipeline import build_cognitive_turn_context
 
 logger = logging.getLogger(__name__)
 
@@ -461,7 +465,7 @@ REACT_FOOTER_L5_MEMORY_COMPACT_FACTS = (
     "若用户问起「整理/坍缩旧 JSON」，如实说明已迁移 Nexus，勿编造 task_id 或 150 条阈值剧情。\n"
 )
 
-# L4：数据/MCP 库操作 SOP（与业务语义层 YAML 配套；见 docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md）
+# L4：数据/MCP 库操作 SOP（与业务语义层 YAML 配套；见 docs/07_memory_first_main_agent_and_voice_app_agents.md）
 _L4_AGENT_SOP_PROBE_MAP_EXECUTE = """【L4 智能体 SOP 法则】：当你处理数据查询、MCP 数据库操作或模糊业务词汇（如「缺货」「最贵」）时，绝对禁止直接生成最终的 SQL 或代码。你必须严格按以下三步执行：
 
 <probe>：若不清楚表结构，必须先调用 mcp:list_tables 或相关只读工具探查真实 Schema。
@@ -915,227 +919,6 @@ def _sanitize_react_assistant_tool_turn_for_history(response: str) -> str:
     return t
 
 
-def _final_answer_is_honest_sqlite_capability_denial(text: str) -> bool:
-    """模型已承认无 read_query / 无法读库（与「假装 SELECT 出结果」相反）。"""
-    s = text or ""
-    if len(s) < 24:
-        return False
-    if re.search(
-        r"(无法|不能)(?:真实)?(?:访问|查询).{0,64}(?:test_db|\.sqlite|数据库)|"
-        r"不具备.{0,40}(?:执行)?(?:数据库)?(?:读取|查询)|"
-        r"(?:可用|可见)?工具列表.{0,48}未包含|"
-        r"未包含.{0,56}(?:read_query|SQLite|sqlite)|"
-        r"如实说明|不能编造|严禁编造|幻觉输出|并未(?:真正)?查询|"
-        r"技能白名单.{0,40}(?:未|没有|不包含).{0,20}(?:权限|read)|"
-        r"无法对数据库内容进行",
-        s,
-        re.I,
-    ):
-        return True
-    return False
-
-
-def _final_answer_claims_sqlite_was_queried(text: str) -> bool:
-    """Final Answer 是否假装已经查过库并得到库存/缺货事实（排除如实否认能力的回复）。"""
-    s = text or ""
-    if _final_answer_is_honest_sqlite_capability_denial(s):
-        return False
-    # 典型幻觉：根据 … test_db.sqlite … （实际）查询 … 缺货/库存/水果
-    if re.search(
-        r"根据\s*[`\u2018\u2019']?\s*[\w./\\-]+\.sqlite[`\u2018\u2019']?\s*[^。\n]{0,48}"
-        r"(?:数据库的查询结果|的查询结果)",
-        s,
-        re.I,
-    ):
-        return True
-    if re.search(r"根据.{0,32}\.sqlite", s, re.I) and re.search(
-        r"(?:数据库的)?实际查询|查询结果|查询表明|查询显示",
-        s,
-        re.I,
-    ):
-        return True
-    if re.search(r"数据库的查询结果\s*[，,：:]", s) and re.search(
-        r"(?:缺货|以下水果|水果现在|库存).{0,24}(?:是|：|:|[\n\r][\s\-•·])",
-        s,
-    ):
-        return True
-    if re.search(r"`[^`]*\.sqlite`", s, re.I) and re.search(
-        r"(?:数据库的查询结果|的查询结果|查询表明|查询显示|实际查询|数据库的实际查询)",
-        s,
-        re.I,
-    ):
-        head2 = s[: min(320, len(s))]
-        if not re.search(r"无法|不能|不具备|未包含|并未", head2, re.I):
-            return True
-    # 提及 .sqlite 且给出具体缺货/库存断言（含臆造列名 stock）
-    if re.search(r"\.sqlite|`[^`]*\.sqlite`", s, re.I) and re.search(
-        r"(?:缺货|库存|stock|quantity).{0,6}(?:是|为|：|:|\=)",
-        s,
-        re.I,
-    ):
-        if not _final_answer_is_honest_sqlite_capability_denial(s[:280]):
-            return True
-    return False
-
-
-def _user_text_requests_workspace_writeback(text: str) -> bool:
-    """用户是否明确要求把生成内容写回/覆盖某文件（与仅「总结」区分）。"""
-    t = (text or "").strip()
-    if not t:
-        return False
-    if re.search(
-        r"(覆盖|改写|重写|替换|写回).{0,80}(源|原文|文档|文件|该\s*文|该\s*份|本\s*文)",
-        t,
-        re.I,
-    ):
-        return True
-    if re.search(r"(源|原文|文档|文件).{0,80}(覆盖|改写|重写|替换)", t, re.I):
-        return True
-    if "将源文档" in t or "将原文" in t or "源文档内容" in t:
-        return True
-    if re.search(r"(用|将).{0,48}(总结|摘要|提炼|改写|重写).{0,72}(覆盖|写入|保存|写回)", t, re.I):
-        return True
-    return False
-
-
-def _user_intent_requests_workspace_writeback(messages: list[dict[str, Any]] | None) -> bool:
-    """
-    从对话中查找带路径/文件语境的用户原话，判断是否要求写回磁盘。
-    跳过 Observation 与【系统…】注入，避免把工具回显当成用户意图。
-    """
-    for m in reversed(messages or []):
-        if not isinstance(m, dict) or m.get("role") != "user":
-            continue
-        t = str(m.get("content") or "").strip()
-        if not t:
-            continue
-        if t.startswith("【") or t.startswith("Observation:"):
-            continue
-        if not re.search(
-            r"[/\\]|\.(?:txt|md|json|csv|py|docx?)\b|workspace|工作区|文件",
-            t,
-            re.I,
-        ):
-            continue
-        if _user_text_requests_workspace_writeback(t):
-            return True
-    return False
-
-
-def _react_observation_suggests_workspace_read_ok(tool: str, obs: str) -> bool:
-    tl = (tool or "").lower()
-    if "fs_read" not in tl and "read_file" not in tl:
-        return False
-    o = (obs or "").strip()
-    if len(o) < 1:
-        return False
-    ol = o.lower()
-    if any(
-        x in ol
-        for x in (
-            "securityexception",
-            "路径越界",
-            "路径无效",
-            "-32602",
-            "enoent",
-            "not found",
-            "failed to read",
-            "missing_path",
-            "invalid arguments",
-            "[read_file]",
-        )
-    ):
-        return False
-    return True
-
-
-def _react_observation_suggests_workspace_write_ok(tool: str, base_tool: str, obs: str) -> bool:
-    tl = (tool or "").lower()
-    bt = (base_tool or "").lower()
-    o = (obs or "").strip()
-    if not o:
-        return False
-    ol = o.lower()
-    if any(
-        x in ol
-        for x in (
-            "-32602",
-            "securityexception",
-            "路径越界",
-            "路径无效",
-            "enoent",
-            "errno",
-            "error_class",
-            '"ok": false',
-            '"ok":false',
-            "missing_path",
-            "invalid arguments",
-            "mcp error",
-        )
-    ):
-        return False
-    if "fs_write" in tl or "apply_patch" in tl:
-        return True
-    if bt in ("write_file", "create_file", "edit_file", "search_replace"):
-        return True
-    return False
-
-
-def _react_mark_workspace_io_flags(ctx: PipelineContext, tool: str, observation_full: str) -> None:
-    """根据本轮工具与完整 Observation 更新「已读工作区文件 / 已成功写盘」标记（供写回守卫使用）。"""
-    base_tool = (tool or "").replace("mcp:", "").strip()
-    obs = str(observation_full or "")
-    if _react_observation_suggests_workspace_read_ok(tool, obs):
-        ctx.metadata["_react_did_workspace_read"] = True
-    if _react_observation_suggests_workspace_write_ok(tool, base_tool, obs):
-        ctx.metadata["_react_did_workspace_write"] = True
-
-
-def _reject_workspace_writeback_missing_guard(
-    ctx: PipelineContext,
-    messages: list[dict[str, Any]],
-    response: str,
-    ans: str,
-    *,
-    via: str,
-) -> bool:
-    """
-    用户要求「读摘要后覆盖源文件」时：若已发生成功读盘、尚无成功写盘，则拦截 Final Answer（仅一次）并续跑。
-    """
-    if ctx.metadata.get("_react_writeback_guard_retry_done"):
-        return False
-    if not ctx.metadata.get("_react_did_workspace_read"):
-        return False
-    if ctx.metadata.get("_react_did_workspace_write"):
-        return False
-    if not _user_intent_requests_workspace_writeback(messages):
-        return False
-    ctx.metadata["_react_writeback_guard_retry_done"] = True
-    ctx.metadata["_retry_reason"] = "workspace_writeback_guard"
-    try:
-        asyncio.get_running_loop().create_task(global_hooks.run(HOOK_ON_RETRY, ctx))
-    except RuntimeError:
-        pass
-    logger.warning(
-        "[L3 Agent][工作区写回校验] trace=%s via=%s 用户要求写回源文件但未见成功写盘，已注入纠偏续跑",
-        str(ctx.metadata.get("_react_step_trace") or ""),
-        via,
-    )
-    messages.append({"role": "assistant", "content": response})
-    messages.append({
-        "role": "user",
-        "content": (
-            "【系统校验】用户要求将总结/提炼后的内容**写回源文件**完成覆盖；"
-            "你已通过读类工具（如 core:fs_read、mcp:read_file）取得原文，但尚未执行**写盘**工具完成覆盖。\n"
-            "禁止用 core:local_memory_append 或仅口头复述代替写文件。\n"
-            "请下一步输出 ReAct：\n"
-            "Thought: …\n"
-            "Action: core:fs_write（或白名单内的 mcp:write_file / mcp:create_file）\n"
-            "Action Input: JSON，须含 path 或 file_path（与用户给出的路径一致，可为绝对路径或相对 ~/.jachin/workspace）"
-            "与 content（提炼后的完整替换正文）。工具返回成功后再输出 Final Answer，并明确说明已覆盖该路径。"
-        ),
-    })
-    return True
 
 
 from l3_node.capability_agent_hooks import (
@@ -1147,135 +930,16 @@ from l3_node.capability_agent_hooks import (
     capability_observation_nudge,
     capability_publisher_tool_lock_enabled,
     capture_capability_debug_thought,
+    mark_workspace_io_capability_flags,
     reject_capability_final_answer_guards,
+    reject_sqlite_grounding_guard,
+    reject_workspace_writeback_guard,
     reset_capability_policy_metadata,
 )
-def _reject_ungrounded_sqlite_final_answer(
-    ctx: PipelineContext,
-    messages: list[dict[str, Any]],
-    response: str,
-    ans: str,
-    *,
-    via: str,
-) -> bool:
-    """
-    若用户问工作区 SQLite 事实、答案声称已查库、但本轮尚未执行任何工具，则注入纠偏并返回 True（须 continue）。
-
-    与「白名单里是否真有 read_query」**解耦**：无 SQLite 工具时禁止假装已查库，须明说当前无法访问或请用户开 MCP；
-    有工具时强制先走 Action + Observation。
-    """
-    _skills = ctx.metadata.get("_skills_unfiltered") or ctx.metadata.get("_skills") or []
-    _last_u = ""
-    _sqlite_user_turn = False
-    for m in reversed(messages):
-        if isinstance(m, dict) and m.get("role") == "user":
-            c = str(m.get("content") or "")
-            if not _last_u:
-                _last_u = c
-            if _user_text_requests_workspace_sqlite_verification(c):
-                _sqlite_user_turn = True
-    _probe = f"{ctx.intent or ''}\n{_last_u}"
-    if not _sqlite_user_turn and not _user_text_requests_workspace_sqlite_verification(_probe):
-        return False
-    _anchor_u = _last_non_system_user_text(messages) or _last_u
-    _latest_sqlite_verify = _user_text_requests_workspace_sqlite_verification(_anchor_u)
-    _ans_s = str(ans or "")
-    _rtrace = str(ctx.metadata.get("_react_step_trace") or "")
-    _has_sqlite = _tools_include_sqlite_mcp(_skills)
-    _inv = int(ctx.metadata.get("_react_tool_invocations") or 0)
-
-    # 已注册 SQLite MCP（如 mcp:query），但模型未调任何工具就声称「无法查询 / 没有工具」——属错误，须纠偏续跑
-    if (
-        _inv < 1
-        and _has_sqlite
-        and re.search(
-            r"(?:抱歉|很抱歉)?[,，]?\s*(?:我)?(?:无法|不能)(?:真实)?(?:查询|访问).{0,96}(?:test_db|\.sqlite|数据库)|"
-            r"没有(?:可用)?的\s*(?:SQLite|sqlite)?\s*查询工具|"
-            r"(?:当前)?(?:会话)?(?:环境)?中?\s*没有(?:可用)?的.{0,32}(?:SQLite|sqlite|查询工具|数据库)|"
-            r"(?:工具|白名单|权限).{0,40}(?:未|没有|不包含).{0,48}(?:read_query|SQLite|sqlite|数据库)|"
-            r"没有可用的 SQLite|不具备.{0,24}(?:查询)?(?:数据库|SQLite)",
-            _ans_s,
-            re.I | re.DOTALL,
-        )
-    ):
-        logger.warning(
-            "[L3 Agent][SQLite 接地] trace=%s via=%s 纠偏：已挂载 SQLite MCP 却声称无法查询（须先 Action）",
-            _rtrace,
-            via,
-        )
-        messages.append({"role": "assistant", "content": response})
-        messages.append({
-            "role": "user",
-            "content": (
-                "【系统校验·SQLite】本轮工具列表**已包含** MCP SQLite（常见为 **mcp:query**、mcp:read_records、"
-                "mcp:list_tables；若有官方 read_query 则为 **mcp:read_query**）。"
-                "你在未产生任何 Observation 的情况下写「无法查询 / 没有 SQLite 工具」是**错误**的。\n"
-                "请立即输出 ReAct（禁止本轮直接 Final Answer）：\n"
-                "Thought: …\n"
-                "Action: mcp:list_tables\n"
-                "Action Input: {}\n"
-                "再根据返回的表结构编写**只读** SELECT，Action: mcp:query，"
-                'Action Input: {"sql":"<你的 SELECT；键名须为 sql（mcp-sqlite），勿与 read_query 的 query 混淆>"}\n'
-                "取得 Observation 后再 Final Answer。"
-            ),
-        })
-        return True
-
-    # 最新用户话轮在问可核验库表事实，且已挂载 SQLite，但本轮尚未有任何工具调用：
-    # 禁止用 Final Answer 直接给出缺货/库存/行数据等（含「- 某某」式极简答），否则模型会猜答案绕过「声称已查库」检测。
-    if (
-        _inv < 1
-        and _has_sqlite
-        and _latest_sqlite_verify
-        and not _final_answer_is_honest_sqlite_capability_denial(_ans_s)
-    ):
-        logger.warning(
-            "[L3 Agent][SQLite 接地] trace=%s via=%s 拒绝无 Observation 的 Final Answer（须先 MCP） preview=%r",
-            _rtrace,
-            via,
-            _ans_s[:160],
-        )
-        messages.append({"role": "assistant", "content": response})
-        messages.append({
-            "role": "user",
-            "content": (
-                "【系统校验·SQLite】当前问题依赖数据库中的**可核验事实**。"
-                "在尚未产生任何工具 Observation 前，**禁止**用 Final Answer 输出具体缺货品类、库存结论或仅一行名称"
-                "（会被视为未查库臆测）。\n"
-                "必须输出 ReAct：先 **Action: mcp:list_tables**，**Action Input: {}**；再 **Action: mcp:query**，"
-                "用只读 SQL（JSON 键 **sql**）查询；**仅当** Observation 返回后才能在 Final Answer 中归纳结果。"
-            ),
-        })
-        return True
-
-    if not _final_answer_claims_sqlite_was_queried(_ans_s):
-        return False
-    if _inv >= 1:
-        return False
-    logger.warning(
-        "[L3 Agent][SQLite 接地] trace=%s via=%s 拒绝无工具 Final Answer（声称已查库） has_sqlite_tool=%s",
-        _rtrace,
-        via,
-        _has_sqlite,
-    )
-    messages.append({"role": "assistant", "content": response})
-    if _has_sqlite:
-        _nudge = (
-            "【系统校验·SQLite】你尚未调用任何工具，却声称「根据 *.sqlite / 实际查询」作答——这是禁止的幻觉。\n"
-            "当前已注册 **mcp:query** 等，必须先 **mcp:list_tables**（Action Input: {}）确认真实表与列名，"
-            "再 **mcp:query** 用只读 SQL（键 **sql**）查询，**禁止**在未收到 Observation 前写「根据…实际查询」"
-            "或编造行级结果；也不得用极简 Final Answer 代替工具调用。"
-        )
-    else:
-        _nudge = (
-            "【系统校验·SQLite】你尚未调用任何工具，却声称「根据 test_db.sqlite / 数据库查询结果」作答——这是禁止的幻觉。"
-            "当前**可见工具列表中未包含** MCP SQLite（read_query）或已被白名单过滤，你**无法**真实查库。"
-            "请在本轮 Final Answer 中**如实说明**无法访问该库，并提示检查：official-sqlite-npx MCP、"
-            "SUB_ACCOUNT 技能白名单是否包含 mcp:read_query、以及 db 路径是否指向 ~/.jachin/workspace/test_db.sqlite；"
-            "**禁止**编造查询结果或列举具体水果库存。"
-        )
-    messages.append({"role": "user", "content": _nudge})
-    return True
+from l3_node.capability_policies.hr_recruitment import (
+    answer_claims_job_published as _hr_policy_answer_claims_job_published,
+    answer_claims_unmanned_scheduler_running as _hr_policy_answer_claims_unmanned_scheduler_running,
+)
 
 
 def _react_engine_for_iteration(
@@ -1417,46 +1081,6 @@ def _react_engine_for_iteration(
         return base
 
 
-def _hr_answer_claims_job_published(ans: str) -> bool:
-    """检测助手是否声称「刚在 Boss 发帖成功」。子串过宽会误伤（如「已在Boss 沟通页」）。"""
-    a = ans or ""
-    if "JOB_" in a:
-        return True
-    phrases = (
-        "职位已发布",
-        "职位发布成功",
-        "已发布职位",
-        "Boss 发布成功",
-        "boss 发布成功",
-        "已在 Boss 发布",
-        "已在Boss 发布",
-        "已成功发布职位",
-        "职位发布完成",
-        "发帖成功",
-        "已成功发帖",
-        "已在 Boss 上架",
-        "职位已在 Boss 上架",
-    )
-    return any(p in a for p in phrases)
-
-
-def _hr_answer_claims_unmanned_scheduler_running(ans: str) -> bool:
-    """
-    检测助手是否声称「无人值守/收网调度已在跑」，但未实际调用 MCP 时即为幻觉。
-    （与 _hr_answer_claims_job_published 区分：后者针对 Boss 发帖。）
-    """
-    a = ans or ""
-    if re.search(r"调度状态\s*\*?\s*[|｜]\s*\*?\s*运行中", a, re.I):
-        return True
-    if re.search(r"无人值守[^\n]{0,48}(已启动|运行中|已开始)", a):
-        return True
-    if "收网任务已启动" in a or ("自动抓取简历" in a and "已启动" in a):
-        return True
-    if re.search(r"任务\s*ID\s*\|\s*[`'\"]?hr_recruit", a, re.I):
-        return True
-    if "✅" in a and "无人值守" in a and ("启动" in a or "运行" in a):
-        return True
-    return False
 
 
 def _hr_thread_forbids_atom_post(messages: list | None) -> bool:
@@ -1615,7 +1239,7 @@ def _apply_hr_recruitment_final_answer_table_sync(text: str, ctx: Any) -> str:
 
 def _hr_recruitment_success_answer(ctx: Any, ans: str) -> bool:
     """招聘流程成功收尾：含发帖成功，或仅启动无人值守/收网（已有在招岗位，无需发帖）。"""
-    if _hr_answer_claims_job_published(ans):
+    if _hr_policy_answer_claims_job_published(ans):
         return True
     if "极速测试模式" in (ans or "") or "TASK_AUTO" in (ans or ""):
         return True
@@ -4073,7 +3697,7 @@ Final Answer: <最终回复>
 
 --- 以下段落随会话、记忆与域状态变化（建议置于提示词末尾以利于 API 前缀缓存）---
 """
-    # 后缀驱逐 rank：越小越先丢。对齐 L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md §5.3
+    # 后缀驱逐 rank：越小越先丢。对齐 Cognitive Kernel prompt budget policy §5.3
     # L5：long 提高 task_plan / plan_hint 保活；short 提高经验块、压低被动本地记忆（语义层始终最高档）
     _rank_sem_layer = 99
     _rank_exp_fs = 96 if _mem_route == "short" else 94
@@ -4786,13 +4410,19 @@ def _react_block_mcp_fetch_if_youtube_url(tool: str, action_input: str) -> str |
     )
 
 
-async def _invoke_react_tool(
+async def _invoke_work_order_tool_transport(
     tool: str,
     inp: str,
     allowed_skills: Optional[list[str]],
     ctx: PipelineContext,
 ) -> str:
-    """前台同步工具：可选 asyncio 超时；后台任务 / 子代理 / 豁免工具跳过。"""
+    """Compatibility text-loop tool bridge.
+
+    The text loop may still parse an action from model output, but this bridge
+    is no longer allowed to invoke tools directly. It normalizes compatibility
+    quirks, then creates a WorkOrder and lets the Cognitive Kernel Dispatcher
+    choose the RoleExecutor.
+    """
     _rtrace = str(ctx.metadata.get("_react_step_trace") or "")
     _inp = inp or ""
     logger.info(
@@ -4820,154 +4450,36 @@ async def _invoke_react_tool(
                 return readonly_tool_block_observation(tool or "")
         except Exception as _ro_e:
             logger.debug("[L3 Agent][readonly] 拦截检查跳过: %s", _ro_e)
-    if tool_entry_looks_like_sqlite_family({"id": tool}):
-        try:
-            _jd = json.loads(_inp)
-            if isinstance(_jd, dict):
-                _sql_logged = False
-                for _k in ("sql", "query", "statement", "command"):
-                    _v = _jd.get(_k)
-                    if isinstance(_v, str) and _v.strip():
-                        _sql = _v.strip()
-                        _lim = 12000
-                        logger.info(
-                            "[L3 Agent][SQLite·SQL] trace=%s run_id=%s tool=%s json_key=%s sql_len=%d sql=%s%s",
-                            _rtrace,
-                            getattr(ctx, "run_id", "") or "",
-                            tool,
-                            _k,
-                            len(_sql),
-                            _sql[:_lim],
-                            "…(truncated)" if len(_sql) > _lim else "",
-                        )
-                        _sql_logged = True
-                        break
-                if not _sql_logged:
-                    logger.info(
-                        "[L3 Agent][SQLite·查询参数] trace=%s run_id=%s tool=%s args=%s",
-                        _rtrace,
-                        getattr(ctx, "run_id", "") or "",
-                        tool,
-                        json.dumps(_jd, ensure_ascii=False)[:4000],
-                    )
-        except json.JSONDecodeError:
-            logger.info(
-                "[L3 Agent][SQLite·入参] trace=%s run_id=%s tool=%s json_parse_fail preview=%r%s",
-                _rtrace,
-                getattr(ctx, "run_id", "") or "",
-                tool,
-                _inp[:800],
-                "…(truncated)" if len(_inp) > 800 else "",
-            )
-    # 统帅在聊天中发送 jachin_mcp_write_ack: true 时，自动合并进本条 Action Input（发往 MCP 前仍会被 strip）
-    _invoke_inp = _inp
-    if ctx.metadata.get("_user_granted_mcp_sqlite_write_ack") and tool_entry_looks_like_sqlite_family({"id": tool}):
-        try:
-            from l3_node.primitives.mcp.sqlite_write_guard import maybe_inject_user_write_ack
+    from l3_node.cognitive_kernel.text_transport_compat import (
+        bind_lark_context,
+        log_sqlite_tool_input,
+        maybe_inject_sqlite_write_ack,
+        normalize_openapi_tool_id,
+        prepare_lark_send_text_input,
+        reset_lark_context,
+    )
 
-            _jd_ack = json.loads(_inp)
-            if isinstance(_jd_ack, dict):
-                _rn_ack = (tool or "").strip().lower()
-                if _rn_ack.startswith("mcp:"):
-                    _rn_ack = _rn_ack[4:].strip().lower()
-                _jd_merged = maybe_inject_user_write_ack(tool, _rn_ack, _jd_ack, user_granted=True)
-                if _jd_merged != _jd_ack:
-                    _invoke_inp = json.dumps(_jd_merged, ensure_ascii=False)
-                    logger.info(
-                        "[L3 Agent] 对话已授权 SQLite 写签批，已自动注入 jachin_mcp_write_ack（tool=%s）",
-                        tool,
-                    )
-        except json.JSONDecodeError:
-            pass
-        except Exception as _ia_e:
-            logger.debug("[L3 Agent] write_ack 自动注入跳过: %s", _ia_e)
-    # OpenAI function.name 不能含冒号，模型侧常为 util_lark_send_text；须先于 chat_id 注入归一成 util:lark_send_text
-    _tool_raw = (tool or "").strip()
-    if _tool_raw and ":" not in _tool_raw:
-        try:
-            from l3_node.primitives.mcp.registry import openapi_safe_function_name
-            from l3_node.primitives.tools.core_util_tools import util_tool_ids
-
-            for _ut in util_tool_ids():
-                if openapi_safe_function_name(_ut) == _tool_raw:
-                    tool = _ut
-                    logger.info("[L3 Agent] OpenAPI 工具名已归一 %s -> %s", _tool_raw, _ut)
-                    break
-            else:
-                for _st in ("sys:health_stats", "sys:list_env_safe"):
-                    if openapi_safe_function_name(_st) == _tool_raw:
-                        tool = _st
-                        logger.info("[L3 Agent] OpenAPI 工具名已归一 %s -> %s", _tool_raw, _st)
-                        break
-        except Exception as _norm_e:
-            logger.debug("[L3 Agent] OpenAPI 工具名归一跳过: %s", _norm_e)
-    # 桌面/WebSocket 镜像 chat_id 可注入 util:lark_send_text；若已配置 LARK_CHAT_ID 则**优先环境**（避免镜像会话与目标群不一致导致「机器人不在该会话」）
-    if (tool or "").strip() == "util:lark_send_text":
-        try:
-            try:
-                from l3_node.channels.lark.client import _ensure_dotenv_loaded
-
-                _ensure_dotenv_loaded()
-            except Exception:
-                pass
-            _env_lark = (
-                os.environ.get("LARK_CHAT_ID")
-                or os.environ.get("LARK_DEFAULT_CHAT_ID")
-                or os.environ.get("FEISHU_CHAT_ID")
-                or ""
-            ).strip()
-            _p2p_open = (
-                os.environ.get("LARK_USER_OPEN_ID")
-                or os.environ.get("LARK_DM_OPEN_ID")
-                or ""
-            ).strip()
-            _jd_lark = json.loads(_invoke_inp)
-            if isinstance(_jd_lark, dict):
-                _sess_cid = str(ctx.metadata.get("_lark_chat_id") or "").strip()
-                _has_cid = bool(
-                    str(_jd_lark.get("chat_id") or _jd_lark.get("receive_id") or "").strip()
-                )
-                # 私聊用用户 open_id（ou_）时由工具读环境，勿注入 oc_ 镜像以免覆盖
-                if not _has_cid and not _p2p_open:
-                    if _env_lark:
-                        _jd_lark["chat_id"] = _env_lark
-                        _invoke_inp = json.dumps(_jd_lark, ensure_ascii=False)
-                        logger.info(
-                            "[L3 Agent] util:lark_send_text 使用 LARK_CHAT_ID 环境变量（len=%d），未注入镜像会话",
-                            len(_env_lark),
-                        )
-                    elif _sess_cid:
-                        _jd_lark["chat_id"] = _sess_cid
-                        _invoke_inp = json.dumps(_jd_lark, ensure_ascii=False)
-                        logger.info(
-                            "[L3 Agent] util:lark_send_text 已注入镜像会话 chat_id len=%d",
-                            len(_sess_cid),
-                        )
-                elif not _has_cid and _p2p_open:
-                    logger.info(
-                        "[L3 Agent] util:lark_send_text 已配置 LARK_USER_OPEN_ID/LARK_DM_OPEN_ID，跳过 oc_ 注入",
-                    )
-        except json.JSONDecodeError:
-            pass
-        except Exception as _le:
-            logger.debug("[L3 Agent] lark_send_text chat_id 注入跳过: %s", _le)
-    _lark_bind = str(ctx.metadata.get("_lark_chat_id") or "")
-    if (tool or "").strip() == "util:lark_send_text":
-        try:
-            _jd_bind = json.loads(_invoke_inp)
-            if isinstance(_jd_bind, dict):
-                _cid_bind = str(_jd_bind.get("chat_id") or _jd_bind.get("receive_id") or "").strip()
-                if _cid_bind:
-                    _lark_bind = _cid_bind
-        except Exception:
-            pass
-    _lark_cv_tok = None
-    try:
-        from l3_node.channels.lark.turn_chat_context import bind_lark_chat_id_for_tools
-
-        _lark_cv_tok = bind_lark_chat_id_for_tools(_lark_bind)
-    except Exception:
-        _lark_cv_tok = None
+    log_sqlite_tool_input(
+        logger=logger,
+        trace=_rtrace,
+        run_id=getattr(ctx, "run_id", "") or "",
+        tool=tool,
+        action_input=_inp,
+    )
+    _invoke_inp = maybe_inject_sqlite_write_ack(
+        logger=logger,
+        tool=tool,
+        action_input=_inp,
+        metadata=ctx.metadata,
+    )
+    tool = normalize_openapi_tool_id(logger=logger, tool=tool)
+    _invoke_inp, _lark_bind = prepare_lark_send_text_input(
+        logger=logger,
+        tool=tool,
+        action_input=_invoke_inp,
+        metadata=ctx.metadata,
+    )
+    _lark_cv_tok = bind_lark_context(_lark_bind)
     _yt_block = _react_block_mcp_fetch_if_youtube_url(tool, _invoke_inp)
     if _yt_block is not None:
         logger.info(
@@ -4976,9 +4488,7 @@ async def _invoke_react_tool(
         )
         if _lark_cv_tok is not None:
             try:
-                from l3_node.channels.lark.turn_chat_context import reset_lark_chat_id_for_tools
-
-                reset_lark_chat_id_for_tools(_lark_cv_tok)
+                reset_lark_context(_lark_cv_tok)
             except Exception:
                 pass
         return _yt_block
@@ -4990,102 +4500,10 @@ async def _invoke_react_tool(
         )
         if _lark_cv_tok is not None:
             try:
-                from l3_node.channels.lark.turn_chat_context import reset_lark_chat_id_for_tools
-
-                reset_lark_chat_id_for_tools(_lark_cv_tok)
+                reset_lark_context(_lark_cv_tok)
             except Exception:
                 pass
         return _vision_fetch_block
-    # Memory Nexus 工具：主循环内 await 异步实现 + 硬超时，避免 to_thread(run_tool) 内仍占满默认短超时或线程假死
-    _memtid = (tool or "").strip().lower()
-    if _memtid == "core:local_memory_search":
-        try:
-            import json as _json_mem
-
-            from l3_node.local_memory_search import (
-                async_search_local_memories,
-                get_local_memory_search_timeout_sec,
-                parse_core_local_memory_search_action_input,
-            )
-
-            _kw = parse_core_local_memory_search_action_input(_invoke_inp)
-            _mem_slack = max(2.0, get_local_memory_search_timeout_sec() * 0.1 + 1.0)
-            _mem_out = await asyncio.wait_for(
-                async_search_local_memories(**_kw),
-                timeout=get_local_memory_search_timeout_sec() + _mem_slack,
-            )
-            if isinstance(_mem_out, dict) and _mem_out.get("ok") and _mem_out.get("hits"):
-                try:
-                    from l3_node.local_memory import touch_entries_from_search_hits
-
-                    touch_entries_from_search_hits(list(_mem_out["hits"]))
-                except Exception:
-                    pass
-            _out_mem = _json_mem.dumps(_mem_out, ensure_ascii=False, indent=2)
-        except asyncio.TimeoutError:
-            logger.warning("[L3 Agent] core:local_memory_search 外层超时，已降级 Observation")
-            _out_mem = _json_mem.dumps(
-                {
-                    "ok": False,
-                    "error": "outer_timeout",
-                    "hits": [],
-                    "formatted_text": "[系统提示] 本地记忆检索超时，请稍后再试。",
-                },
-                ensure_ascii=False,
-            )
-        except Exception as _mem_e:
-            logger.warning("[L3 Agent] core:local_memory_search 异常: %s", _mem_e)
-            _out_mem = _json_mem.dumps(
-                {
-                    "ok": False,
-                    "error": "invoke_failed",
-                    "hits": [],
-                    "formatted_text": f"[系统提示] 本地记忆检索失败: {_mem_e}",
-                },
-                ensure_ascii=False,
-            )
-        if _lark_cv_tok is not None:
-            try:
-                from l3_node.channels.lark.turn_chat_context import reset_lark_chat_id_for_tools
-
-                reset_lark_chat_id_for_tools(_lark_cv_tok)
-            except Exception:
-                pass
-        return _out_mem
-    if _memtid == "core:local_memory_append":
-        try:
-            import json as _json_mem2
-
-            from l3_node.tools.core_local_memory_append import (
-                async_run_local_memory_append,
-                get_local_memory_append_timeout_sec,
-                parse_core_local_memory_append_action_input,
-            )
-
-            _body, _tags = parse_core_local_memory_append_action_input(_invoke_inp)
-            _ap_to = get_local_memory_append_timeout_sec()
-            _mem_append = await asyncio.wait_for(
-                async_run_local_memory_append(content=_body, tags=_tags),
-                timeout=_ap_to + 3.0,
-            )
-            _out_mem2 = _json_mem2.dumps(_mem_append, ensure_ascii=False, indent=2)
-        except asyncio.TimeoutError:
-            logger.warning("[L3 Agent] core:local_memory_append 外层超时")
-            _out_mem2 = '{"ok":false,"error":"outer_timeout","message":"[系统提示] 本地记忆写入超时，请稍后再试。"}'
-        except Exception as _mem_e2:
-            logger.warning("[L3 Agent] core:local_memory_append 异常: %s", _mem_e2)
-            _out_mem2 = _json_mem2.dumps(
-                {"ok": False, "error": "invoke_failed", "message": str(_mem_e2)},
-                ensure_ascii=False,
-            )
-        if _lark_cv_tok is not None:
-            try:
-                from l3_node.channels.lark.turn_chat_context import reset_lark_chat_id_for_tools
-
-                reset_lark_chat_id_for_tools(_lark_cv_tok)
-            except Exception:
-                pass
-        return _out_mem2
     _t0 = time.perf_counter()
     try:
         _gb = ctx.metadata.get("_gateway_bundle")
@@ -5162,39 +4580,49 @@ async def _invoke_react_tool(
             except Exception:
                 pass
             return json.dumps(_routing_violation, ensure_ascii=False)
-        if _is_mcp:
-            if use_timeout:
+        async def _raw_tool_transport(work_order):
+            raw_tool = str(work_order.inputs.get("tool") or tool)
+            raw_input = str(work_order.inputs.get("action_input") or _invoke_inp)
+            raw_is_mcp = raw_tool in mcp_registry.known_mcp_tools
+            raw_mcp_lr = raw_is_mcp and mcp_registry.is_long_running_mcp_tool(raw_tool)
+            raw_use_timeout = (
+                bool(cfg.get("enabled", True))
+                and sec > 0
+                and not channel_exempt_from_timeout(ch, cfg)
+                and not tool_bypasses_foreground_timeout(raw_tool, cfg, mcp_declares_long_running=raw_mcp_lr)
+            )
+            if raw_is_mcp:
+                if raw_use_timeout:
+                    try:
+                        return await asyncio.wait_for(
+                            mcp_registry.invoke(raw_tool, raw_input, allowed_skills=allowed_skills),
+                            timeout=sec,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning("[L3 Agent] foreground MCP timeout tool=%s limit=%ss", raw_tool, sec)
+                        return _foreground_tool_timeout_json(raw_tool, sec)
+                return await mcp_registry.invoke(raw_tool, raw_input, allowed_skills=allowed_skills)
+            if raw_use_timeout:
                 try:
-                    _out = await asyncio.wait_for(
-                        mcp_registry.invoke(tool, _invoke_inp, allowed_skills=allowed_skills),
+                    return await asyncio.wait_for(
+                        asyncio.to_thread(run_tool, raw_tool, raw_input, allowed_skills),
                         timeout=sec,
                     )
                 except asyncio.TimeoutError:
-                    logger.warning(
-                        "[L3 Agent] 前台工具超时 tool=%s limit=%ss（wait_for 已返回；"
-                        "MCP/线程内阻塞仍可能继续，无法强制终止；见长文档）",
-                        tool,
-                        sec,
-                    )
-                    _out = _foreground_tool_timeout_json(tool, sec)
-            else:
-                _out = await mcp_registry.invoke(tool, _invoke_inp, allowed_skills=allowed_skills)
-        elif use_timeout:
-            try:
-                _out = await asyncio.wait_for(
-                    asyncio.to_thread(run_tool, tool, _invoke_inp, allowed_skills),
-                    timeout=sec,
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "[L3 Agent] 前台工具超时 tool=%s limit=%ss（wait_for 已返回；"
-                    "to_thread 内同步调用仍可能继续，无法强制终止；见长文档）",
-                    tool,
-                    sec,
-                )
-                _out = _foreground_tool_timeout_json(tool, sec)
-        else:
-            _out = run_tool(tool, _invoke_inp, allowed_skills)
+                    logger.warning("[L3 Agent] foreground native-tool timeout tool=%s limit=%ss", raw_tool, sec)
+                    return _foreground_tool_timeout_json(raw_tool, sec)
+            return run_tool(raw_tool, raw_input, allowed_skills)
+
+        from l3_node.cognitive_kernel.dispatcher import dispatch_tool_work_order
+
+        _dispatch = await dispatch_tool_work_order(
+            turn_id=str(ctx.metadata.get("_cognitive_turn_id") or ctx.metadata.get("_react_step_trace") or ctx.run_id),
+            goal=str(ctx.intent or ctx.metadata.get("_user_intent") or ctx.metadata.get("_raw_user_input") or tool),
+            tool=tool,
+            action_input=_invoke_inp,
+            executor=_raw_tool_transport,
+        )
+        _out = _dispatch.observation
         return _out
     except Exception as _react_tool_ex:
         import traceback
@@ -5223,9 +4651,7 @@ async def _invoke_react_tool(
     finally:
         if _lark_cv_tok is not None:
             try:
-                from l3_node.channels.lark.turn_chat_context import reset_lark_chat_id_for_tools
-
-                reset_lark_chat_id_for_tools(_lark_cv_tok)
+                reset_lark_context(_lark_cv_tok)
             except Exception:
                 pass
         if _out is not None:
@@ -5278,11 +4704,17 @@ def _p2_record_skill_outcome(ctx: PipelineContext, skill_id: str, observation: s
         pass
 
 
-async def _run_react_core(
+async def _run_compat_text_core(
     ctx: PipelineContext,
     engine: LiteLLMEngine,
     on_step: Optional[Callable[[str, str, str], None]] = None,
 ) -> None:
+    """Compatibility text transport used only after Cognitive Kernel planning.
+
+    It may ask the LLM for text-form tool intents, but any parsed tool is
+    executed through ``_invoke_work_order_tool_transport`` and therefore through
+    Dispatcher + RoleExecutor.
+    """
     allowed_skills = ctx.metadata.get("_allowed_skills")
     if allowed_skills is None:
         allowed_skills = _get_allowed_skills()
@@ -6112,7 +5544,7 @@ async def _run_react_core(
                                 and not _skip_force_post
                                 and has_success
                                 and no_post
-                                and _hr_answer_claims_job_published(ans)
+                                and _hr_policy_answer_claims_job_published(ans)
                             ):
                                 logger.warning(
                                     "[L3 Agent] 拒绝幻觉回复：声称职位已发布但未调用 atom_post_job_boss，强制要求先执行工具"
@@ -6128,7 +5560,7 @@ async def _run_react_core(
                                 and not _skip_force_post
                                 and has_success
                                 and not sched_step_done
-                                and _hr_answer_claims_job_published(ans)
+                                and _hr_policy_answer_claims_job_published(ans)
                             ):
                                 logger.warning(
                                     "[L3 Agent] 招聘工具链不完整：发帖后未发调度确认或未注册任务"
@@ -6158,7 +5590,7 @@ async def _run_react_core(
                             except ImportError:
                                 pass
                             if (
-                                _hr_answer_claims_unmanned_scheduler_running(ans)
+                                _hr_policy_answer_claims_unmanned_scheduler_running(ans)
                                 and "add_automated_recruitment_task"
                                 not in ctx._executed_tools_this_run
                                 and "hr_scheduler_send_confirm_prompt"
@@ -6192,11 +5624,11 @@ async def _run_react_core(
                                 _ans_s[:700],
                                 "…(truncated)" if len(_ans_s) > 700 else "",
                             )
-                            if _reject_workspace_writeback_missing_guard(
+                            if reject_workspace_writeback_guard(
                                 ctx, messages, response, ans, via="parsed_none+final_prefix"
                             ):
                                 continue
-                            if _reject_ungrounded_sqlite_final_answer(
+                            if reject_sqlite_grounding_guard(
                                 ctx, messages, response, ans, via="parsed_none+final_prefix"
                             ):
                                 continue
@@ -6317,7 +5749,7 @@ async def _run_react_core(
                 and not _skip_force_post_ans
                 and has_success
                 and no_post
-                and _hr_answer_claims_job_published(ans)
+                and _hr_policy_answer_claims_job_published(ans)
             ):
                 logger.warning(
                     "[L3 Agent] 拒绝幻觉回复：声称职位已发布但未调用 atom_post_job_boss，强制要求先执行工具"
@@ -6333,7 +5765,7 @@ async def _run_react_core(
                 and not _skip_force_post_ans
                 and has_success
                 and not sched_step_done
-                and _hr_answer_claims_job_published(ans)
+                and _hr_policy_answer_claims_job_published(ans)
             ):
                 logger.warning(
                     "[L3 Agent] 招聘工具链不完整：发帖后未发调度确认或未注册任务"
@@ -6363,7 +5795,7 @@ async def _run_react_core(
             except ImportError:
                 pass
             if (
-                _hr_answer_claims_unmanned_scheduler_running(ans)
+                _hr_policy_answer_claims_unmanned_scheduler_running(ans)
                 and "add_automated_recruitment_task" not in ctx._executed_tools_this_run
                 and "hr_scheduler_send_confirm_prompt" not in ctx._executed_tools_this_run
             ):
@@ -6380,9 +5812,9 @@ async def _run_react_core(
                     ),
                 })
                 continue
-            if _reject_workspace_writeback_missing_guard(ctx, messages, response, ans, via="type=answer"):
+            if reject_workspace_writeback_guard(ctx, messages, response, ans, via="type=answer"):
                 continue
-            if _reject_ungrounded_sqlite_final_answer(ctx, messages, response, ans, via="type=answer"):
+            if reject_sqlite_grounding_guard(ctx, messages, response, ans, via="type=answer"):
                 continue
             if reject_capability_final_answer_guards(ctx, messages, response, ans, via="type=answer"):
                 continue
@@ -6708,7 +6140,12 @@ async def _run_react_core(
             await global_hooks.run(HOOK_BEFORE_TOOL_EXEC, ctx)
             if ctx.aborted:
                 return
-            observation = await _recall_memory_search(query)
+            observation = await _invoke_work_order_tool_transport(
+                "core:local_memory_search",
+                json.dumps({"query": query, "top_k": 10, "candidate_pool": 48}, ensure_ascii=False),
+                allowed_skills,
+                ctx,
+            )
             _obs_recall_raw = str(observation or "")
             _mcap_rec = _peek_react_observation_cap_for_upcoming_llm(
                 ctx=ctx,
@@ -7129,8 +6566,8 @@ async def _run_react_core(
                                 )
                             else:
                                 _crit_body = (
-                                    f"[System Critic Error] 你的 Action 未通过逻辑审查：{_crit_txt} "
-                                    "请严格按 L4 SOP：<probe> 探查 Schema，<map> 结合业务语义层，<execute> 使用实际工具："
+                                    f"[System Critic Error] Action Critic blocked this tool call: {_crit_txt} "
+                                    "Please follow the capability policy flow: <probe> inspect schema, <map> use semantic context, <execute> use the real tool: "
                                     "只读可用 mcp:query(SELECT)、mcp:read_records、list_tables；"
                                     "写入可用 mcp:update_records、write_query 或 mcp:query(UPDATE)；同一对话内连续执行，勿 Final Answer 中断。"
                                 )
@@ -7207,7 +6644,7 @@ async def _run_react_core(
             )
             if not _cap_skip_tool_invoke and not _cap_skip_secondary_invoke:
                 # 工具执行路由器：MCP / Native；前台默认同步超时（可配置），预取附件去重
-                observation = await _invoke_react_tool(tool, inp, allowed_skills, ctx)
+                observation = await _invoke_work_order_tool_transport(tool, inp, allowed_skills, ctx)
             elif _cap_skip_tool_invoke and observation is None:
                 observation = ""
             try:
@@ -7253,9 +6690,9 @@ async def _run_react_core(
                 max_iterations=max_iterations,
             )
             try:
-                _react_mark_workspace_io_flags(ctx, tool, observation_full)
+                mark_workspace_io_capability_flags(ctx, tool, observation_full)
             except Exception as _mwf:
-                logger.debug("[L3 Agent] _react_mark_workspace_io_flags 跳过: %s", _mwf)
+                logger.debug("[L3 Agent] workspace IO capability flags skipped: %s", _mwf)
             _model_obs_cap = _peek_react_observation_cap_for_upcoming_llm(
                 ctx=ctx,
                 base_engine=engine,
@@ -7829,7 +7266,7 @@ async def run_agent(
     gateway_workspace_dir: str | None = None,
 ) -> str:
     """
-    运行 L3 单主轴 ReAct 循环（混合架构见 docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md）。
+    ?? L3 Memory-first Cognitive Kernel ???????????????????? WorkOrder?
     支持 _system_prompt_override 供子 Agent 使用。
     _session_messages: 若提供，将作为历史上下文并在调用结束后被更新为完整对话（含本轮），供多轮对话复用。
     implicit_signals: 可选 {"skip": true, "dwell_sec"|"dwell_ms": n, "assistant_echo": "...", "source": "lark"} → 见 docs/IMPLICIT_SIGNALS.md。
@@ -7941,43 +7378,14 @@ async def run_agent(
             return True
         return len(_t) <= 32
 
-    _client_voice_chitchat_fast_lane = bool(
-        implicit_signals
-        and isinstance(implicit_signals, dict)
-        and str(implicit_signals.get("voice_dispatch_tier") or "").upper() == "CHIT_CHAT"
-        and str(implicit_signals.get("voice_dispatch_lane") or "").lower() == "direct_llm"
-        and str(implicit_signals.get("voice_interrupt_verdict") or "NONE").upper() in ("", "NONE")
-        and not implicit_signals.get("target_task_id")
-        and _looks_like_voice_fast_lane_text(user_input or "")
-    )
-    _server_voice_fast_lane = bool(
-        not attachments_metadata
-        and _delegate_depth == 0
-        and (_looks_like_voice_fast_lane_text(user_input or "") or _client_voice_chitchat_fast_lane)
-        and (
-            _desktop_companion_mode
-            or (_bg_channel or "") in ("http_agent_run", "websocket_terminal", "desktop_voice")
-            or str(_bg_channel or "").startswith("websocket_")
-        )
-    )
+    _client_voice_chitchat_fast_lane = False
+    _server_voice_fast_lane = False
     _skip_context_retrieval = bool(
         implicit_signals
         and isinstance(implicit_signals, dict)
         and implicit_signals.get("skip_context_retrieval")
     )
-    _voice_fast_lane = bool(
-        implicit_signals
-        and isinstance(implicit_signals, dict)
-        and (
-            _skip_context_retrieval
-            or implicit_signals.get("voice_fast_lane")
-            or implicit_signals.get("skip_context_sniffer")
-            or implicit_signals.get("skip_gateway_enrich")
-        )
-    )
-    if _server_voice_fast_lane:
-        _voice_fast_lane = True
-        _skip_context_retrieval = True
+    _voice_fast_lane = False
     _skip_context_sniffer = bool(
         implicit_signals
         and isinstance(implicit_signals, dict)
@@ -8082,6 +7490,36 @@ async def run_agent(
     else:
         messages = []
     prior_messages = list(messages)
+
+    _cognitive_kernel_plan = None
+    _cognitive_kernel_prompt_block = ""
+    try:
+        _cognitive_ctx = await build_cognitive_turn_context(
+            run_id=run_id,
+            user_input=user_input or "",
+            channel=_bg_channel or "",
+            session_id=_lark_cid or "",
+            prior_messages=prior_messages,
+            attachments_metadata=attachments_metadata,
+            implicit_attribution=implicit_attribution,
+            desktop_companion_context=_desktop_companion_ctx,
+            gateway_system_state=_gateway_sniffer_ws,
+        )
+        _cognitive_kernel_plan = plan_cognitive_turn(_cognitive_ctx, emit_non_execution_closure=False)
+        _cognitive_kernel_prompt_block = (
+            _cognitive_ctx.prompt_block(max_chars=4000)
+            + "\n[Cognitive Kernel Plan]\n"
+            + json.dumps(_cognitive_kernel_plan.to_dict(), ensure_ascii=False, default=str)[:5000]
+        )
+        logger.info(
+            "[CognitiveKernel] planned turn=%s task=%s workflow=%s work_orders=%d",
+            run_id[:12],
+            _cognitive_kernel_plan.decision_contract.task_type,
+            _cognitive_kernel_plan.decision_contract.selected_workflow,
+            len(_cognitive_kernel_plan.work_orders),
+        )
+    except Exception as _ck_plan_ex:
+        logger.debug("[CognitiveKernel] planning skipped: %s", _ck_plan_ex)
 
     if _voice_fast_lane and not attachments_metadata and _delegate_depth == 0:
         _template_reply = _pick_voice_exact_template_reply(
@@ -8581,6 +8019,37 @@ async def run_agent(
         )
     except Exception:
         pass
+
+    _mainline_direct_reply = await try_execute_cognitive_direct_plan(
+        plan=_cognitive_kernel_plan,
+        tools=tools,
+        allowed_skills=allowed,
+        run_tool_func=run_tool,
+        user_input=user_input or "",
+        session_id=_lark_cid or "",
+        channel=_bg_channel or "",
+    )
+    if _mainline_direct_reply is not None:
+        if _session_messages is not None:
+            messages.append({"role": "user", "content": user_input or ""})
+            messages.append({"role": "assistant", "content": _mainline_direct_reply})
+            _session_messages.clear()
+            _session_messages.extend(messages[-30:])
+        try:
+            from l3_node.terminal_turn_debug_log import finalize_top_level_turn
+
+            finalize_top_level_turn(
+                _mainline_direct_reply,
+                delegate_depth=_delegate_depth,
+                run_id=run_id,
+                channel=_bg_channel,
+                extra={**(_lark_turn_dbg_extra or {}), "cognitive_kernel_direct_mainline": "1"},
+            )
+        except Exception:
+            pass
+        _turn_dbg["answer"] = _mainline_direct_reply
+        return _mainline_direct_reply
+
     try:
         from l3_node.local_memory import next_prompt_cycle
 
@@ -8797,6 +8266,8 @@ async def run_agent(
     except Exception as _sh_ex:
         logger.debug("[L3 Agent] /#/ skill router inject 跳过: %s", _sh_ex)
 
+    if _cognitive_kernel_prompt_block:
+        _gw_inject = (_gw_inject or "") + "\n\n" + _cognitive_kernel_prompt_block
     _environment_report_block = ""
     _chief_advisor_mode = False
     try:
@@ -9702,7 +9173,7 @@ async def run_agent(
                 await next_fn()
 
         async def react_mw(c: PipelineContext, next_fn) -> None:
-            await _run_react_core(c, engine, on_step=on_step)
+            await _run_compat_text_core(c, engine, on_step=on_step)
             if not c.aborted:
                 await next_fn()
 

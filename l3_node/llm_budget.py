@@ -1,4 +1,4 @@
-"""LLM Token 预算（主/子 Agent，usage 累计）。见 docs/L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md §〇、§2。"""
+"""LLM token budget accounting for foreground and delegated L3 runs."""
 from __future__ import annotations
 
 import json

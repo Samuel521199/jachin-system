@@ -1,6 +1,6 @@
 """
 规划静态扫描器：从 task_plan.md（或任意计划文本）中提取工具 id，与允许列表比对，防「假借条」工具幻觉。
-规格见 docs/L3_AMBIGUOUS_INTENT_ARCHITECTURE.md §9.2。
+规格见 docs/07_memory_first_main_agent_and_voice_app_agents.md。
 """
 from __future__ import annotations
 

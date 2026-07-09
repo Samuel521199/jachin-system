@@ -8,7 +8,8 @@ PMO-Copilot v6：初始化 ``~/.jachin/workspace/pmo_db.sqlite`` Schema。
   python scripts/pmo_db_init.py
   python scripts/pmo_db_init.py --force   # 删除现有库并重建空表
 
-Schema SSOT：``docs/architecture/PMO_DB_REFACTOR_DESIGN.md`` §4。
+Schema notes live with the PMO capability package; host startup must not
+depend on deleted PMO architecture documents.
 """
 from __future__ import annotations
 

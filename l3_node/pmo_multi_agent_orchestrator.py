@@ -11,13 +11,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
-
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-_WORKER_C_SPEC_PATH = _REPO_ROOT / "docs" / "architecture" / "PMO_WORKER_C_SPEC.md"
-_WORKER_B_SPEC_PATH = _REPO_ROOT / "docs" / "architecture" / "PMO_WORKER_B_SPEC.md"
-_WORKER_D_SPEC_PATH = _REPO_ROOT / "docs" / "architecture" / "PMO_WORKER_D_SPEC.md"
 
 from l3_node.pmo_multi_agent_queries import (
     WORKER_A_MAX_ITERATIONS,
@@ -88,14 +82,6 @@ _PMO_WORKER_B_RULES_INLINE = (
 
 
 def _load_worker_b_system_prefix() -> str:
-    spec = ""
-    try:
-        if _WORKER_B_SPEC_PATH.is_file():
-            spec = _WORKER_B_SPEC_PATH.read_text(encoding="utf-8").strip()
-    except OSError:
-        pass
-    if spec:
-        return _PMO_WORKER_B_RULES_INLINE + "\n" + spec + "\n"
     return _PMO_WORKER_B_RULES_INLINE
 
 
@@ -110,15 +96,7 @@ _PMO_WORKER_C_RULES_INLINE = (
 
 
 def _load_worker_c_system_prefix() -> str:
-    """PMO_WORKER_C_SPEC.md + 内联护栏（截断时内联置前）。"""
-    spec = ""
-    try:
-        if _WORKER_C_SPEC_PATH.is_file():
-            spec = _WORKER_C_SPEC_PATH.read_text(encoding="utf-8").strip()
-    except OSError:
-        pass
-    if spec:
-        return _PMO_WORKER_C_RULES_INLINE + "\n" + spec + "\n"
+    """Return Worker C inline rules owned by the PMO capability."""
     return _PMO_WORKER_C_RULES_INLINE
 
 
@@ -132,14 +110,6 @@ _PMO_WORKER_D_RULES_INLINE = (
 
 
 def _load_worker_d_system_prefix() -> str:
-    spec = ""
-    try:
-        if _WORKER_D_SPEC_PATH.is_file():
-            spec = _WORKER_D_SPEC_PATH.read_text(encoding="utf-8").strip()
-    except OSError:
-        pass
-    if spec:
-        return _PMO_WORKER_D_RULES_INLINE + "\n" + spec + "\n"
     return _PMO_WORKER_D_RULES_INLINE
 
 

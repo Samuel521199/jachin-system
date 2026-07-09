@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
@@ -133,7 +133,7 @@
           </button>
         </div>
         <p v-if="workspaceMembersError" class="text-amber-400/90 text-xs mb-2">{{ workspaceMembersError }}</p>
-        <p v-else-if="workspaceMembers.length === 0" class="text-slate-500 text-xs mb-2">暂无数据。请确认 L1 已配置 L1_L2_LOGIN_SHARED_SECRET 与 L2 的 NEXUS_L2_LOGIN_SECRET 一致，且已完成配对。</p>
+        <p v-else-if="workspaceMembers.length === 0" class="text-slate-500 text-xs mb-2">暂无数据。L2 是可选扩展；packaged L3 不依赖 L2 配对。</p>
         <div v-else class="overflow-x-auto rounded-lg border border-slate-700">
           <table class="w-full text-sm text-left">
             <thead>

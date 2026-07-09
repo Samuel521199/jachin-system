@@ -3,7 +3,7 @@
 # L1↔L2 辅助配对：CLI 6 位码。有 Web 时优先 L2 /gateway「Nexus 账号登录」。
 # 用法: ./scripts/run-pair.sh [BASE_URL]
 # 恢复: ./scripts/run-pair.sh --recover --code "ABC123"
-# 文档: docs/L1_L2_PAIRING_AND_WEB_BRIDGE.md
+# Legacy optional L2 pairing helper. L3 packaged mode now connects to L1 through profiles.
 # =============================================================================
 
 set -e

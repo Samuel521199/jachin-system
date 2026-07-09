@@ -1,4 +1,4 @@
-"""L3 进程级优雅停机钩子（`run_shutdown_hooks`）。见 docs/L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md §〇、§1。"""
+"""L3 process-level graceful shutdown hooks."""
 from __future__ import annotations
 
 import asyncio

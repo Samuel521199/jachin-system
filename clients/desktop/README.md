@@ -289,4 +289,4 @@ async fn send_serial_command(port: String, command: String) -> Result<(), String
 ## 相关文档
 
 - [Tauri v2 文档](https://v2.tauri.app/)
-- [V2 架构文档](../../docs/ARCHITECTURE_V2_LAYER3_STANDALONE.md)
+- [Memory-first 主架构](../../docs/07_memory_first_main_agent_and_voice_app_agents.md)

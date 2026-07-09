@@ -2,7 +2,7 @@
 只读 SubAgent 角色与工具层硬隔离（SSOT）。
 
 内置 ``readonly_*`` 角色在 **白名单裁剪** 与 **assemble_tool_pool** 两层剔除写操作工具；
-``run_agent`` 执行期 ``_invoke_react_tool`` 再次拦截（防升权/漏网）。
+``run_agent`` 执行期 ``_invoke_work_order_tool_transport`` 再次拦截（防升权/漏网）。
 
 不依赖提示词「请不要改文件」——写类工具对只读 SubAgent **不可见且不可调用**。
 """
@@ -231,7 +231,7 @@ def filter_tools_for_readonly_subagent(tools: list[dict[str, Any]]) -> list[dict
 
 
 def readonly_tool_block_observation(tool_id: str) -> str:
-    """_invoke_react_tool 最后一道防线。"""
+    """WorkOrder tool transport 最后一道防线。"""
     return json.dumps(
         {
             "status": "blocked",

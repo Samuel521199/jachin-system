@@ -154,7 +154,7 @@ L1 (manifest)  →  L2 (CloudSyncDaemon)  →  ~/.jachin/inventory/
 
 目标机仅 `l3_node.exe` + 网络时：
 
-1. L2 与 L1 建立信任（默认 `/gateway` Nexus 账号登录；无头用 CLI，见 `L1_L2_PAIRING_AND_WEB_BRIDGE.md`）
+1. L3 selects an L1 profile and publishes or installs through the L1 catalog API.
 2. 订阅技能 / MCP
 3. L3 拉取到 `l3_mcp_cache/` 或 `l3_skill_cache/`
 4. 配置自动写出到 `~/.jachin/config/`
@@ -208,4 +208,4 @@ com.example.atom_web_scraper_v1.0.0.zip
 - [075-config-root-and-cloud-sync.mdc](../.cursor/rules/075-config-root-and-cloud-sync.mdc) — 配置根与写出逻辑
 - [076-skill-mcp-upload-spec.mdc](../.cursor/rules/076-skill-mcp-upload-spec.mdc) — Cursor 规则
 - [l3_node/config_writeout.py](../l3_node/config_writeout.py) — 写出实现
-- [L1_L2_L3_DEPLOYMENT_AND_SKILL_MCP_SPEC.md](./L1_L2_L3_DEPLOYMENT_AND_SKILL_MCP_SPEC.md) — 部署拓扑
+- [L3_SLIM_DISTRIBUTION_AND_SUBSCRIBED_ARTIFACTS.md](./L3_SLIM_DISTRIBUTION_AND_SUBSCRIBED_ARTIFACTS.md) — slim L3 and subscribed artifacts

@@ -1,6 +1,6 @@
 """
 槽位追问守卫：最大追问次数与降级协议（Abort / 转兜底）。
-由 Slot-filling Tracker 在发送每一轮槽位追问前/后调用；规格见 docs/L3_AMBIGUOUS_INTENT_ARCHITECTURE.md §9.1。
+由 Slot-filling Tracker 在发送每一轮槽位追问前/后调用；规格见 docs/07_memory_first_main_agent_and_voice_app_agents.md。
 """
 from __future__ import annotations
 

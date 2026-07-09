@@ -1,8 +1,8 @@
 //! OS Assistant evidence browser commands.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::collections::BTreeSet;
+use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -55,6 +55,8 @@ pub struct OsEvidenceEntry {
     pub attempts: Vec<Value>,
     pub retry: Option<Value>,
     pub metrics: Option<Value>,
+    pub role_executions: Vec<Value>,
+    pub pending_decisions: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -410,6 +412,71 @@ fn timeline_checks(value: &Value) -> Vec<String> {
     out
 }
 
+fn collect_role_executions(value: &Value, out: &mut Vec<Value>) {
+    match value {
+        Value::Object(map) => {
+            let event_type = map.get("event_type").and_then(|v| v.as_str()).unwrap_or("");
+            if event_type == "role_execution_started" || event_type == "role_execution_finished" {
+                out.push(value.clone());
+            }
+            if let Some(payload) = map.get("payload").and_then(|v| v.as_object()) {
+                if payload.get("role_id").is_some()
+                    && payload.get("adapter_kind").is_some()
+                    && payload.get("work_order_id").is_some()
+                {
+                    out.push(value.clone());
+                }
+            }
+            if map.get("type").and_then(|v| v.as_str()) == Some("role_execution") {
+                out.push(value.clone());
+            }
+            for item in map.values() {
+                collect_role_executions(item, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_role_executions(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_pending_decisions(value: &Value, out: &mut Vec<Value>) {
+    match value {
+        Value::Object(map) => {
+            let event_type = map.get("event_type").and_then(|v| v.as_str()).unwrap_or("");
+            if matches!(
+                event_type,
+                "confirmation_pending_saved"
+                    | "confirmation_resumed"
+                    | "confirmation_cancelled"
+                    | "confirmation_expired"
+            ) {
+                out.push(value.clone());
+            }
+            if let Some(payload) = map.get("payload").and_then(|v| v.as_object()) {
+                if payload.get("pending_decision").is_some()
+                    || (payload.get("requires_confirmation").and_then(|v| v.as_bool()) == Some(true)
+                        && payload.get("decision_id").is_some())
+                {
+                    out.push(value.clone());
+                }
+            }
+            for item in map.values() {
+                collect_pending_decisions(item, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_pending_decisions(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn diagnose(value: &Value, ok: bool, detail: &str) -> String {
     let validation_ok = value
         .get("validation")
@@ -539,6 +606,12 @@ fn evidence_entry(path: &Path) -> Option<OsEvidenceEntry> {
     collect_paths(&value, &mut files, &mut screenshots);
     let mut apps = BTreeSet::new();
     collect_apps(&value, &mut apps);
+    let mut role_executions = Vec::new();
+    collect_role_executions(&value, &mut role_executions);
+    role_executions.truncate(40);
+    let mut pending_decisions = Vec::new();
+    collect_pending_decisions(&value, &mut pending_decisions);
+    pending_decisions.truncate(20);
     let evidence_panel_path = get_path(&value, &["evidence_panel_path"]);
     let report_path = get_path(&value, &["report_path"]);
     let id = path.to_string_lossy().into_owned();
@@ -577,7 +650,381 @@ fn evidence_entry(path: &Path) -> Option<OsEvidenceEntry> {
             .unwrap_or_default(),
         retry: value.get("retry").cloned(),
         metrics: value.get("metrics").cloned(),
+        role_executions,
+        pending_decisions,
     })
+}
+
+fn cognitive_kernel_ledger_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(root) = std::env::var("JACHIN_COGNITIVE_KERNEL_HOME") {
+        if !root.trim().is_empty() {
+            dirs.push(PathBuf::from(root).join("ledger"));
+        }
+    }
+    if let Ok(profile) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+        if !profile.trim().is_empty() {
+            dirs.push(
+                PathBuf::from(profile)
+                    .join(".jachin")
+                    .join("cognitive_kernel")
+                    .join("ledger"),
+            );
+        }
+    }
+    if let Ok(output) = project_output_dir() {
+        dirs.push(output.join("cognitive_kernel").join("ledger"));
+        dirs.push(output.join("cognitive_kernel_stage_e_smoke").join("ledger"));
+    }
+    let mut seen = BTreeSet::new();
+    dirs.into_iter()
+        .filter(|p| seen.insert(p.to_string_lossy().to_string()))
+        .collect()
+}
+
+fn visit_cognitive_ledger_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(read_dir) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            visit_cognitive_ledger_files(&path, out);
+        } else if path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.starts_with("cognitive_kernel_") && s.ends_with(".jsonl"))
+            .unwrap_or(false)
+        {
+            out.push(path);
+        }
+    }
+}
+
+fn cognitive_ledger_entries(path: &Path) -> Vec<OsEvidenceEntry> {
+    let Ok(text) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut by_turn: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        let turn_id = event
+            .get("turn_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        by_turn.entry(turn_id).or_default().push(event);
+    }
+    by_turn
+        .into_iter()
+        .filter_map(|(turn_id, events)| cognitive_turn_entry(path, &turn_id, events))
+        .collect()
+}
+
+fn cognitive_turn_entry(path: &Path, turn_id: &str, events: Vec<Value>) -> Option<OsEvidenceEntry> {
+    if events.is_empty() {
+        return None;
+    }
+    let mut generated_at = modified_secs(path);
+    let mut task = String::new();
+    let mut detail = String::new();
+    let mut ok = true;
+    let mut message_preview = String::new();
+    let mut files = BTreeSet::new();
+    let mut screenshots = BTreeSet::new();
+    let mut apps = BTreeSet::new();
+    let mut recipients = BTreeSet::new();
+    let mut role_executions = Vec::new();
+    let mut pending_decisions = Vec::new();
+    let mut timeline = Vec::new();
+    let mut metrics_start_ms: Option<u64> = None;
+    let mut metrics_end_ms: Option<u64> = None;
+    let mut decision: Option<Value> = None;
+    let mut route: Option<Value> = None;
+    let mut memory: Option<Value> = None;
+    let mut retry: Option<Value> = None;
+    let mut attempts: Vec<Value> = Vec::new();
+
+    let aggregate = json!({ "events": events.clone() });
+    collect_paths(&aggregate, &mut files, &mut screenshots);
+    collect_apps(&aggregate, &mut apps);
+    collect_role_executions(&aggregate, &mut role_executions);
+    collect_pending_decisions(&aggregate, &mut pending_decisions);
+
+    for event in events.iter() {
+        let event_type = event
+            .get("event_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let payload = event.get("payload").unwrap_or(&Value::Null);
+        let ts_ms = event.get("ts_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+        if ts_ms > 0 {
+            generated_at = generated_at.max(ts_ms / 1000);
+            metrics_start_ms = Some(metrics_start_ms.map(|v| v.min(ts_ms)).unwrap_or(ts_ms));
+            metrics_end_ms = Some(metrics_end_ms.map(|v| v.max(ts_ms)).unwrap_or(ts_ms));
+        }
+        match event_type {
+            "decision_contract" => {
+                decision = Some(payload.clone());
+                task = payload
+                    .get("goal")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(task.as_str())
+                    .to_string();
+                route = Some(json!({
+                    "workflow_id": payload.get("selected_workflow").cloned().unwrap_or(Value::Null),
+                    "selected_roles": payload.get("selected_roles").cloned().unwrap_or(Value::Null),
+                    "risk_level": payload.get("risk_level").cloned().unwrap_or(Value::Null),
+                }));
+            }
+            "turn_started" => {
+                if task.is_empty() {
+                    task = payload
+                        .get("input_envelope")
+                        .and_then(|v| v.get("normalized_text"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                }
+                memory = payload.get("memory_bundle").cloned();
+            }
+            "work_order" => {
+                if task.is_empty() {
+                    task = payload
+                        .get("task")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                }
+            }
+            "verification_report" => {
+                let report_ok = payload.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                ok = report_ok;
+                if !report_ok {
+                    detail = payload
+                        .get("failure_reason")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("verification_failed")
+                        .to_string();
+                }
+                if message_preview.is_empty() {
+                    message_preview = payload
+                        .get("evidence")
+                        .and_then(|v| v.as_array())
+                        .and_then(|rows| {
+                            rows.iter()
+                                .find_map(|row| row.get("preview").and_then(|v| v.as_str()))
+                        })
+                        .unwrap_or("")
+                        .to_string();
+                }
+            }
+            "recovery_plan" => {
+                retry = Some(payload.clone());
+            }
+            "recovery_execution_started" | "recovery_execution_finished" => {
+                attempts.push(payload.clone());
+            }
+            "turn_closure" => {
+                let closure_type = payload
+                    .get("closure_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let verification_status = payload
+                    .get("verification_status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                ok = !matches!(
+                    closure_type,
+                    "blocked" | "failed_recoverable" | "failed_final" | "waiting_user"
+                ) && verification_status != "failed";
+                if task.is_empty() {
+                    task = payload
+                        .get("final_user_message_intent")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                }
+            }
+            _ => {}
+        }
+        collect_recipient_hints(payload, &mut recipients);
+        timeline.push(cognitive_timeline_entry(event_type, ts_ms, payload));
+    }
+    timeline.sort_by_key(|row| {
+        let ts = row.ts.parse::<u64>().unwrap_or(0);
+        (cognitive_event_order(&row.stage), ts)
+    });
+
+    if task.trim().is_empty() {
+        task = format!("Cognitive Kernel turn {turn_id}");
+    }
+    if detail.trim().is_empty() {
+        detail = if ok {
+            "cognitive_kernel_turn_visible".to_string()
+        } else {
+            "cognitive_kernel_turn_failed".to_string()
+        };
+    }
+    role_executions.truncate(60);
+    pending_decisions.truncate(20);
+    let duration_ms = metrics_start_ms
+        .zip(metrics_end_ms)
+        .map(|(start, end)| end.saturating_sub(start))
+        .unwrap_or(0);
+    let evidence_path = format!("{}#{}", path.to_string_lossy(), turn_id);
+    Some(OsEvidenceEntry {
+        id: evidence_path.clone(),
+        task,
+        ok,
+        detail: detail.clone(),
+        generated_at,
+        evidence_path,
+        evidence_panel_path: None,
+        report_path: None,
+        recipients: recipients.into_iter().take(16).collect(),
+        apps: apps.into_iter().take(12).collect(),
+        screenshots: screenshots.into_iter().take(12).collect(),
+        files: files.into_iter().take(24).collect(),
+        message_preview: compact_preview(&message_preview, 360),
+        timeline,
+        diagnosis: if ok {
+            "Cognitive Kernel ledger 已记录 DecisionContract -> WorkOrder -> RoleExecutor -> Verification。".to_string()
+        } else {
+            format!("Cognitive Kernel ledger 显示该 turn 未完全通过：{}", detail)
+        },
+        intent: decision,
+        route,
+        clarification: None,
+        tool_result: None,
+        parser: None,
+        memory,
+        template: None,
+        mission_preview: None,
+        capability_semantic: None,
+        workflow_composition: None,
+        control: Some(json!({ "turn_id": turn_id, "ledger_path": path.to_string_lossy() })),
+        plan_preview: None,
+        attempts,
+        retry,
+        metrics: Some(json!({
+            "workflow_id": "cognitive_kernel_ledger",
+            "duration_ms": duration_ms,
+            "attempt_count": role_executions.len(),
+        })),
+        role_executions,
+        pending_decisions,
+    })
+}
+
+fn cognitive_timeline_entry(
+    event_type: &str,
+    ts_ms: u64,
+    payload: &Value,
+) -> OsEvidenceTimelineEntry {
+    let mut files = BTreeSet::new();
+    let mut screenshots = BTreeSet::new();
+    collect_paths(payload, &mut files, &mut screenshots);
+    let status = match event_type {
+        "verification_report" => {
+            if payload.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                "passed"
+            } else {
+                "failed"
+            }
+        }
+        "role_execution_finished" | "recovery_execution_finished" => {
+            if payload.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                "done"
+            } else {
+                "failed"
+            }
+        }
+        "work_order" => payload
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("recorded"),
+        _ => "recorded",
+    };
+    let detail = payload
+        .get("goal")
+        .or_else(|| payload.get("task"))
+        .or_else(|| payload.get("rationale"))
+        .or_else(|| payload.get("failure_reason"))
+        .or_else(|| payload.get("observation_preview"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(event_type);
+    OsEvidenceTimelineEntry {
+        ts: if ts_ms > 0 {
+            ts_ms.to_string()
+        } else {
+            String::new()
+        },
+        stage: event_type.to_string(),
+        status: status.to_string(),
+        detail: compact_preview(detail, 220),
+        screenshots: screenshots.into_iter().take(8).collect(),
+        files: files.into_iter().take(8).collect(),
+        ocr_preview: timeline_ocr_preview(payload),
+        checks: timeline_checks(payload),
+    }
+}
+
+fn cognitive_event_order(event_type: &str) -> u8 {
+    match event_type {
+        "turn_started" => 0,
+        "review_board_summary" => 10,
+        "decision_contract" | "arbiter_decision" => 20,
+        "confirmation_pending_saved" => 25,
+        "work_order" | "arbiter_work_order_created" => 30,
+        "role_execution_started" => 40,
+        "role_execution_finished" => 50,
+        "verification_report" => 60,
+        "confirmation_resumed" => 65,
+        "confirmation_cancelled" | "confirmation_expired" => 66,
+        "recovery_plan" => 70,
+        "recovery_execution_started" => 80,
+        "recovery_execution_finished" => 90,
+        "turn_closure" => 100,
+        "kernel_planning_finished" => 110,
+        _ => 120,
+    }
+}
+
+fn collect_recipient_hints(value: &Value, out: &mut BTreeSet<String>) {
+    match value {
+        Value::Object(map) => {
+            for key in [
+                "recipient",
+                "recipients",
+                "recipient_hints",
+                "chat_id",
+                "chat_ids",
+                "to",
+            ] {
+                if let Some(item) = map.get(key) {
+                    for s in as_string_vec(Some(item)) {
+                        out.insert(s);
+                    }
+                }
+            }
+            for item in map.values() {
+                collect_recipient_hints(item, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_recipient_hints(item, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn visit_evidence_files(dir: &Path, out: &mut Vec<PathBuf>, limit: usize) {
@@ -615,6 +1062,13 @@ pub fn os_evidence_list(limit: Option<usize>) -> Result<Vec<OsEvidenceEntry>, St
         .iter()
         .filter_map(|p| evidence_entry(p))
         .collect::<Vec<_>>();
+    let mut ledger_paths = Vec::new();
+    for dir in cognitive_kernel_ledger_dirs() {
+        visit_cognitive_ledger_files(&dir, &mut ledger_paths);
+    }
+    for ledger_path in ledger_paths {
+        rows.extend(cognitive_ledger_entries(&ledger_path));
+    }
     rows.sort_by(|a, b| b.generated_at.cmp(&a.generated_at));
     rows.truncate(max_items);
     Ok(rows)

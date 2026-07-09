@@ -1,7 +1,7 @@
 """
 Jachin Nexus Layer 2 CLI
 python -m core.cli pair — L1↔L2 **辅助**配对（无头/SSH/恢复）；主路径见 L2 /gateway：
-L1 邮箱+密码 或「Nexus 账号登录」。docs/L1_L2_PAIRING_AND_WEB_BRIDGE.md
+Legacy optional L2 pairing CLI. L3 packaged mode uses L1 profiles directly.
 refresh-tenant：租户字段修复
 """
 from __future__ import annotations

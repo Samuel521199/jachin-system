@@ -1,7 +1,7 @@
 """
 run_agent 入站流水线：澄清门控 → 附件 L1 规则与 Feature Slots → routing_utterance → 分类面截断重建 → 环境嗅探（含 semantic_layer YAML）。
 
-编排顺序与 L4 挂载见 docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md。
+该 gateway 只提供证据预处理；最终裁决见 docs/07_memory_first_main_agent_and_voice_app_agents.md。
 """
 from __future__ import annotations
 

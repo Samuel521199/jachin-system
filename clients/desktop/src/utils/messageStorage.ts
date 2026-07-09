@@ -25,6 +25,16 @@ export interface StoredMessage {
   timestamp: number;
   /** 回复来源：L3 直连大模型 / L2 兜底 */
   source?: "L3" | "L2";
+  /** Structured chat control protocol emitted by L3 for pending confirmation turns. */
+  pending_confirmation?: {
+    decision_id?: string;
+    work_order_id?: string;
+    task_type?: string;
+    risk_level?: string;
+    tool?: string;
+    confirm_text?: string;
+    cancel_text?: string;
+  };
   /** Opt-in：可视化 Skill；未设置时所有现有消息逻辑不变 */
   tool_call?: StoredToolCall;
 }

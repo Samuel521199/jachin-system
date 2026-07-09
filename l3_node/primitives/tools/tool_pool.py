@@ -1,7 +1,7 @@
-﻿"""
+"""
 L3 工具池：内置（Native + jpp）与 MCP 合并，供 run_agent 等单点调用。
 
-规范见 docs/architecture/L3_TOOL_POOL_AND_MCP_ASSEMBLY.md。
+工具池是执行层能力，架构入口见 docs/07_memory_first_main_agent_and_voice_app_agents.md。
 
 SQLite：stdio 的 mcp:read_query 或 npm「mcp-sqlite」的 mcp:query 等常因 allowed_skills 未列名被合并阶段剔除。
 - 官方 @modelcontextprotocol/server-sqlite 在 npm 上不存在（404），请使用 npx -y mcp-sqlite <db路径>。

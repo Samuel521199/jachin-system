@@ -1,8 +1,8 @@
-"""
-Jachin Nexus V2 - Layer 3 执行引擎（单主轴 ReAct / run_agent）
+"""Jachin L3 runtime package.
 
-持密文 Key，本地解密后直连外部 LLM API；MCP/Skill、网关、语义层、内联 Critic、Experience RAG。
-架构 SSOT：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md（OpenClaw 等仅为能力对标语境）。
+Architecture SSOT: docs/07_memory_first_main_agent_and_voice_app_agents.md.
+L3 is moving to a Memory-first Cognitive Kernel plus Role Agent Network. The
+historic ReAct executor is compatibility infrastructure, not the architecture.
 """
 from __future__ import annotations
 

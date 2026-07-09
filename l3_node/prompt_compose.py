@@ -1,4 +1,4 @@
-﻿"""System prompt 后缀：稳定工具排序、优先级驱逐与硬帽。见 docs/L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md §〇、§5。"""
+"""System prompt suffix composition: tool ordering, priority eviction, and hard caps."""
 from __future__ import annotations
 
 import json
@@ -47,7 +47,6 @@ def _prompt_section_from_nexus() -> dict[str, Any]:
 
 
 def load_prompt_suffix_budget() -> int:
-    """0 表示不限制。"""
     sec = _prompt_section_from_nexus()
     try:
         v = sec.get("prompt_suffix_max_chars")
@@ -60,7 +59,6 @@ def load_prompt_suffix_budget() -> int:
 
 
 def load_system_prompt_total_max_chars() -> int:
-    """整段 system 提示（前缀含工具表 + 后缀）硬帽；0 表示不限制。见路线图 §5.3。"""
     sec = _prompt_section_from_nexus()
     try:
         v = sec.get("system_prompt_max_chars")
@@ -101,9 +99,9 @@ def effective_eviction_rank(chunk: SuffixChunk) -> int:
 def compose_suffix_with_eviction(
     chunks: list[SuffixChunk], max_chars: int, *, log_eviction: bool = True
 ) -> str:
-    """
-    按路线图 §5.3：超标时按 eviction_rank 升序驱逐（同 rank 先丢更大的块）；
-    task_plan_disk 大块先软截断再整块删；react_footer 最后才动刀；硬截断时尽量保留 footer。
+    """超标时按 eviction_rank 升序驱逐；同 rank 先丢更大的块。
+
+    task_plan_disk 大块先软截断再整块删；硬截断时尽量保留 footer。
     """
     if max_chars <= 0:
         return "".join(c.text for c in chunks if c.text)
@@ -187,8 +185,8 @@ def apply_system_prompt_total_cap(
     suffix_budget: int,
     total_max_chars: int,
 ) -> tuple[str, str]:
-    """
-    总长度超 total_max_chars 时：先收紧后缀预算重算；仍超则截断 tools_desc。
+    """总长度超 total_max_chars 时先收紧后缀预算重算，仍超则截断 tools_desc。
+
     返回 (完整前缀, 后缀)。
     """
     if total_max_chars <= 0:

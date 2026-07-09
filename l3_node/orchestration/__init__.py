@@ -5,7 +5,7 @@ Jachin 长期编排 — 三层架构入口。
 - **L2** `domain_registry`：领域子图（HR、未来 BI 等）
 - **L3** `workflow_spec_runner` + YAML `domain_ref`：跨域 glue
 
-详见 `docs/ORCHESTRATION_ARCHITECTURE.md`。
+详见 `docs/07_memory_first_main_agent_and_voice_app_agents.md`。
 """
 from __future__ import annotations
 

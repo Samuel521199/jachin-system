@@ -19,7 +19,7 @@ YAML 步骤扩展字段：
     include_analyze: false
     context: { "skip_hr_plan_init_node": true }
 
-详见 `docs/ORCHESTRATION_ARCHITECTURE.md`。
+详见 `docs/07_memory_first_main_agent_and_voice_app_agents.md`。
 """
 from __future__ import annotations
 

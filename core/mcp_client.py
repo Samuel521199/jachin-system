@@ -1,13 +1,6 @@
-"""
-Jachin Nexus V2 - L2 MCP 客户端代理引擎（四大原语 · MCP）
+"""MCP client runtime for Jachin.
 
-连接 MCP 服务器、发现工具、执行工具调用，供 L3 通过 HTTP 代理调用。
-使用官方 mcp Python SDK，全异步实现。
-本地 RPA 已迁至 L3 伴生 MCP，L2 仅代理外部 MCP Server。
-
-stdio 噪声过滤（npx/dotenv 等非 JSON 行）在 import 本模块前由 ``core.mcp_stdio_noise_filter`` 安装；
-MCP 路径预检（filesystem 根目录、git 仓库）见 ``core/inventory_scanner.py``，架构索引见
-``docs/architecture/CURRENT_SYSTEM_ARCHITECTURE.md`` §4。
+The host discovers MCP servers, filters noisy stdio output, and exposes tool calls to the L3 tool layer. Local business MCPs are loaded as installable capabilities; L2 remains an optional bridge instead of an architectural requirement.
 """
 from __future__ import annotations
 

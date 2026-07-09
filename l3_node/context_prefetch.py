@@ -1,4 +1,4 @@
-﻿"""工具后 workspace Markdown 摘录；路径滑窗 + ReAct 轮次账本（context_path_ledger）去重。见 docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md、docs/L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md §〇。"""
+"""Workspace Markdown prefetch after tool observations; path-window dedupe for Cognitive Kernel context assembly."""
 from __future__ import annotations
 
 import json
@@ -165,7 +165,6 @@ def _register_tool_paths_for_dedupe(
 
 
 def _prefetch_touch_shown_path(shown: set[str], meta: dict[str, Any], nk: str, window_size: int) -> None:
-    """滑出窗口的路径从 shown 移除，允许后续再次 prefetch。"""
     if window_size <= 0:
         shown.add(nk)
         return
@@ -188,8 +187,7 @@ def build_prefetch_attachment(
     *,
     assistant_response: str = "",
 ) -> str:
-    """
-    返回可拼在 Observation 后的 Markdown 块；无内容则返回空串。
+    """返回可拼在 Observation 后的 Markdown 块；无内容则返回空串。
     ctx 须为 PipelineContext，使用 metadata 中 _prefetch_paths_shown / _prefetch_session_bytes。
     """
     cfg = _load_prefetch_cfg()
