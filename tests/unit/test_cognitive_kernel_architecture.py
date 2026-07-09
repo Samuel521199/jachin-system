@@ -268,6 +268,51 @@ def test_mainline_short_close_resolves_active_window(tmp_path, monkeypatch):
     assert result.work_orders[0].inputs["tool"] == "mcp:windows_window_close"
 
 
+def test_mainline_short_close_prefers_recent_app_when_active_is_control_surface(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+
+    result = plan_cognitive_turn(
+        _ctx(
+            "\u5173\u95ed",
+            turn_id="ck-arch-close-recent-browser",
+            active_window={"app_name": "Jachin", "title": "Jachin Console"},
+            recent_actions=['{"task":"open_app","target_app":"Browser"}'],
+        )
+    )
+
+    assert result.review_summary.top_intent == "close_app"
+    assert result.review_summary.target == {"type": "app", "name": "Browser", "source": "recent_action_memory"}
+    assert result.decision_contract.execution_allowed is True
+    assert result.work_orders[0].inputs["target"]["name"] == "Browser"
+    assert result.work_orders[0].inputs["tool"] == "mcp:windows_window_close"
+
+
+def test_mainline_short_close_uses_latest_recent_app_not_older_one(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+
+    result = plan_cognitive_turn(
+        _ctx(
+            "\u5173\u95ed",
+            turn_id="ck-arch-close-latest-app",
+            active_window={"app_name": "Jachin", "title": "Jachin Console"},
+            recent_actions=[
+                '{"task":"open_app","target_app":"Browser"}',
+                '{"task":"open_app","target_app":"WeChat"}',
+            ],
+        )
+    )
+
+    assert result.review_summary.top_intent == "close_app"
+    assert result.review_summary.target == {"type": "app", "name": "WeChat", "source": "recent_action_memory"}
+    assert result.decision_contract.execution_allowed is True
+    assert result.work_orders[0].inputs["target"]["name"] == "WeChat"
+    assert result.work_orders[0].inputs["tool"] == "mcp:windows_window_close"
+
+
 def test_mainline_message_review_to_work_order(tmp_path, monkeypatch):
     monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
 
@@ -408,6 +453,26 @@ def test_mainline_file_direct_entry_uses_file_executor(tmp_path, monkeypatch):
             run_tool_func=transport_should_not_run,
         )
         assert reply == "已完成文件操作：README.md。"
+
+    asyncio.run(_run())
+
+
+def test_direct_mainline_confirmation_without_pending_falls_through(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.direct_mainline import try_execute_cognitive_direct_plan
+
+    async def _run():
+        reply = await try_execute_cognitive_direct_plan(
+            plan=None,
+            tools=[],
+            allowed_skills=None,
+            run_tool_func=lambda *_args, **_kwargs: "",
+            user_input="确认执行",
+            session_id="no-new-kernel-pending",
+            channel="websocket_terminal",
+        )
+        assert reply is None
 
     asyncio.run(_run())
 

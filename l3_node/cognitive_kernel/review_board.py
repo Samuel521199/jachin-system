@@ -141,7 +141,7 @@ def _normalize_app_name(value: str) -> str:
 
 
 def _recent_action_target(memory_bundle: RelevantMemoryBundle) -> str:
-    for evidence in memory_bundle.recent_actions:
+    for evidence in reversed(memory_bundle.recent_actions):
         content = evidence.content or ""
         target = _target_from_jsonish(content)
         if target:
@@ -149,11 +149,16 @@ def _recent_action_target(memory_bundle: RelevantMemoryBundle) -> str:
         target = _explicit_app_from_text(content)
         if target:
             return target
-    for ref in memory_bundle.resolved_references:
+    for ref in reversed(memory_bundle.resolved_references):
         target = str(ref.get("target_name") or ref.get("target") or ref.get("app_name") or "").strip()
         if target:
             return _normalize_app_name(target)
     return ""
+
+
+def _is_control_surface_app(app_name: str) -> bool:
+    low = _lower(app_name)
+    return any(token in low for token in ("jachin", "codex", "lark", "feishu", "\u98de\u4e66"))
 
 
 def _target_from_jsonish(content: str) -> str:
@@ -296,9 +301,11 @@ def _extract_target(text: str, intent: str, state_snapshot: StateSnapshot, memor
         return {"type": "app", "name": explicit_app, "source": "input_text"}
     if intent in {"close_app", "switch_app"}:
         active = _active_window_app(state_snapshot)
+        recent = _recent_action_target(memory_bundle)
+        if recent and active and _is_control_surface_app(active):
+            return {"type": "app", "name": recent, "source": "recent_action_memory"}
         if active:
             return {"type": "app", "name": active, "source": "active_window"}
-        recent = _recent_action_target(memory_bundle)
         if recent:
             return {"type": "app", "name": recent, "source": "recent_action_memory"}
     return {}

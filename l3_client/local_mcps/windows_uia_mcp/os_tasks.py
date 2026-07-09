@@ -212,6 +212,7 @@ APP_PROFILES: dict[str, dict[str, Any]] = {
             "microsoft edge",
             "firefox",
             "mozilla firefox",
+            "msedge",
         ),
         "exe_names": ("msedge.exe", "chrome.exe", "firefox.exe"),
         "candidate_paths": ("msedge.exe", "chrome.exe", "firefox.exe"),
@@ -507,6 +508,23 @@ def _app_contract(app_name: str, goal: str = "") -> ExecutionContract:
         expected_processes=processes,
         goal=goal,
     )
+
+
+def _window_keywords_from_target(target: str) -> tuple[tuple[str, ...], tuple[str, ...], str]:
+    raw_items = tuple(k.strip() for k in re.split(r"[,;|]+", str(target or "")) if k.strip())
+    if len(raw_items) == 1:
+        app_key = normalize_app_name(raw_items[0])
+        profile = APP_PROFILES.get(app_key)
+        if profile:
+            keywords = tuple(
+                str(x).strip()
+                for field in ("keywords", "exe_names")
+                for x in profile.get(field, ())
+                if str(x).strip()
+            )
+            if keywords:
+                return keywords, raw_items, app_key
+    return raw_items, raw_items, normalize_app_name(raw_items[0]) if len(raw_items) == 1 else ""
 
 
 def _expand_candidate_path(raw: str) -> str:
@@ -2573,6 +2591,7 @@ class WindowTools:
         user32 = ctypes.windll.user32
         keys = [k.lower() for k in keywords if k]
         excludes = [k.lower() for k in exclude_keywords if k]
+        pid_map = _parse_tasklist()
         matches: list[tuple[int, str, int, int, int, int, int]] = []
 
         def callback(hwnd: int, _lparam: int) -> bool:
@@ -2584,9 +2603,19 @@ class WindowTools:
             buf = ctypes.create_unicode_buffer(length)
             user32.GetWindowTextW(hwnd, buf, length)
             title = (buf.value or "").strip()
-            if not title or (keys and not any(k in title.lower() for k in keys)):
+            if not title:
                 return True
-            if excludes and any(k in title.lower() for k in excludes):
+            pid = ctypes.wintypes.DWORD()
+            process = ""
+            try:
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                process = str(pid_map.get(int(pid.value), {}).get("image_name") or "")
+            except Exception:
+                process = ""
+            haystack = f"{title} {process}".lower()
+            if keys and not any(k in haystack for k in keys):
+                return True
+            if excludes and any(k in haystack for k in excludes):
                 return True
             rect = ctypes.wintypes.RECT()
             if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
@@ -3016,8 +3045,8 @@ class WindowsOSAutomation:
         )
 
     def window_switch(self, keywords: str, exclude_keywords: str = "", timeout: float = 5.0) -> TaskResult:
-        keys = tuple(k.strip() for k in re.split(r"[,锛寍]", str(keywords or "")) if k.strip())
-        excludes = tuple(k.strip() for k in re.split(r"[,锛寍]", str(exclude_keywords or "")) if k.strip())
+        keys, requested_keys, app_key = _window_keywords_from_target(keywords)
+        excludes = tuple(k.strip() for k in re.split(r"[,;|]+", str(exclude_keywords or "")) if k.strip())
         if not keys:
             return TaskResult("windows_window_switch", False, "keywords_empty", {})
         before = self.win.active_title()
@@ -3028,12 +3057,20 @@ class WindowsOSAutomation:
             "windows_window_switch",
             focused,
             "window_focused" if focused else "window_not_found",
-            {"keywords": list(keys), "exclude_keywords": list(excludes), "before": before, "after": after, "screenshot": screenshot},
+            {
+                "requested_keywords": list(requested_keys),
+                "keywords": list(keys),
+                "app_key": app_key,
+                "exclude_keywords": list(excludes),
+                "before": before,
+                "after": after,
+                "screenshot": screenshot,
+            },
         )
 
     def window_close(self, keywords: str, exclude_keywords: str = "", timeout: float = 5.0) -> TaskResult:
-        keys = tuple(k.strip() for k in re.split(r"[,閿涘瘝]", str(keywords or "")) if k.strip())
-        excludes = tuple(k.strip() for k in re.split(r"[,閿涘瘝]", str(exclude_keywords or "")) if k.strip())
+        keys, requested_keys, app_key = _window_keywords_from_target(keywords)
+        excludes = tuple(k.strip() for k in re.split(r"[,;|]+", str(exclude_keywords or "")) if k.strip())
         if not keys:
             return TaskResult("windows_window_close", False, "keywords_empty", {})
         before = self.win.active_title()
@@ -3043,7 +3080,13 @@ class WindowsOSAutomation:
                 "windows_window_close",
                 False,
                 "window_not_found",
-                {"keywords": list(keys), "exclude_keywords": list(excludes), "before": before},
+                {
+                    "requested_keywords": list(requested_keys),
+                    "keywords": list(keys),
+                    "app_key": app_key,
+                    "exclude_keywords": list(excludes),
+                    "before": before,
+                },
             )
         hwnd, title, left, top, width, height = match
         close_sent = False
@@ -3057,27 +3100,51 @@ class WindowsOSAutomation:
             except Exception as e:
                 logger.warning("[window] close post failed title=%r err=%r", title, e)
         deadline = time.time() + float(timeout or 5.0)
-        still_exists = True
+        target_still_exists = True
+        matching_after: tuple[int, str, int, int, int, int] | None = None
         while time.time() < deadline:
-            if not self.win.find_window(keys, exclude_keywords=excludes):
-                still_exists = False
+            try:
+                hwnd_exists = bool(ctypes.windll.user32.IsWindow(hwnd)) if self.win.enabled else False
+                hwnd_visible = bool(ctypes.windll.user32.IsWindowVisible(hwnd)) if self.win.enabled and hwnd_exists else False
+            except Exception:
+                hwnd_exists = False
+                hwnd_visible = False
+            if not hwnd_exists or not hwnd_visible:
+                target_still_exists = False
                 break
+            matching_after = self.win.find_window(keys, exclude_keywords=excludes)
             time.sleep(0.2)
         after = self.win.active_title()
         screenshot = self.io.screenshot_active_window(self.out_dir, f"window_close_{_safe_label('_'.join(keys))}")
         return TaskResult(
             "windows_window_close",
-            close_sent and not still_exists,
-            "window_closed" if close_sent and not still_exists else "window_close_unverified",
+            close_sent and not target_still_exists,
+            "window_closed" if close_sent and not target_still_exists else "window_close_unverified",
             {
+                "requested_keywords": list(requested_keys),
                 "keywords": list(keys),
+                "app_key": app_key,
                 "exclude_keywords": list(excludes),
                 "before": before,
                 "target_title": title,
                 "target_hwnd": int(hwnd),
                 "target_rect": {"left": left, "top": top, "width": width, "height": height},
                 "close_sent": close_sent,
-                "still_exists": still_exists,
+                "target_still_exists": target_still_exists,
+                "matching_window_after": (
+                    {
+                        "hwnd": int(matching_after[0]),
+                        "title": matching_after[1],
+                        "rect": {
+                            "left": matching_after[2],
+                            "top": matching_after[3],
+                            "width": matching_after[4],
+                            "height": matching_after[5],
+                        },
+                    }
+                    if matching_after
+                    else None
+                ),
                 "after": after,
                 "screenshot": screenshot,
             },
@@ -6458,6 +6525,8 @@ def _find_browser() -> str:
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Mozilla Firefox\firefox.exe",
+        r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
     ]
     for raw in candidates:
         if raw and Path(raw).is_file():

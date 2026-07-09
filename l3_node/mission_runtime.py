@@ -124,13 +124,8 @@ def build_plan_preview(intent: MissionIntent, route: CapabilityRoute) -> Mission
         steps = [MissionPlanStep("route_unknown", "??????????", ["intent"])]
         summary = "Unknown mission."
 
-    external_confirmation_tasks = {
-        MissionTaskType.LARK_MESSAGE_SEND,
-        MissionTaskType.PROJECT_BRIEFING_DELIVERY,
-        MissionTaskType.CODEX_ASK_LARK_SEND,
-    }
-    requires_confirmation = risk == MissionRiskLevel.HIGH.value or intent.task_type in external_confirmation_tasks
-    confirmation_reason = "high_risk_operation" if risk == MissionRiskLevel.HIGH.value else ("external_side_effect" if requires_confirmation else "")
+    requires_confirmation = risk == MissionRiskLevel.HIGH.value
+    confirmation_reason = "high_risk_operation" if requires_confirmation else ""
     return MissionPlanPreview(
         summary=summary,
         risk_level=risk,

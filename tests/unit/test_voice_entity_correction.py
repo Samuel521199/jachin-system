@@ -76,7 +76,7 @@ def test_voice_correction_exports_hotwords() -> None:
     assert hotwords["Jachin"] >= 15
 
 
-def test_lark_message_plan_requires_confirmation() -> None:
+def test_lark_message_plan_auto_executes_when_slots_are_complete() -> None:
     from l3_node.capability_router import choose_capability_route
     from l3_node.mission_runtime import build_plan_preview
 
@@ -85,9 +85,9 @@ def test_lark_message_plan_requires_confirmation() -> None:
     route = choose_capability_route(intent, _tools())
     plan = build_plan_preview(intent, route)
 
-    assert plan.requires_confirmation is True
-    assert plan.auto_execute is False
-    assert plan.confirmation_reason == "external_side_effect"
+    assert plan.requires_confirmation is False
+    assert plan.auto_execute is True
+    assert plan.confirmation_reason == ""
 
 
 def test_voice_correction_handles_single_lark_syllable_and_vivi_sticky_send() -> None:

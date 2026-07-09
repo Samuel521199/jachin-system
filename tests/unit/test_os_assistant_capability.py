@@ -1570,6 +1570,61 @@ def test_environment_verifier_accepts_chrome_as_browser_process() -> None:
     assert result.checks["process_ok"] is True
 
 
+def test_environment_verifier_accepts_browser_by_process_when_title_is_generic() -> None:
+    from l3_client.local_mcps.windows_uia_mcp.os_tasks import EnvironmentVerifier, _app_contract
+
+    class FakeWin:
+        def active_snapshot(self):
+            return {
+                "title": "\u65b0\u6807\u7b7e\u9875",
+                "process": "chrome.exe",
+                "pid": 123,
+                "hwnd": 456,
+            }
+
+    result = EnvironmentVerifier(FakeWin()).verify(_app_contract("browser"), stage="open_app", action="verify_foreground")
+
+    assert result.ok is True
+    assert result.detail == "environment_verified"
+    assert result.checks["title_ok"] is False
+    assert result.checks["process_ok"] is True
+
+
+def test_window_keywords_expand_browser_target_to_real_process_names() -> None:
+    from l3_client.local_mcps.windows_uia_mcp.os_tasks import _window_keywords_from_target
+
+    keywords, requested, app_key = _window_keywords_from_target("Browser")
+
+    assert requested == ("Browser",)
+    assert app_key == "browser"
+    assert "chrome.exe" in keywords
+    assert "msedge.exe" in keywords
+    assert "firefox.exe" in keywords
+
+
+def test_window_close_not_found_reports_resolved_browser_keywords() -> None:
+    from l3_client.local_mcps.windows_uia_mcp.os_tasks import WindowsOSAutomation
+
+    class FakeWin:
+        enabled = False
+
+        def active_title(self):
+            return "Jachin Omni"
+
+        def find_window(self, *_args, **_kwargs):
+            return None
+
+    auto = WindowsOSAutomation.__new__(WindowsOSAutomation)
+    auto.win = FakeWin()
+
+    result = auto.window_close("Browser")
+
+    assert result.ok is False
+    assert result.detail == "window_not_found"
+    assert result.evidence["requested_keywords"] == ["Browser"]
+    assert "chrome.exe" in result.evidence["keywords"]
+
+
 def test_environment_verifier_falls_back_when_active_snapshot_is_missing() -> None:
     from l3_client.local_mcps.windows_uia_mcp.os_tasks import EnvironmentVerifier, _app_contract
 

@@ -75,7 +75,7 @@ async def try_execute_cognitive_direct_plan(
                 aborted=True,
             )
             return final_text
-        return "\u5f53\u524d\u6ca1\u6709\u5f85\u53d6\u6d88\u7684\u4efb\u52a1\u3002"
+        return None
 
     if is_confirmation_text(user_input):
         resumed = await _try_resume_pending_confirmation(
@@ -88,7 +88,7 @@ async def try_execute_cognitive_direct_plan(
         )
         if resumed is not None:
             return resumed
-        return "\u5f53\u524d\u6ca1\u6709\u5f85\u786e\u8ba4\u4efb\u52a1\uff0c\u8bf7\u91cd\u65b0\u53d1\u8d77\u64cd\u4f5c\u3002"
+        return None
 
     if plan is None:
         _log_direct_execution(stage="skipped", reason="no_cognitive_plan")
