@@ -11,200 +11,74 @@ if str(VOICE_SERVER) not in sys.path:
 from services.voice_understanding import VoiceUnderstandingCorrector
 
 
-def test_candidate_parser_corrects_lark_command() -> None:
-    result = VoiceUnderstandingCorrector().correct("打开LUCK")
-
-    selected = result["understanding"]["selected"]
-    assert result["corrected_text"] == "打开Lark"
-    assert selected["intent"] == "open_app"
-    assert selected["slots"]["app"] == "Lark"
-
-
-def test_candidate_parser_keeps_chat_statement_as_no_task() -> None:
-    result = VoiceUnderstandingCorrector().correct("你说的都是对的")
-
-    selected = result["understanding"]["selected"]
-    assert result["corrected_text"] == "你说的都是对的"
-    assert selected["intent"] == "no_task"
+def assert_stt_only(result: dict) -> None:
+    understanding = result["understanding"]
+    assert understanding["voice_layer_scope"] == "stt_only"
+    assert understanding["selected"] == {}
+    assert understanding["task_candidates"] == []
+    assert understanding["reply_plan"] == {}
+    assert result["reply_plan"] == {}
+    assert result["user_message"] == ""
+    assert result["user_message_source"] == ""
+    assert result["needs_confirmation"] is False
 
 
-def test_candidate_parser_uses_contact_anchor_without_false_app_route() -> None:
-    result = VoiceUnderstandingCorrector().correct("找到威廉")
-
-    selected = result["understanding"]["selected"]
-    assert result["corrected_text"] == "找到Vivian"
-    assert selected["intent"] == "find_contact"
-    assert selected["slots"]["contact"] == "Vivian"
-    assert result["needs_confirmation"] is True
+def entity_names(result: dict) -> set[str]:
+    return {str(item.get("canonical")) for item in result["understanding"]["entity_candidates"]}
 
 
-def test_send_message_with_weak_contact_asks_clarification_instead_of_guessing_vivian() -> None:
-    result = VoiceUnderstandingCorrector().correct("打开LUCK 帮我给你发一条消息")
+def test_voice_understanding_corrects_lark_without_routing() -> None:
+    result = VoiceUnderstandingCorrector().correct("\u6253\u5f00LUCK")
 
-    selected = result["understanding"]["selected"]
-    assert result["corrected_text"] == "打开Lark帮我给你发一条消息"
-    assert selected["type"] == "clarification_required"
-    assert selected["intent"] == "send_message"
-    assert selected["slots"] == {"app": "Lark"}
-    assert "contact" in selected["missing_slots"]
-    assert selected["can_execute"] is False
-    assert selected["question"]
+    assert result["corrected_text"] == "\u6253\u5f00Lark"
+    assert "Lark" in entity_names(result)
+    assert_stt_only(result)
 
 
-def test_send_message_with_company_name_like_noise_does_not_autofill_vivian() -> None:
-    result = VoiceUnderstandingCorrector().correct("打开LARK 帮我给EASY 发一条消息")
-
-    selected = result["understanding"]["selected"]
-    assert selected["type"] == "clarification_required"
-    assert selected["intent"] == "send_message"
-    assert selected["slots"] == {"app": "Lark"}
-    assert "contact" in selected["missing_slots"]
-    assert result["corrected_text"] == "打开Lark帮我给EASY 发一条消息"
-
-
-def test_low_quality_send_message_audio_asks_clarification_without_rewriting_entities() -> None:
-    raw = "请你打开那个帮我给路车发一掉休息"
+def test_voice_understanding_keeps_chat_statement_as_plain_stt() -> None:
+    raw = "\u4f60\u8bf4\u7684\u90fd\u662f\u5bf9\u7684"
     result = VoiceUnderstandingCorrector().correct(raw)
 
-    selected = result["understanding"]["selected"]
     assert result["corrected_text"] == raw
-    assert selected["type"] == "clarification_required"
-    assert selected["intent"] == "send_message"
-    assert "contact" in selected["missing_slots"]
-    assert "message_content" in selected["missing_slots"]
-    assert selected["slots"] == {}
+    assert "Lark" not in entity_names(result)
+    assert_stt_only(result)
 
 
-def test_send_message_with_contact_but_no_content_asks_for_message_content() -> None:
-    result = VoiceUnderstandingCorrector().correct("在LARK 给Neil发消息")
+def test_voice_understanding_corrects_contact_and_app_but_does_not_ask_slots() -> None:
+    result = VoiceUnderstandingCorrector().correct("\u5728LARK \u7ed9Neil\u53d1\u6d88\u606f")
 
-    selected = result["understanding"]["selected"]
-    assert selected["type"] == "clarification_required"
-    assert selected["intent"] == "send_message"
-    assert selected["slots"] == {"app": "Lark", "contact": "Neil"}
-    assert selected["missing_slots"] == ["message_content"]
-    assert "内容" in selected["question"]
+    assert result["corrected_text"] == "\u5728Lark\u7ed9Neil\u53d1\u6d88\u606f"
+    assert {"Lark", "Neil"}.issubset(entity_names(result))
+    assert_stt_only(result)
 
 
-def test_candidate_parser_recognizes_exact_company_english_names() -> None:
-    result = VoiceUnderstandingCorrector().correct("帮我找DANIEL")
+def test_voice_understanding_maps_recorded_hotword_aliases_without_reply_plan() -> None:
+    result = VoiceUnderstandingCorrector().correct("\u5728\u80cc\u4e66\u7ed9\u4e00\u5206\u53d1\u6d88\u606f\u5185\u5bb9\u662f\u4eca\u5929\u51e0\u70b9\u5f00\u4f1a")
 
-    selected = result["understanding"]["selected"]
-    assert result["corrected_text"] == "找到Daniel"
-    assert selected["intent"] == "find_contact"
-    assert selected["slots"]["contact"] == "Daniel"
-
-
-def test_candidate_parser_uses_whole_word_boundaries_for_english_names() -> None:
-    result = VoiceUnderstandingCorrector().correct("帮我找PATRICK")
-
-    selected = result["understanding"]["selected"]
-    assert result["corrected_text"] == "找到Patrick"
-    assert selected["intent"] == "find_contact"
-    assert selected["slots"]["contact"] == "Patrick"
+    assert result["corrected_text"] == "\u5728Lark\u7ed9Ethan\u53d1\u6d88\u606f\u5185\u5bb9\u662f\u4eca\u5929\u51e0\u70b9\u5f00\u4f1a"
+    assert {"Lark", "Ethan"}.issubset(entity_names(result))
+    assert_stt_only(result)
 
 
-def test_candidate_parser_rejects_short_ascii_fragments_as_entities() -> None:
-    result = VoiceUnderstandingCorrector().correct("帮我找IS")
+def test_voice_understanding_maps_neil_alias_without_taking_control() -> None:
+    result = VoiceUnderstandingCorrector().correct("\u518dLUCK \u7ed9\u4f60\u7528\u6cd5\u6d88\u606f\u5185\u5bb9\u662f\u540c\u6b65\u4e00\u4e0b")
 
-    selected = result["understanding"]["selected"]
-    assert selected["intent"] == "no_task"
-    assert result["understanding"]["entity_candidates"] == []
-
-
-def test_candidate_parser_does_not_route_short_mixed_noise_to_lark() -> None:
-    result = VoiceUnderstandingCorrector().correct("打开K 龙")
-
-    selected = result["understanding"]["selected"]
-    assert selected["intent"] == "no_task"
-    assert "Lark" not in str(selected.get("slots") or {})
+    assert result["corrected_text"] == "\u518dLark\u7ed9Neil\u6d88\u606f\u5185\u5bb9\u662f\u540c\u6b65\u4e00\u4e0b"
+    assert {"Lark", "Neil"}.issubset(entity_names(result))
+    assert_stt_only(result)
 
 
-def test_candidate_parser_allows_weak_english_contact_with_find_action_but_requires_confirmation() -> None:
-    result = VoiceUnderstandingCorrector().correct("\u5e2e\u6211\u627eGOLDEN")
+def test_voice_understanding_maps_project_alias_without_task_selection() -> None:
+    result = VoiceUnderstandingCorrector().correct("\u5e2e\u6211\u770b\u4e00\u4e0bCHARGE")
 
-    selected = result["understanding"]["selected"]
-    assert selected["type"] == "task_requires_confirmation"
-    assert selected["intent"] == "find_contact"
-    assert selected["slots"]["contact"] == "Gordon"
-    assert result["needs_confirmation"] is True
+    assert result["corrected_text"] == "\u5e2e\u6211\u770b\u4e00\u4e0bJachin"
+    assert "Jachin" in entity_names(result)
+    assert_stt_only(result)
 
 
-def test_candidate_parser_maps_charge_to_jachin_project_context() -> None:
-    result = VoiceUnderstandingCorrector().correct("帮我看一下CHARGE")
-
-    selected = result["understanding"]["selected"]
-    assert selected["intent"] == "open_project"
-    assert selected["slots"]["project"] == "Jachin"
-    assert result["corrected_text"] == "帮我看一下Jachin"
-
-
-def test_candidate_parser_maps_stt_hotword_aliases_before_reply_plan() -> None:
-    result = VoiceUnderstandingCorrector().correct("在背书给一分发消息内容是今天几点开会")
-
-    selected = result["understanding"]["selected"]
-    assert selected["type"] == "task_requires_confirmation"
-    assert selected["intent"] == "send_message"
-    assert selected["slots"] == {"app": "Lark", "contact": "Ethan"}
-    assert result["reply_plan"]["reply_intent"] == "confirm_external_action"
-
-
-def test_candidate_parser_maps_neil_stt_alias_without_leaving_tail_noise() -> None:
-    result = VoiceUnderstandingCorrector().correct("再LUCK 给你用法消息内容是同步一下")
-
-    selected = result["understanding"]["selected"]
-    assert selected["type"] == "task_requires_confirmation"
-    assert selected["slots"] == {"app": "Lark", "contact": "Neil"}
-    assert result["corrected_text"] == "再Lark给Neil消息内容是同步一下"
-
-
-def test_candidate_parser_does_not_match_short_initial_contact_inside_long_noise() -> None:
-    result = VoiceUnderstandingCorrector().correct("\u6253\u5f00KK KNELT")
-
-    selected = result["understanding"]["selected"]
-    assert selected["intent"] == "no_task"
-    assert "KK" not in str(selected.get("slots") or {})
-
-
-def test_candidate_parser_recalls_phonetic_contact_aliases_with_confirmation() -> None:
-    cases = [
-        ("\u5e2e\u6211\u627e\u725b", "Neil"),
-        ("\u5e2e\u6211\u627e\u610f\u601d", "Ethan"),
-        ("\u5e2e\u6211\u627e\u7537\u751f", "Nathan"),
-    ]
-
-    for raw, contact in cases:
-        result = VoiceUnderstandingCorrector().correct(raw)
-        selected = result["understanding"]["selected"]
-        assert selected["type"] == "task_requires_confirmation"
-        assert selected["intent"] == "find_contact"
-        assert selected["slots"]["contact"] == contact
-        assert result["needs_confirmation"] is True
-
-
-def test_candidate_parser_uses_medium_contact_alias_in_send_clarification_slots() -> None:
-    result = VoiceUnderstandingCorrector().correct("\u5728\u62c9\u514b\u7ed9\u5a01\u5ec9\u53d1\u6d88\u606f")
-
-    selected = result["understanding"]["selected"]
-    assert selected["type"] == "clarification_required"
-    assert selected["intent"] == "send_message"
-    assert selected["slots"] == {"app": "Lark", "contact": "Vivian"}
-    assert selected["missing_slots"] == ["message_content"]
-    assert selected["can_execute"] is False
-
-
-def test_candidate_parser_does_not_fuzzy_route_calculator_to_chrome() -> None:
+def test_voice_understanding_rejects_calculator_noise_as_chrome_entity() -> None:
     result = VoiceUnderstandingCorrector().correct("\u5e2e\u6211\u6253\u5f00\u8ba1\u7b97\u5668\u7b97\u4e00\u4e0b40*90")
 
-    selected = result["understanding"]["selected"]
-    assert selected["intent"] == "no_task"
-    assert "Chrome" not in str(result["understanding"]["entity_candidates"])
-
-
-def test_candidate_parser_recalls_jachin_phonetic_project_alias_with_confirmation() -> None:
-    result = VoiceUnderstandingCorrector().correct("\u5e2e\u6211\u770b\u4e00\u4e0b\u5bb6\u5177")
-
-    selected = result["understanding"]["selected"]
-    assert selected["type"] == "task_requires_confirmation"
-    assert selected["intent"] == "open_project"
-    assert selected["slots"]["project"] == "Jachin"
+    assert result["corrected_text"] == "\u5e2e\u6211\u6253\u5f00\u8ba1\u7b97\u5668\u7b97\u4e00\u4e0b40*90"
+    assert "Chrome" not in entity_names(result)
+    assert_stt_only(result)
