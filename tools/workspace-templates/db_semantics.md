@@ -3,7 +3,7 @@
 本文件放在 **`~/.jachin/workspace/db_semantics.md`**（或与网关嗅探相同的 workspace 根目录），
 由 **Omni-Context Sniffer** 注入 `[ENVIRONMENT_REPORT]`，供模型将**自然语言指标**映射为 **SQL 条件**。
 
-**结构化语义**（推荐）：同目录 **`db_semantics.yaml`** 由系统解析为 `semantic_layer` 并注入 system（与 L4 SOP / 内联 Critic 共用词典）。总览见 **`docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md`**。
+**结构化语义**（推荐）：同目录 **`db_semantics.yaml`** 由系统解析为 `semantic_layer` 并注入 system，作为 Memory-first Cognitive Kernel 的 workspace state 输入。
 
 > 以下为示例；请按实际表名、列名修改。
 

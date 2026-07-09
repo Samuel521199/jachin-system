@@ -484,7 +484,7 @@ export function CapabilityPublish() {
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-500">
             <span>L3 → L1 Direct：{l1Profile?.base_url || "未配置"}</span>
-            <span>L2 required：false</span>
+            <span>L2 optional：true</span>
             {l1Test && (
               <span className={l1Test.ok ? "text-emerald-300" : "text-rose-300"}>
                 {l1Test.message}

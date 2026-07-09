@@ -44,7 +44,7 @@ _DEFAULT: dict[str, Any] = {
     "semantic_ood_skip_background_task": True,
     "clarification_drift_overlap_min": 0.06,
     "clarification_interrupt_keywords": None,
-    # §9.4 L0 全局逃生舱（docs/L3_AMBIGUOUS_INTENT_ARCHITECTURE.md）
+    # Cognitive Kernel global escape hatch; see docs/07_memory_first_main_agent_and_voice_app_agents.md.
     "global_escape_hatch_enabled": True,
     "global_escape_keywords": None,
     # §9.1 槽位追问上限与 Abort 文案（由 slot_filling_guard 使用）

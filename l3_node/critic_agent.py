@@ -1,10 +1,8 @@
-"""
-L4 内联 Action Critic（非独立 Agent）：在 **同一条 run_agent ReAct 循环** 内、真正调用 MCP/Native 前，
-用轻量 LLM 审查 Action 与用户意图、业务语义层是否一致。
+"""Action critique role support for the Cognitive Kernel.
 
-架构 SSOT：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md（§3 内联 Critic）。
-
-失败时由 agent_core 注入伪造 Observation，打回重做；Critic 自身或 LLM 异常时 **fail-open**（放行），避免拖死主循环。
+Critique is a role-agent function that reviews proposed actions before external
+side effects. It is not the architecture root. Architecture SSOT:
+docs/07_memory_first_main_agent_and_voice_app_agents.md
 """
 from __future__ import annotations
 

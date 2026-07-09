@@ -442,6 +442,15 @@ def windows_window_switch(keywords: str, exclude_keywords: str = "", timeout: fl
         return _tool_exception_json("windows_window_switch", e)
 
 
+@mcp.tool(name="windows_window_close")
+def windows_window_close(keywords: str, exclude_keywords: str = "", timeout: float = 5.0, out_dir: str = "") -> str:
+    """Close a visible Windows window by title/process keywords and verify it disappeared."""
+    try:
+        return _os_auto(out_dir).window_close(keywords=keywords, exclude_keywords=exclude_keywords, timeout=timeout).to_json()
+    except Exception as e:
+        return _tool_exception_json("windows_window_close", e)
+
+
 @mcp.tool(name="windows_disk_snapshot")
 def windows_disk_snapshot(out_dir: str = "") -> str:
     """Collect drive free/used space."""
@@ -880,4 +889,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

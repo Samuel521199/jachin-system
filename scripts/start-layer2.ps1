@@ -102,7 +102,7 @@ if (Get-Command conda -ErrorAction SilentlyContinue) {
     }
 }
 
-# 信任检查：无 nexus_config 则自动跑 CLI 辅助配对（有 Web 时可先起 L2 用 /gateway Nexus 登录，见 docs/L1_L2_PAIRING_AND_WEB_BRIDGE.md）
+# 信任检查：无 nexus_config 则自动跑 CLI 辅助配对。L2 为可选扩展，L3 packaged mode 不依赖它。
 $ConfigPath = Join-Path $env:USERPROFILE ".jachin\nexus_config.json"
 $AlreadyPaired = $false
 if (Test-Path $ConfigPath) {

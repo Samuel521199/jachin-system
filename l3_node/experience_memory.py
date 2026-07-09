@@ -1,10 +1,8 @@
-﻿"""
-L4 动态经验飞轮（Experience RAG-lite）：本地 JSONL + 纯标准库相似度检索，无向量库、无 numpy。
+"""Experience memory helper for the Cognitive Kernel migration.
 
-架构 SSOT：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md §6。
-
-- 默认存储：~/.jachin/workspace/.jachin_experience.jsonl（可用 JACHIN_EXPERIENCE_JSONL 覆盖）
-- 写入：仅在 SQLite read_query/write_query + Critic 已通过（或关闭）+ Observation 未显式失败时由 agent_core 触发，避免毒化经验池。
+Experience recall is a memory channel consumed by MemoryRecallAgent and the
+kernel context. Architecture SSOT:
+docs/07_memory_first_main_agent_and_voice_app_agents.md
 """
 from __future__ import annotations
 

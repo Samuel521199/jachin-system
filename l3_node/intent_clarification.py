@@ -4,7 +4,7 @@ L3 通用「模糊意图 → 反问确认」框架。
 在精确遥控 / 工具路由未命中时，由**业务域插件**注册 ``ClarificationRule``，按优先级检测；
 命中则返回固定反问文案（通常不调 LLM），引导用户发送**明确短指令**。
 
-设计文档：``docs/L3_FUZZY_INTENT_CLARIFICATION.md``  
+设计入口：``docs/07_memory_first_main_agent_and_voice_app_agents.md``。
 Cursor 规则：``.cursor/rules/085-l3-fuzzy-intent-clarification.mdc``
 """
 

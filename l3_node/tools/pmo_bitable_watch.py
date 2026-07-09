@@ -1,7 +1,7 @@
-﻿"""
+"""
 PMO 飞书多维表变更监控：轮询 diff + 防抖会话 + 空闲后回调。
 
-设计 SSOT：skills_repo/pmo-copilot/SKILL.change-alert.md · docs/architecture/PMO_CHANGE_ALERT_DESIGN.md
+设计 SSOT：skills_repo/pmo-copilot/SKILL.change-alert.md
 
 - 原子能力：core:pmo_bitable_watch_tick / core:pmo_bitable_watch_status / core:pmo_change_diff
 - 长时轮询：l3_node/jobs/pmo_bitable_watch_scheduler.py

@@ -1,7 +1,7 @@
-﻿"""
+"""
 PMO 宏观看板（Work 总）：Worker B/C 宿主预取 → GFM 战报 → 飞书 native_table 卡片。
 
-SSOT 案例：docs/architecture/PMO_WORK_ZONG_CASE_STUDY.md §3.5～§3.8、§9。
+SSOT：PMO skill package; macro dashboard is business capability code, not kernel architecture。
 """
 from __future__ import annotations
 

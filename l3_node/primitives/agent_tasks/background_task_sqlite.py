@@ -1,4 +1,4 @@
-"""后台任务队列 SQLite 持久化（WAL）：入队双写、冷启动恢复、与 graceful_shutdown flush 配合。见 docs/L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md §〇。"""
+"""Background task queue SQLite persistence: WAL, enqueue mirror, cold-start recovery, and shutdown flush."""
 from __future__ import annotations
 
 import json

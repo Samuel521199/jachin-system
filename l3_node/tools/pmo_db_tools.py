@@ -1,8 +1,8 @@
-﻿"""
+"""
 PMO-Copilot v6 — SQLite 原生工具 ``core:db_query`` / ``core:db_write``。
 
 库文件默认 ``~/.jachin/workspace/pmo_db.sqlite``（可用 ``JACHIN_PMO_DB_PATH`` 覆盖）。
-Schema SSOT：``docs/architecture/PMO_DB_REFACTOR_DESIGN.md`` §4。
+Schema SSOT：PMO skill package config and runtime database schema。
 """
 from __future__ import annotations
 

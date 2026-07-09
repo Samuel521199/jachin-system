@@ -3,7 +3,7 @@ L3 记忆宿主：核心写入已迁移 **Memory Nexus（SQLite + FastEmbed）**
 
 - 被动注入：见 `memory_nexus_bridge.build_l1_system_memory_block` / `get_local_memory_for_prompt`
 - `add_local_memory` → `commit_drawer`（User_Persona / Learned_Skills）
-架构说明: docs/L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md §4；治理路线与快照: docs/L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md（§〇、§4）。
+架构入口: docs/07_memory_first_main_agent_and_voice_app_agents.md；记忆检索由 Cognitive Kernel 前置消费。
 """
 from __future__ import annotations
 

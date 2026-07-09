@@ -1,12 +1,8 @@
-﻿"""
-Omni-Context Sniffer：入站轻量环境报告（Git + 安全锁摘要 + db_semantics.md / golden_sql），
-硬字符预算，写入 bundle.extra["environment_report"]；并解析 db_semantics.yaml → report["semantic_layer"]（见 workspace_db_context）。
+"""Lightweight context sniffer for kernel evidence.
 
-**不在此模块调用 Memory Nexus**（曾导致 Windows 上阻塞整条网关入站）。跨会话记忆请走 ReAct 内
-``core:local_memory_search`` / ``core:local_memory_append``。若需在嗅探中恢复旧行为（不推荐），见
-``intent_gateway.context_sniffer_memory_chroma_enabled``（默认 false，见 l3_node/intent_gateway/config.py）。
-
-与混合架构关系：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md §4。
+This module may package cheap environment hints, but it must not make final
+intent decisions or perform blocking system scans. Architecture SSOT:
+docs/07_memory_first_main_agent_and_voice_app_agents.md
 """
 from __future__ import annotations
 

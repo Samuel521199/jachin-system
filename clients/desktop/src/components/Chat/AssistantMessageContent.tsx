@@ -11,6 +11,13 @@ import { getAssistantMainBodyForDisplay } from "../../utils/reasoningStreamSplit
 import { MarkdownMessage } from "./MarkdownMessage";
 import { getRegisteredSkillUI, getSkillUiRegistration } from "../../skills-ui/skillUIRegistry";
 import type { ToolUiSubmitPayload } from "../../skills-ui/types";
+import {
+  extractPendingConfirmationProtocol,
+  pendingConfirmationQuickReplies,
+  shouldShowMissionConfirmationControls,
+  stripAssistantUiProtocol,
+  type PendingConfirmationControl,
+} from "./pendingConfirmationProtocol";
 
 export interface AssistantMessageContentProps {
   message: StoredMessage;
@@ -49,17 +56,14 @@ function CanvasToolCallHintCard({ toolName }: { toolName: string }) {
   );
 }
 
-function shouldShowMissionConfirmationControls(body: string): boolean {
-  const text = body || "";
-  const hasConfirmationCue =
-    /确认后我再执行|确认执行|确认发送|继续修改|暂不执行|待确认|pending_confirmation|confirm|execute|cancel/i.test(
-      text
-    );
-  const hasMissionCue = /Task Preview:|Lark|发送|发给|任务|执行|打开|整理|计算/i.test(text);
-  return hasConfirmationCue && hasMissionCue;
-}
-
-function MissionConfirmationControls({ onQuickReply }: { onQuickReply: (text: string) => void }) {
+function MissionConfirmationControls({
+  protocol,
+  onQuickReply,
+}: {
+  protocol: PendingConfirmationControl | null;
+  onQuickReply: (text: string) => void;
+}) {
+  const { confirmText, cancelText } = pendingConfirmationQuickReplies(protocol);
   return (
     <div
       data-chat-interactive
@@ -72,7 +76,7 @@ function MissionConfirmationControls({ onQuickReply }: { onQuickReply: (text: st
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          onQuickReply("确认执行");
+          onQuickReply(confirmText);
         }}
         className="inline-flex items-center gap-1.5 rounded-md border border-emerald-400/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-medium text-emerald-100 transition hover:border-emerald-300/70 hover:bg-emerald-500/25"
       >
@@ -84,7 +88,7 @@ function MissionConfirmationControls({ onQuickReply }: { onQuickReply: (text: st
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          onQuickReply("取消");
+          onQuickReply(cancelText);
         }}
         className="inline-flex items-center gap-1.5 rounded-md border border-slate-400/25 bg-white/5 px-3 py-1.5 text-xs text-slate-200 transition hover:border-rose-300/55 hover:bg-rose-500/15 hover:text-rose-100"
       >
@@ -141,13 +145,15 @@ export function AssistantMessageContent({
 
   // ---------- 分支 B：普通 assistant 文本（历史行为） ----------
   /** 主气泡只展示「对用户正文」；调度/Action 等仅在思考链中展示 */
-  const body = getAssistantMainBodyForDisplay(message);
-  const showMissionControls = !!onQuickReply && shouldShowMissionConfirmationControls(body);
+  const rawBody = getAssistantMainBodyForDisplay(message);
+  const protocol = message.pending_confirmation ?? extractPendingConfirmationProtocol(rawBody);
+  const body = stripAssistantUiProtocol(rawBody);
+  const showMissionControls = !!onQuickReply && shouldShowMissionConfirmationControls(body, protocol);
   if (variant === "markdown") {
     return (
       <>
         <MarkdownMessage content={body} />
-        {showMissionControls && <MissionConfirmationControls onQuickReply={onQuickReply} />}
+        {showMissionControls && <MissionConfirmationControls protocol={protocol} onQuickReply={onQuickReply} />}
         {isLastAssistant && isTyping && (
           <span
             className={
@@ -170,7 +176,7 @@ export function AssistantMessageContent({
           <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-cyan-400/90 align-middle" />
         )}
       </div>
-      {showMissionControls && <MissionConfirmationControls onQuickReply={onQuickReply} />}
+      {showMissionControls && <MissionConfirmationControls protocol={protocol} onQuickReply={onQuickReply} />}
     </>
   );
 }

@@ -1,6 +1,6 @@
 """
 L0 全局逃生舱：无论 Planning / 槽位澄清 / 消解态，优先匹配逃生词即复位会话网关状态。
-规格见 docs/L3_AMBIGUOUS_INTENT_ARCHITECTURE.md §9.4。
+规格见 docs/07_memory_first_main_agent_and_voice_app_agents.md。
 """
 from __future__ import annotations
 

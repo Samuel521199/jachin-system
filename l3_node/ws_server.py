@@ -91,27 +91,42 @@ def _ws_msg_lark_chat_id(msg: dict, session_key: str = "") -> str:
 
 
 def _is_ws_voice_fast_lane(intent: str, implicit_signals: dict | None, msg: dict | None = None) -> bool:
-    sig = implicit_signals if isinstance(implicit_signals, dict) else {}
-    text = (intent or "").strip()
-    if not text or len(text) > 80:
-        return False
-    if msg and msg.get("attachments_metadata"):
-        return False
-    if bool(sig.get("voice_evidence_blocked")):
-        return False
-    if bool(sig.get("voice_fast_lane")) or bool(sig.get("skip_context_retrieval")):
-        return True
-    tier = str(sig.get("voice_dispatch_tier") or "").upper()
-    lane = str(sig.get("voice_dispatch_lane") or "").lower()
-    intent_class = str(sig.get("voice_intent_class") or "").upper()
-    verdict = str(sig.get("voice_interrupt_verdict") or "NONE").upper()
-    return (
-        tier == "CHIT_CHAT"
-        and lane == "direct_llm"
-        and intent_class in ("", "CHITCHAT", "QUERY_LIGHT")
-        and verdict in ("", "NONE")
-        and not sig.get("target_task_id")
-    )
+    return False
+
+
+def _legacy_ws_voice_fast_lane_enabled() -> bool:
+    """The pre-kernel voice fast lane has been retired."""
+    return False
+
+
+def _normalize_ws_implicit_signals_for_kernel(
+    implicit_signals: dict | None,
+    *,
+    local_voice_session: bool,
+) -> dict | None:
+    """Remove legacy bypass flags so voice/text enter the same kernel path."""
+    if not isinstance(implicit_signals, dict):
+        return implicit_signals
+    if not local_voice_session:
+        return implicit_signals
+    cleaned = dict(implicit_signals)
+    removed: list[str] = []
+    for key in (
+        "voice_fast_lane",
+        "skip_context_retrieval",
+        "skip_context_sniffer",
+        "skip_gateway_enrich",
+        "skip_experience_rag",
+        "voice_allow_template_reply",
+    ):
+        if key in cleaned:
+            removed.append(key)
+            cleaned.pop(key, None)
+    cleaned["cognitive_kernel_required"] = True
+    cleaned["voice_fast_lane_disabled_by_kernel"] = True
+    if removed:
+        cleaned["kernel_removed_bypass_flags"] = removed
+    return cleaned
 
 
 def _voice_bool(value: Any) -> bool:
@@ -865,6 +880,10 @@ async def _ws_execute_intent_turn(
 
     _imp_sig = msg.get("implicit_signals")
     _imp_sig = _imp_sig if isinstance(_imp_sig, dict) else None
+    _imp_sig = _normalize_ws_implicit_signals_for_kernel(
+        _imp_sig,
+        local_voice_session=local_voice_session,
+    )
 
     _voice_gate_reply, _voice_gate_reason = _voice_evidence_gate_reply(intent, _imp_sig)
     if _voice_gate_reply:
@@ -1759,8 +1778,6 @@ async def run_ws_server(
     raise RuntimeError(
         f"端口 {ports_to_try[0]}~{ports_to_try[-1]} 均被占用。请关闭其他 L3 实例: netstat -ano | findstr 18981"
     ) from last_err
-
-
 
 
 

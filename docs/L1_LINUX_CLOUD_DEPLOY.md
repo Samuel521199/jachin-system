@@ -367,7 +367,7 @@ L1 使用 **`nexus-host`（宿主机网络、3000）** 时，L2 容器在 bridge
 4. **服务器**：`docker load -i jachin-l2-latest.tar`，`docker compose -f compose.l2.runtime.yml pull redis`，`docker compose -f compose.l2.runtime.yml up -d`（或 `deploy/l2-ecs-bundle/server-l2-up.sh`）  
 5. **安全组**：放行 **TCP 18888**；`l2.env` 中 **`BRAIN_BASE_URL`** 改为公网可访问的 L2 地址（如 `http://47.86.39.173:18888`）。  
 
-**L1↔L2 配对**（网关 L1 邮箱+密码、Nexus Web 绑定、配对码 CLI 辅助）、回跳白名单与环境变量见：**[L1_L2_PAIRING_AND_WEB_BRIDGE.md](./L1_L2_PAIRING_AND_WEB_BRIDGE.md)**。
+L3 默认通过 L1 Profile 直连当前 L1 地址；L2 仅作为可选企业桥接扩展，不再是 L1 部署的必需步骤。
 
 多副本负载均衡仍用仓库根 **`docker-compose.l2-cluster.yml`**（3×L2 + Nginx + Redis）。
 

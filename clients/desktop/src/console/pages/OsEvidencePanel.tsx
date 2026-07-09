@@ -146,6 +146,8 @@ type EvidenceEntry = {
     tool_id?: string;
     task_type?: string;
   } | null;
+  role_executions?: Array<Record<string, unknown>>;
+  pending_decisions?: Array<Record<string, unknown>>;
   timeline: Array<{
     ts: string;
     stage: string;
@@ -1003,6 +1005,18 @@ function EvidenceDetail({ item }: { item: EvidenceEntry }) {
         </div>
       ) : null}
 
+      {item.role_executions?.length ? (
+        <div className="px-5 pb-5">
+          <RoleExecutionBlock rows={item.role_executions} />
+        </div>
+      ) : null}
+
+      {item.pending_decisions?.length ? (
+        <div className="px-5 pb-5">
+          <PendingDecisionBlock rows={item.pending_decisions} />
+        </div>
+      ) : null}
+
       <div className="px-5 pb-5">
         <div className="rounded-lg border border-slate-800 bg-slate-900/45 p-4">
           <div className="mb-2 text-sm font-medium text-slate-200">输出摘要</div>
@@ -1337,6 +1351,98 @@ function RuntimeBlock({ item }: { item: EvidenceEntry }) {
   );
 }
 
+function RoleExecutionBlock({ rows }: { rows: Array<Record<string, unknown>> }) {
+  const normalized = rows
+    .map((row) => {
+      const payload = isRecord(row.payload) ? row.payload : row;
+      const evidence = isRecord(payload.evidence) ? payload.evidence : isRecord(payload.adapter_evidence) ? payload.adapter_evidence : {};
+      return {
+        eventType: String(row.event_type || payload.type || "role_execution"),
+        roleId: String(payload.role_id || ""),
+        adapterKind: String(payload.adapter_kind || evidence.strategy || ""),
+        tool: String(payload.tool || evidence.tool || ""),
+        ok: typeof payload.ok === "boolean" ? payload.ok : undefined,
+        elapsed: typeof payload.elapsed_ms === "number" ? payload.elapsed_ms : typeof payload.adapter_elapsed_ms === "number" ? payload.adapter_elapsed_ms : undefined,
+        evidence,
+      };
+    })
+    .filter((row) => row.roleId || row.adapterKind || row.tool);
+  return (
+    <div className="rounded-lg border border-cyan-400/20 bg-cyan-400/[0.05] p-4">
+      <div className="mb-3 text-sm font-medium text-cyan-50">Cognitive Kernel Role Execution</div>
+      <div className="space-y-2">
+        {normalized.slice(0, 8).map((row, index) => (
+          <div key={`${row.eventType}-${row.roleId}-${index}`} className="rounded-md border border-slate-800 bg-slate-950/45 p-3 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded bg-cyan-400/10 px-2 py-0.5 text-cyan-200">{row.roleId || "RoleAgent"}</span>
+              {row.adapterKind ? <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-300">{row.adapterKind}</span> : null}
+              {row.tool ? <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-400">{row.tool}</span> : null}
+              {typeof row.ok === "boolean" ? (
+                <span className={cn("rounded px-2 py-0.5", row.ok ? "bg-emerald-400/10 text-emerald-300" : "bg-amber-400/10 text-amber-300")}>
+                  {row.ok ? "OK" : "CHECK"}
+                </span>
+              ) : null}
+              {typeof row.elapsed === "number" ? <span className="ml-auto text-slate-500">{msText(row.elapsed)}</span> : null}
+            </div>
+            {Object.keys(row.evidence).length ? (
+              <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-slate-900 p-2 text-[11px] leading-5 text-slate-500">
+                {JSON.stringify(row.evidence, null, 2)}
+              </pre>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PendingDecisionBlock({ rows }: { rows: Array<Record<string, unknown>> }) {
+  const normalized = rows
+    .map((row) => {
+      const payload = isRecord(row.payload) ? row.payload : row;
+      const eventType = String(row.event_type || payload.event_type || "pending_decision");
+      return {
+        eventType,
+        decisionId: String(payload.decision_id || payload.pending_decision_id || ""),
+        workOrderId: String(payload.work_order_id || ""),
+        tool: String(payload.tool || ""),
+        risk: String(payload.risk_level || ""),
+        reason: String(payload.confirmation_reason || payload.reason || ""),
+        expiresAt: typeof payload.expires_at_ms === "number" ? payload.expires_at_ms : undefined,
+      };
+    })
+    .filter((row) => row.decisionId || row.workOrderId || row.eventType);
+  return (
+    <div className="rounded-lg border border-amber-400/20 bg-amber-400/[0.05] p-4">
+      <div className="mb-3 flex items-center gap-2 text-sm font-medium text-amber-50">
+        <AlertCircle className="h-4 w-4" />
+        Pending DecisionContract
+      </div>
+      <div className="space-y-2">
+        {normalized.slice(0, 8).map((row, index) => (
+          <div key={`${row.eventType}-${row.decisionId}-${index}`} className="rounded-md border border-slate-800 bg-slate-950/45 p-3 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded bg-amber-400/10 px-2 py-0.5 text-amber-200">{row.eventType}</span>
+              {row.risk ? <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-300">risk: {row.risk}</span> : null}
+              {row.tool ? <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-400">{row.tool}</span> : null}
+              {row.expiresAt ? <span className="ml-auto text-slate-500">expires: {formatTime(Math.floor(row.expiresAt / 1000))}</span> : null}
+            </div>
+            <div className="mt-2 grid gap-1 text-[11px] leading-5 text-slate-500">
+              {row.decisionId ? <span>decision_id: {row.decisionId}</span> : null}
+              {row.workOrderId ? <span>work_order_id: {row.workOrderId}</span> : null}
+              {row.reason ? <span>reason: {row.reason}</span> : null}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function InfoMini({ title, items }: { title: string; items: string[] }) {
   return (
     <div className="rounded-md border border-slate-800 bg-slate-950/45 p-3">
@@ -1392,6 +1498,34 @@ function ScreenshotStrip({ paths }: { paths: string[] }) {
   );
 }
 
+function cognitiveStageLabel(stage: string): string {
+  if (stage === "review_board_summary") return "ReviewBoard";
+  if (stage === "decision_contract" || stage === "arbiter_decision") return "Arbiter";
+  if (stage === "confirmation_pending_saved") return "Pending";
+  if (stage === "work_order" || stage === "arbiter_work_order_created") return "WorkOrder";
+  if (stage === "role_execution_started" || stage === "role_execution_finished") return "RoleExecution";
+  if (stage === "verification_report") return "Verification";
+  if (stage === "confirmation_resumed" || stage === "confirmation_cancelled" || stage === "confirmation_expired") return "Confirmation";
+  if (stage === "recovery_plan" || stage === "recovery_execution_started" || stage === "recovery_execution_finished") return "Recovery";
+  if (stage === "turn_closure") return "TurnClosure";
+  if (stage === "turn_started") return "Input";
+  if (stage === "kernel_planning_finished") return "KernelPlan";
+  return "Evidence";
+}
+
+function cognitiveStageTone(stage: string): string {
+  const label = cognitiveStageLabel(stage);
+  if (label === "ReviewBoard") return "border-cyan-400/30 bg-cyan-400/10 text-cyan-200";
+  if (label === "Arbiter") return "border-violet-400/30 bg-violet-400/10 text-violet-200";
+  if (label === "Pending" || label === "Confirmation") return "border-amber-400/30 bg-amber-400/10 text-amber-200";
+  if (label === "WorkOrder") return "border-amber-400/30 bg-amber-400/10 text-amber-200";
+  if (label === "RoleExecution") return "border-blue-400/30 bg-blue-400/10 text-blue-200";
+  if (label === "Verification") return "border-emerald-400/30 bg-emerald-400/10 text-emerald-200";
+  if (label === "Recovery") return "border-rose-400/30 bg-rose-400/10 text-rose-200";
+  if (label === "TurnClosure") return "border-slate-400/30 bg-slate-400/10 text-slate-200";
+  return "border-slate-700 bg-slate-900 text-slate-400";
+}
+
 function Timeline({ rows }: { rows: EvidenceEntry["timeline"] }) {
   const [openKeys, setOpenKeys] = useState<Record<string, boolean>>({});
   return (
@@ -1402,6 +1536,7 @@ function Timeline({ rows }: { rows: EvidenceEntry["timeline"] }) {
         {rows.map((row, index) => {
           const key = `${row.ts}-${row.stage}-${index}`;
           const hasEvidence = row.screenshots.length > 0 || row.files.length > 0 || row.ocr_preview || row.checks.length > 0;
+          const stageLabel = cognitiveStageLabel(row.stage);
           return (
             <div key={key} className="grid grid-cols-[22px_minmax(0,1fr)] gap-3">
               <span
@@ -1419,6 +1554,9 @@ function Timeline({ rows }: { rows: EvidenceEntry["timeline"] }) {
                   onClick={() => hasEvidence && setOpenKeys((prev) => ({ ...prev, [key]: !prev[key] }))}
                   className="flex w-full flex-wrap items-center gap-2 text-left"
                 >
+                  <span className={cn("rounded border px-2 py-0.5 text-[11px] font-semibold", cognitiveStageTone(row.stage))}>
+                    {stageLabel}
+                  </span>
                   <span className="text-xs font-medium text-slate-200">{row.stage}</span>
                   <span className="rounded bg-slate-800 px-2 py-0.5 text-[11px] text-slate-400">{row.status}</span>
                   <span className="text-[11px] text-slate-600">{row.ts}</span>

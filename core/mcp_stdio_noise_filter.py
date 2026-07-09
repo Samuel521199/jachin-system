@@ -1,14 +1,6 @@
-"""
-MCP stdio：官方 SDK 将子进程 stdout 按行解析为 JSON-RPC。
-部分环境（npx 包装、安全/代理软件）会在 MCP 协议输出前向 stdout 打印非 JSON 行
-（例如「◇ injected env …」），导致 ValidationError 与 ERROR 级堆栈。
+"""Noise filter for MCP stdio transports.
 
-在首次连接 stdio MCP 前替换 ``mcp.client.stdio.stdio_client``，对**明显非 JSON** 的行仅记录
-warning 并跳过，不中断会话。
-
-与 mcp 包版本耦合：循环逻辑同步自 ``mcp.client.stdio`` 的 ``stdio_client``。
-
-架构说明见 ``docs/architecture/CURRENT_SYSTEM_ARCHITECTURE.md`` §4。
+Some wrappers print non-JSON lines to stdout before the MCP JSON-RPC stream. This module skips clearly invalid lines without tearing down the MCP session.
 """
 from __future__ import annotations
 

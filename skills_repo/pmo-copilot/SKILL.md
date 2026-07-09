@@ -117,7 +117,7 @@ tools:
 
 ### 1.2 SQLite 查询手册（分析必用）
 
-> **编排与角色名**：FanOut、Worker A/B/C、Auditor、多 Agent、`--single-agent` 等**仅**在 `docs/architecture/PMO_COPILOT_ARCHITECTURE.md` 说明；**本节 Skill 只写业务规则、视图、工具与 SQL 编号**，避免把宿主编排当成 Skill 正文。
+> **编排与角色名**：FanOut、Worker A/B/C、Auditor、多 Agent、`--single-agent` 等属于 PMO 能力包内部约定；**本节 Skill 只写业务规则、视图、工具与 SQL 编号**，避免把宿主架构当成 Skill 正文。
 
 **硬性顺序（分支 A 推送前宿主会校验）**
 
@@ -392,7 +392,7 @@ WHERE source_view IN ('vew8TxMcSh', 'vewL9Mofgd');
 5. **C-6**（兜底，最多 1 次）：C-3 为 0 或 parent 无法关联时，按 `row_index` 拉层级探针。
 
 **优先**：`core:pmo_sprint_epic_report`（全量采集 `{"recent_window": true}`；单 Sprint `{"sprint":"2026/05/11-Sprint"}`），再按需 `db_query` 补洞。宿主 FanOut 可能已预取 epics[]，**禁止**重复步骤 0。  
-**兜底 SQL**：`pmo_multi_agent_queries.py` 中 **C-1～C-6**；Worker C 规范见 `docs/architecture/PMO_WORKER_C_SPEC.md`。
+**兜底 SQL**：`pmo_multi_agent_queries.py` 中 **C-1～C-6**；Worker C 护栏由 PMO 能力包内联规则维护。
 
 结构化输出须能归纳：`current_sprint`、`recent_sprints[]`、`epics[]`、`epic_children[]`（或 Tool 等价 JSON）。
 
@@ -414,7 +414,7 @@ WHERE source_view IN ('vew8TxMcSh', 'vewL9Mofgd');
 4. 工具 `failed` → 说明 `error`，可 **一次** 回退 §1.4 手工排版 + 双群 notifier（兜底）。
 5. **禁止**在 push 成功后再调 notifier 重复推送同一战报。
 
-案例 SSOT：`docs/architecture/PMO_WORK_ZONG_CASE_STUDY.md` §9。
+案例 SSOT：由 PMO 能力包维护，不依赖宿主架构目录。
 
 ### 1.2.4 Sprint 大需求 + 开发任务明细（对话窄路径 · 案例 SSOT）
 
@@ -428,7 +428,7 @@ WHERE source_view IN ('vew8TxMcSh', 'vewL9Mofgd');
 
 - 字段表：本文档 §1 用户说法 ↔ JSON 键；null → `—`，禁止编造。  
 - 输出：摘要表 + 按 Epic 分节开发任务子表（同案例 §6）；**禁止**窄路径双群 notifier（除非用户要战报）。  
-- 执行映射：查对逻辑 `l3_node/tools/pmo_sprint_query.py`；案例全文 `docs/architecture/PMO_DB_QUERY_CASE_STUDY_0511_SPRINT.md`。
+- 执行映射：查对逻辑 `l3_node/tools/pmo_sprint_query.py`；案例规则由 PMO 能力包维护。
 
 ### 1.2.3 业务语义：周汇报「大需求」层级 & 人员任务 SSOT
 
@@ -567,7 +567,7 @@ PMO_PUSH_MONITOR=0
 **三表最小格式（每张至少表头 + 1 行数据/占位行）**
 
 - 数据缺口标准占位行：`| （无数据）| - | - | ⚠️ 原表字段全空，建议补充 |`
-- **Work 总默认**：📦 = Worker D 发版 Epic 清单（见 [`PMO_RELEASE_EPIC_MAPPING_CASE_STUDY_0605.md`](../../docs/architecture/PMO_RELEASE_EPIC_MAPPING_CASE_STUDY_0605.md)）；单 Agent 兜底路径仍可用占位行
+- **Work 总默认**：📦 = Worker D 发版 Epic 清单；单 Agent 兜底路径仍可用占位行
 
 **推送前 Thought 自检（第 11–13 轮组装后、第 14 轮 notifier 前）**
 
@@ -672,7 +672,7 @@ PMO_PUSH_MONITOR=0
 ### 分支 B：`webhook_table_change` — 变更预警（独立子 Skill）
 
 > **子 Skill SSOT**：[`SKILL.change-alert.md`](./SKILL.change-alert.md)  
-> 架构：[`PMO_CHANGE_ALERT_DESIGN.md`](../../docs/architecture/PMO_CHANGE_ALERT_DESIGN.md) · 案例：[`PMO_CHANGE_ALERT_CASE_STUDY_0605_MAHJONG.md`](../../docs/architecture/PMO_CHANGE_ALERT_CASE_STUDY_0605_MAHJONG.md)
+> 变更预警策略由 PMO 能力包维护；宿主只负责加载能力和执行工具。
 
 **触发**：飞书 Bitable 变更（`pmo_bitable_watch` 轮询 + 防抖 **或** `POST /webhook/pmo_table_change`）→ 会话结束 → **`core:pmo_change_alert_analyze`**（宿主 Python 三轴分析 + 有问题才推）。
 

@@ -1,4 +1,4 @@
-"""ReAct 运行取消令牌（Event）与流式 LLM Task 注册/取消。见 docs/L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md §〇。"""
+"""L3 run cancellation token and streaming LLM task cancellation helpers."""
 from __future__ import annotations
 
 import asyncio

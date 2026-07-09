@@ -1,6 +1,8 @@
-"""
-入站确定性预检（招聘/BI/分支短路等）：从 agent_core 外提，供 run_agent 与路由层共用。
-说明见 docs/L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md §3.2、docs/L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md §〇。
+"""Inbound preflight helpers for L3.
+
+Preflight may normalize evidence, but it is not the final decision maker. The
+Cognitive Kernel remains the authorization boundary. Architecture SSOT:
+docs/07_memory_first_main_agent_and_voice_app_agents.md
 """
 from __future__ import annotations
 

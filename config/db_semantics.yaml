@@ -1,5 +1,5 @@
 # L4 业务语义层（示例）— 部署时可复制到 ~/.jachin/workspace/db_semantics.yaml 覆盖
-# 详见 docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md
+# Workspace DB semantics example; deployments may override it in ~/.jachin/workspace/db_semantics.yaml.
 inventory_domain:
   缺货: "WHERE count = 0 OR count IS NULL"
   低库存: "WHERE count < 10"

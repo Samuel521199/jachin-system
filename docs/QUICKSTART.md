@@ -1,53 +1,52 @@
-# Jachin Nexus 快速开始
+# Jachin Quickstart
 
-**版本**: V2 (2026-03) | **架构**: [ARCHITECTURE.md](./ARCHITECTURE.md)
+Current architecture:
 
----
-
-## 一、3 分钟启动
-
-### 1. 启动控制台
-
-```powershell
-.\start.bat
-# 或
-.\scripts\start-layer2.ps1
+```text
+L3 Desktop -> Cognitive Kernel -> Tool Execution Layer
+L3 Desktop -> L1 Catalog/Profile -> installed Skill/MCP/Model registry
+L2 is optional extension infrastructure, not a required startup dependency.
 ```
 
-### 2. 网关配对（V2 L3）
+## Development Mode
 
-1. 启动 L2：`python -m core.main` 或 `uvicorn core.main:app --host 0.0.0.0 --port 18888`
-2. 打开桌面端：`cd clients\desktop && npm run tauri:dev`
-3. 在 GatewayConnectScreen 输入 L2 地址（如 `http://localhost:18888`），点击「发起神经接驳」
-4. L2 管理员审批：`POST /api/v2/admin/nodes/assign` 将节点分配给子账号
-5. 或点击「使用本地 Key (跳过 L2)」直接使用 OPENAI_API_KEY
+Use this when developing the repo, local skills, or local MCPs.
 
-### 3. 唤醒 Telegram（可选）
+```powershell
+.\scripts\start-layer3.ps1
+```
 
-在手机上对 Telegram 机器人发消息，内网边缘算力即刻响应。
+Choose development mode when prompted. Development mode may read repo-local
+skills and MCPs so authors can iterate before publishing.
 
----
+## Packaged Mode
 
-## 二、环境要求
+Use this to test the product as a fresh user machine.
 
-- Python 3.10+
-- Node.js 18+（桌面端）
-- 环境变量：DashScope 见 [DASHSCOPE_REGIONAL_KEYS.md](./DASHSCOPE_REGIONAL_KEYS.md)（`JACHIN_ACTIVE_REGION` + `DASHSCOPE_API_KEY_SEA` / `_CN` 或回退 `DASHSCOPE_API_KEY` / `QWEN_*`）；`~/.jachin/nexus_config.json` 中 `llm_keys.dashscope`；LLM 默认 Ollama `localhost:11434`
+```powershell
+.\scripts\start-layer3.ps1
+```
 
----
+Choose packaged mode when prompted. Packaged mode uses `dist_jachin_desktop`
+and installed artifacts under `~/.jachin`; it must not depend on repo-local
+business skills.
 
-## 三、核心脚本
+## L1 Capability Flow
 
-| 脚本 | 说明 |
-|------|------|
-| `start.bat` | 一键启动 |
-| `scripts/start-layer2.ps1` | 仅启动 Layer 2 |
-| `scripts/start-layer3.ps1` | 仅启动 Layer 3 |
+1. Open the Jachin console.
+2. Set the L1 profile URL, for example `http://47.86.39.173:3000`.
+3. Open Capability Install Center.
+4. Refresh catalog.
+5. Install the business skill you need.
 
----
+Installing a business skill should also install its declared MCP/model
+dependencies. The local installed registry and the L1 catalog are reconciled
+by capability id, version, and source profile.
 
-## 四、下一步
+## Core References
 
-- 架构：[ARCHITECTURE.md](./ARCHITECTURE.md) | [docs/](./README.md)
-- 配对：**L2↔L3** 见 [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md)；L1↔L2 见 [L1_L2_PAIRING_AND_WEB_BRIDGE.md](./L1_L2_PAIRING_AND_WEB_BRIDGE.md)；边界见 [ARCHITECTURE_L1_WORKSPACE_L2_GATEWAY_L3.md](./ARCHITECTURE_L1_WORKSPACE_L2_GATEWAY_L3.md)（`/gateway`：owner/admin 或本地 `admin`；无头 `python -m core.cli pair`）
-- IM 网关：[IM_GATEWAY_SPEC.md](./IM_GATEWAY_SPEC.md)
+- [07_memory_first_main_agent_and_voice_app_agents.md](./07_memory_first_main_agent_and_voice_app_agents.md)
+- [08_memory_first_cognitive_kernel_execution_plan.md](./08_memory_first_cognitive_kernel_execution_plan.md)
+- [MCP_SKILL_INDEPENDENCE.md](./MCP_SKILL_INDEPENDENCE.md)
+- [SKILL_MCP_UPLOAD_SPEC.md](./SKILL_MCP_UPLOAD_SPEC.md)
+- [L3_SLIM_DISTRIBUTION_AND_SUBSCRIBED_ARTIFACTS.md](./L3_SLIM_DISTRIBUTION_AND_SUBSCRIBED_ARTIFACTS.md)

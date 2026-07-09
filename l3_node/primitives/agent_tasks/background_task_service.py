@@ -1,4 +1,4 @@
-﻿"""L3 后台 Agent 任务队列与 Worker；事件经 l3_event_bus。规格与配置见 docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md。"""
+"""L3 background task queue and worker service; events flow through l3_event_bus."""
 from __future__ import annotations
 
 import asyncio
@@ -17,8 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class BackgroundTaskStderrPulse:
-    """
-    后台 ``run_agent`` 执行期间：
+    """后台 ``run_agent`` 执行期间：
     - **stderr**：单行 ``.``（终端仍可见）；
     - **前台 WebSocket**：同逻辑通过 ``event=pulse`` + ``pulse_line`` 推送，供桌面聊天页展示。
 
@@ -91,7 +90,6 @@ class BackgroundTaskStderrPulse:
             await self._emit_ui_pulse(last_pl)
 
     def _emit_dot_nolock(self) -> str:
-        """写 stderr；返回当前单行展示串（行满回卷后为 ``\"\"``）。"""
         try:
             sys.stderr.write(".")
             self._col += 1
@@ -160,7 +158,6 @@ def _zombie_tasks_path() -> Path:
 
 
 def load_zombie_tasks_snapshot() -> list[dict[str, Any]]:
-    """读取 zombie_tasks.json 当前列表（与 check_interrupted_tasks 同源，供启动日志 / 广播）。"""
     with _zombie_tasks_file_lock:
         p = _zombie_tasks_path()
         if not p.exists():
@@ -175,8 +172,7 @@ def load_zombie_tasks_snapshot() -> list[dict[str, Any]]:
 
 
 def _append_zombie_task_record(entry: dict[str, Any]) -> None:
-    """
-    将中断任务元数据追加到 zombie_tasks.json（列表）。
+    """将中断任务元数据追加到 zombie_tasks.json（列表）。
     同 task_id 已存在则先移除再追加，避免重复堆积。
     写盘：临时文件 + os.replace，降低断电时写坏主文件的概率。
     """
@@ -246,10 +242,7 @@ def _load_cfg() -> dict[str, Any]:
 
 
 def format_background_tasks_prompt_suffix() -> str:
-    """
-    供 agent_core._build_system_prompt 注入：一行后台任务负载（同步、仅读内存，无阻塞 I/O）。
-    与 docs/AGI_OPTIMIZATION_ROADMAP.md「方案 B」对齐。
-    """
+    """供系统提示注入一行后台任务负载；同步、仅读内存，无阻塞 I/O。"""
     if not _runtime_started or _queue is None or _env_disabled():
         return ""
     running = 0
@@ -277,7 +270,6 @@ def format_background_tasks_prompt_suffix() -> str:
 
 
 def get_background_queue_metrics() -> dict[str, int]:
-    """供可观测性面板等只读查询：running 与内存队列等待数。"""
     if not _runtime_started or _queue is None or _env_disabled():
         return {"running": 0, "queued": 0}
     running = 0
@@ -329,7 +321,6 @@ def _persist_record(task_id: str, rec: dict[str, Any]) -> None:
 
 
 def _append_tasks_index(rec: dict[str, Any], event: str) -> None:
-    """Append-only 任务时间线（`.background_tasks/tasks_index.jsonl`）。"""
     try:
         p = _task_dir() / "tasks_index.jsonl"
         payload: dict[str, Any] = {"ts": time.time(), "event": event}
@@ -390,14 +381,13 @@ def _get_progress_lock() -> asyncio.Lock:
 
 
 async def _append_progress_line_async(line: str) -> None:
-    """多 Worker 并发时串行化写入，避免 progress.md 行级交织。"""
     async with _get_progress_lock():
         await asyncio.to_thread(_progress_append_sync, line)
 
 
 def reconcile_stale_background_tasks_on_startup() -> int:
-    """
-    进程重启后内存队列为空：磁盘上仍为 running/queued 的记录无法被 Worker 捡起。
+    """进程重启后内存队列为空，磁盘上仍为 running/queued 的记录无法被 Worker 捡起。
+
     标记为 interrupted 并写回，避免「僵尸任务」永久卡住。
     同时将任务摘要追加到 zombie_tasks.json，供 core:check_interrupted_tasks 晨会提示。
     """
@@ -584,7 +574,6 @@ def _job_from_sqlite_payload(data: dict[str, Any]) -> BackgroundJob:
 
 
 def _recover_sqlite_pending_queue() -> None:
-    """冷启动：将 SQLite 中仍为 pending 的任务灌回内存队列（与 JSON 终端状态对账）。"""
     global _queue
     if _queue is None:
         return
@@ -643,7 +632,6 @@ async def _worker_loop(worker_id: int) -> None:
 
 
 async def start_background_task_runtime(engine: Any) -> None:
-    """在已有事件循环中启动；可重复调用以更新 engine。"""
     global _runtime_started, _queue, _ENGINE
     set_background_task_engine(engine)
     cfg = _load_cfg()
@@ -726,7 +714,6 @@ def _norm_tool_id_alnum(s: str) -> str:
 
 
 def _only_util_get_weather_lite_skills(skills: list[str]) -> bool:
-    """require_skills 仅含 util:get_weather_lite（ tolerate util_get_weather_lite ）。"""
     if not skills:
         return False
     want = _norm_tool_id_alnum("util:get_weather_lite")
@@ -737,7 +724,6 @@ def _only_util_get_weather_lite_skills(skills: list[str]) -> bool:
 
 
 def submit_background_task_sync(inp: str, *, allowed_skills: Optional[list[str]] = None) -> str:
-    """供 run_tool 同步调用；依赖运行中的事件循环。"""
     cfg = _load_cfg()
     if not cfg.get("enabled", True) or _env_disabled():
         return json.dumps(
@@ -957,9 +943,9 @@ def check_background_task_status_sync(inp: str) -> str:
 
 
 def check_interrupted_tasks_sync(inp: str) -> str:
-    """
-    读取 ~/.jachin/workspace/.background_tasks/zombie_tasks.json（崩溃/断电时未跑完的后台任务摘要）。
-    Action Input：可选 JSON `{"consume": true}` — 成功读取后清空列表，表示已向统帅汇报过。
+    """读取 zombie_tasks.json 中崩溃或断电时未跑完的后台任务摘要。
+
+    Action Input 可选 JSON `{"consume": true}`，成功读取后清空列表。
     """
     raw = (inp or "").strip()
     consume = False
@@ -1026,10 +1012,7 @@ _shutdown_hook_registered = False
 
 
 async def flush_background_tasks_to_persistent_queue() -> int:
-    """
-    将内存 asyncio.Queue 中尚未被 Worker 取走的任务写回 SQLite pending（停机钩子；见 docs/L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md §〇）。
-    与 submit 时 insert_pending 幂等（INSERT OR REPLACE）。
-    """
+    """Flush in-memory queued tasks back to the persistent pending queue."""
     global _queue
     if _queue is None:
         return 0
@@ -1052,7 +1035,6 @@ async def flush_background_tasks_to_persistent_queue() -> int:
 
 
 async def graceful_shutdown_background_tasks(*, timeout_sec: float = 4.0) -> None:
-    """SIGTERM/进程退出前：flush 内存队列 → WAL，将 running 标为 interrupted，取消 Worker。"""
     global _worker_tasks
     try:
         await flush_background_tasks_to_persistent_queue()

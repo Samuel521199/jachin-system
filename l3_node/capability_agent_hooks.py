@@ -76,6 +76,55 @@ def reject_capability_final_answer_guards(
     return reject_pmo_final_answer_guards(ctx, messages, response, ans, via=via)
 
 
+def reject_workspace_writeback_guard(
+    ctx: PipelineContext,
+    messages: list[dict[str, Any]],
+    response: str,
+    ans: str,
+    *,
+    via: str,
+) -> bool:
+    from l3_node.capability_policies.workspace_writeback import reject_workspace_writeback_missing_guard
+
+    return reject_workspace_writeback_missing_guard(ctx, messages, response, ans, via=via)
+
+
+def reject_sqlite_grounding_guard(
+    ctx: PipelineContext,
+    messages: list[dict[str, Any]],
+    response: str,
+    ans: str,
+    *,
+    via: str,
+) -> bool:
+    from l3_node.capability_policies.sqlite_grounding import reject_ungrounded_sqlite_final_answer
+
+    return reject_ungrounded_sqlite_final_answer(ctx, messages, response, ans, via=via)
+
+
+def reject_hr_recruitment_guard(
+    ctx: PipelineContext,
+    messages: list[dict[str, Any]],
+    response: str,
+    ans: str,
+    *,
+    branch_b_context: bool,
+    skip_force_atom_post: bool,
+    via: str,
+) -> bool:
+    from l3_node.capability_policies.hr_recruitment import reject_hr_final_answer_guards
+
+    return reject_hr_final_answer_guards(
+        ctx,
+        messages,
+        response,
+        ans,
+        branch_b_context=branch_b_context,
+        skip_force_atom_post=skip_force_atom_post,
+        via=via,
+    )
+
+
 def before_capability_tool_exec(
     ctx: PipelineContext,
     *,
@@ -86,6 +135,41 @@ def before_capability_tool_exec(
     from l3_node.pmo_agent_policy import before_pmo_tool_exec
 
     return before_pmo_tool_exec(ctx, tool=tool, inp=inp, response=response)
+
+
+async def maybe_reject_sqlite_action_before_tool_exec(
+    ctx: PipelineContext,
+    *,
+    tool: str,
+    inp: str,
+    response: str,
+    messages: list[dict[str, Any]],
+    observation_excerpt_fn: Any,
+    followup_user_text_fn: Any,
+) -> bool:
+    from l3_node.capability_policies.sqlite_action_critic import maybe_reject_sqlite_action
+
+    return await maybe_reject_sqlite_action(
+        ctx=ctx,
+        tool=tool,
+        inp=inp,
+        response=response,
+        messages=messages,
+        observation_excerpt_fn=observation_excerpt_fn,
+        followup_user_text_fn=followup_user_text_fn,
+    )
+
+
+def mark_workspace_io_capability_flags(ctx: PipelineContext, tool: str, observation_full: str) -> None:
+    from l3_node.capability_policies.workspace_writeback import mark_workspace_io_flags
+
+    mark_workspace_io_flags(ctx, tool, observation_full)
+
+
+def mark_sqlite_experience_capability_gate(ctx: PipelineContext, tool: str) -> None:
+    from l3_node.capability_policies.sqlite_action_critic import mark_sqlite_experience_save_gate
+
+    mark_sqlite_experience_save_gate(ctx, tool)
 
 
 def after_capability_tool_exec(

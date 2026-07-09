@@ -1,8 +1,8 @@
-﻿"""
+"""
 SQLite / MCP 数据问数：ReAct SOP、同链逻辑自检；与 **内联 Critic**（agent_core → critic_agent.evaluate_action）及
 db_semantics.yaml / db_semantics.md / golden_sql_examples 配合使用。
 
-架构 SSOT：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md
+架构 SSOT：docs/07_memory_first_main_agent_and_voice_app_agents.md
 """
 from __future__ import annotations
 

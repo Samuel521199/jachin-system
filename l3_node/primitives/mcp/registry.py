@@ -665,6 +665,13 @@ L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
         "long_running": True,
     },
     {
+        "id": "mcp:windows_window_close",
+        "label": "mcp:windows_window_close",
+        "desc": "[L3 local OS Assistant] Close a visible Windows window by title/process keywords, then verify the window disappeared. Use only after Cognitive Kernel risk review and WorkOrder authorization.",
+        "params": ["keywords", "exclude_keywords", "timeout", "out_dir"],
+        "long_running": True,
+    },
+    {
         "id": "mcp:windows_disk_snapshot",
         "label": "mcp:windows_disk_snapshot",
         "desc": "[L3 local OS Assistant] Collect Windows drive free/used space.",
@@ -3270,6 +3277,14 @@ class MCPToolRegistry:
                         float(arguments.get("timeout") or 5.0),
                         str(arguments.get("out_dir") or ""),
                     )
+                if raw_name == "windows_window_close":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_window_close,
+                        str(arguments.get("keywords") or arguments.get("keyword") or ""),
+                        str(arguments.get("exclude_keywords") or ""),
+                        float(arguments.get("timeout") or 5.0),
+                        str(arguments.get("out_dir") or ""),
+                    )
                 if raw_name == "windows_disk_snapshot":
                     return await asyncio.to_thread(
                         windows_uia_server.windows_disk_snapshot,
@@ -4023,5 +4038,3 @@ def get_mcp_registry() -> MCPToolRegistry:
     if _registry is None:
         _registry = MCPToolRegistry()
     return _registry
-
-

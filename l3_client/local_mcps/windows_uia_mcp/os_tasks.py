@@ -2669,6 +2669,58 @@ class WindowsOSAutomation:
             {"keywords": list(keys), "exclude_keywords": list(excludes), "before": before, "after": after, "screenshot": screenshot},
         )
 
+    def window_close(self, keywords: str, exclude_keywords: str = "", timeout: float = 5.0) -> TaskResult:
+        keys = tuple(k.strip() for k in re.split(r"[,閿涘瘝]", str(keywords or "")) if k.strip())
+        excludes = tuple(k.strip() for k in re.split(r"[,閿涘瘝]", str(exclude_keywords or "")) if k.strip())
+        if not keys:
+            return TaskResult("windows_window_close", False, "keywords_empty", {})
+        before = self.win.active_title()
+        match = self.win.find_window(keys, exclude_keywords=excludes)
+        if not match:
+            return TaskResult(
+                "windows_window_close",
+                False,
+                "window_not_found",
+                {"keywords": list(keys), "exclude_keywords": list(excludes), "before": before},
+            )
+        hwnd, title, left, top, width, height = match
+        close_sent = False
+        if self.win.enabled:
+            try:
+                user32 = ctypes.windll.user32
+                user32.ShowWindow(hwnd, 5)
+                user32.SetForegroundWindow(hwnd)
+                time.sleep(0.15)
+                close_sent = bool(user32.PostMessageW(hwnd, 0x0010, 0, 0))
+            except Exception as e:
+                logger.warning("[window] close post failed title=%r err=%r", title, e)
+        deadline = time.time() + float(timeout or 5.0)
+        still_exists = True
+        while time.time() < deadline:
+            if not self.win.find_window(keys, exclude_keywords=excludes):
+                still_exists = False
+                break
+            time.sleep(0.2)
+        after = self.win.active_title()
+        screenshot = self.io.screenshot_active_window(self.out_dir, f"window_close_{_safe_label('_'.join(keys))}")
+        return TaskResult(
+            "windows_window_close",
+            close_sent and not still_exists,
+            "window_closed" if close_sent and not still_exists else "window_close_unverified",
+            {
+                "keywords": list(keys),
+                "exclude_keywords": list(excludes),
+                "before": before,
+                "target_title": title,
+                "target_hwnd": int(hwnd),
+                "target_rect": {"left": left, "top": top, "width": width, "height": height},
+                "close_sent": close_sent,
+                "still_exists": still_exists,
+                "after": after,
+                "screenshot": screenshot,
+            },
+        )
+
     def disk_snapshot(self) -> TaskResult:
         drives: list[dict[str, Any]] = []
         if sys.platform == "win32":
@@ -6087,7 +6139,6 @@ def run_tasks(
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     report["report_path"] = str(report_path)
     return report
-
 
 
 

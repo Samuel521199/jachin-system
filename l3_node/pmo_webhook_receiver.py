@@ -1,4 +1,4 @@
-﻿"""
+"""
 PMO 飞书 Bitable 变更 Webhook / 事件接收器。
 
 POST /webhook/pmo_table_change
@@ -9,7 +9,7 @@ POST /webhook/pmo_table_change
 
 长连接模式见：scripts/run_pmo_bitable_watch_long_connection.py
 
-SSOT：docs/architecture/PMO_DB_REFACTOR_DESIGN.md · SKILL.change-alert.md
+SSOT：skills_repo/pmo-copilot/SKILL.change-alert.md
 """
 from __future__ import annotations
 

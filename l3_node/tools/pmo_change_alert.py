@@ -1,8 +1,8 @@
-﻿"""
+"""
 PMO 变更预警：宿主 Python 三轴分析 + 决策门 + 可选 Lark 推送。
 
 SSOT：skills_repo/pmo-copilot/SKILL.change-alert.md
-      docs/architecture/PMO_CHANGE_ALERT_CASE_STUDY_0605_MAHJONG.md
+      skills_repo/pmo-copilot/SKILL.change-alert.md
 
 查数、规则、推送均由本模块完成；Agent 仅可选 narrate，禁止自由 db_query。
 """

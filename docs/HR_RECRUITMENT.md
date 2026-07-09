@@ -16,7 +16,7 @@
 | **MCP 包** | `skills_repo/plugin/com.jachin.hr.recruitment/` | 原子工具、APScheduler、`recruitment_task`、Lark、`anti_bot` 等 |
 | **L3 加载** | `l3_node/hr_loader.py` | 动态加载上述 MCP 包 |
 | **DAG** | `l3_node/primitives/skills/hr_recruitment_dag.py` | **执行层编排**：`HrRecruitmentPlanInitNode` → `HarvestLoopNode` →（可选）`AnalyzeResumeNode` |
-| **长期编排 L2** | `l3_node/orchestration/domain_hr.py` | 通过 `domain_ref: hr_recruitment` 或 `core:domain_workflow_run` **委托**同一套 `build_hr_recruitment_dag`（不复制业务逻辑）；详见 [ORCHESTRATION_ARCHITECTURE.md](./ORCHESTRATION_ARCHITECTURE.md) |
+| **角色化编排** | `l3_node/orchestration/domain_hr.py` | 通过 `domain_ref: hr_recruitment` 或 `core:domain_workflow_run` 委托同一套 `build_hr_recruitment_dag`（不复制业务逻辑）；编排边界以 [07_memory_first_main_agent_and_voice_app_agents.md](./07_memory_first_main_agent_and_voice_app_agents.md) 为准 |
 
 **关系**：飞书「我要招聘」多由 Skill 驱动工具；**无人值守打招呼/收网**由调度器走 **DAG**（非直接散调 atom），以便信号与进度统一。
 

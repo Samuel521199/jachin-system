@@ -1,7 +1,7 @@
 """
 工作区「语义层 / 数据字典」与 Golden SQL 少样本（关键词 RAG-lite）。
 
-架构说明（L4 语义层在系统中的位置）：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md
+语义层只提供证据；认知内核裁决见 docs/07_memory_first_main_agent_and_voice_app_agents.md
 
 约定文件（均在网关嗅探所用 workspace 根下，通常为 ~/.jachin/workspace）：
 - db_semantics.yaml  **L4 结构化业务语义**（域 → 词条 → SQL 片段），解析后写入 bundle.extra["semantic_layer"]

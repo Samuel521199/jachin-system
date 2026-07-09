@@ -406,7 +406,7 @@ async def admin_workspace_members(
 ) -> dict[str, Any]:
     """
     从 L1 拉取当前 nexus_config.tenant_id 对应工作区的成员列表（服务端密钥）。
-    供 /gateway 展示；L1 须配置 L1_L2_LOGIN_SHARED_SECRET 与 L2 的 NEXUS_L2_LOGIN_SECRET 一致。
+    Legacy optional L2 admin endpoint; packaged L3 does not require this pairing path.
     """
     import os
 

@@ -1,4 +1,4 @@
-"""前台同步工具超时策略（默认 5s，可配置与豁免）。见 docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md。"""
+"""Foreground synchronous tool timeout policy for WorkOrder execution compatibility."""
 from __future__ import annotations
 
 import json
