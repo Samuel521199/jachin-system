@@ -518,6 +518,17 @@ export function CapabilityPublish() {
               </label>
             </div>
           </div>
+          <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-500">
+            <span>L3 → L1 Direct：{l1Profile?.base_url || "未配置"}</span>
+            <span>L2 optional：true</span>
+            {l1Test && (
+              <span className={l1Test.ok ? "text-emerald-300" : "text-rose-300"}>
+                {l1Test.message}
+                {typeof l1Test.developer_items_count === "number" ? `；远端包 ${l1Test.developer_items_count} 个` : ""}
+              </span>
+            )}
+          </div>
+
           <div className="relative z-10 mt-4 flex flex-wrap gap-2">
             {FILTERS.map((item) => (
               <button
