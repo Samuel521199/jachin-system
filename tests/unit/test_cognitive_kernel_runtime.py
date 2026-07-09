@@ -247,7 +247,7 @@ def test_file_executor_direct_native_channel(tmp_path, monkeypatch):
     from l3_node.cognitive_kernel.dispatcher import dispatch_tool_work_order
 
     async def _run():
-        async def legacy_should_not_run(_work_order):
+        async def transport_should_not_run(_work_order):
             raise AssertionError("FileExecutor should use direct native channel for core:fs_write/read")
 
         write = await dispatch_tool_work_order(
@@ -255,7 +255,7 @@ def test_file_executor_direct_native_channel(tmp_path, monkeypatch):
             goal="write note",
             tool="core:fs_write",
             action_input='{"path":"notes/stage-d.txt","content":"stage d ok"}',
-            executor=legacy_should_not_run,
+            executor=transport_should_not_run,
         )
         assert write.verification.ok is True
         assert "FileExecutorAgent.native" in write.observation
@@ -265,7 +265,7 @@ def test_file_executor_direct_native_channel(tmp_path, monkeypatch):
             goal="read note",
             tool="core:fs_read",
             action_input='{"path":"notes/stage-d.txt"}',
-            executor=legacy_should_not_run,
+            executor=transport_should_not_run,
         )
         assert read.verification.ok is True
         assert "stage d ok" in read.observation
@@ -316,7 +316,7 @@ def test_memory_write_executor_direct_channel(tmp_path, monkeypatch):
     monkeypatch.setattr(mem_append, "async_run_local_memory_append", fake_append)
 
     async def _run():
-        async def legacy_should_not_run(_work_order):
+        async def transport_should_not_run(_work_order):
             raise AssertionError("MemoryWriteAgent should use direct memory channel")
 
         result = await dispatch_tool_work_order(
@@ -324,7 +324,7 @@ def test_memory_write_executor_direct_channel(tmp_path, monkeypatch):
             goal="remember preference",
             tool="core:local_memory_append",
             action_input='{"content":"User prefers role-agent evidence.","tags":["preference","stage-d"]}',
-            executor=legacy_should_not_run,
+            executor=transport_should_not_run,
         )
         assert result.verification.ok is True
         assert "MemoryWriteAgent.native" in result.observation

@@ -29,8 +29,31 @@ from .ledger import append_event
 _APP_ALIASES: dict[str, tuple[str, ...]] = {
     "Calculator": ("计算器", "calculator", "calc"),
     "Lark": ("飞书", "lark", "feishu"),
-    "Chrome": ("chrome", "谷歌", "浏览器", "browser"),
+    "WeChat": ("微信", "wechat", "weixin"),
+    "Chrome": ("chrome", "google chrome", "谷歌"),
     "Edge": ("edge", "microsoft edge"),
+    "Browser": ("browser", "web", "浏览器"),
+    "DingTalk": ("钉钉", "dingtalk", "dingding"),
+    "WeCom": ("企业微信", "wecom", "wxwork", "enterprise wechat"),
+    "QQ": ("qq", "腾讯QQ"),
+    "TIM": ("tim", "qq tim"),
+    "TencentMeeting": ("腾讯会议", "tencent meeting", "voov", "wemeet"),
+    "Zoom": ("zoom", "zoom meeting"),
+    "Teams": ("teams", "microsoft teams"),
+    "Slack": ("slack",),
+    "Discord": ("discord",),
+    "Firefox": ("firefox", "mozilla firefox", "火狐"),
+    "VSCode": ("vscode", "vs code", "visual studio code", "code"),
+    "Cursor": ("cursor",),
+    "PyCharm": ("pycharm", "jetbrains pycharm"),
+    "Notion": ("notion", "知识库"),
+    "Obsidian": ("obsidian", "双链笔记"),
+    "WPS": ("wps", "office", "金山办公"),
+    "Word": ("word", "microsoft word", "winword", "文档"),
+    "Excel": ("excel", "microsoft excel", "表格"),
+    "PowerPoint": ("powerpoint", "ppt", "microsoft powerpoint"),
+    "Outlook": ("outlook", "microsoft outlook", "邮箱"),
+    "OneNote": ("onenote", "one note", "microsoft onenote", "笔记"),
     "Notepad": ("记事本", "notepad"),
     "Terminal": ("终端", "terminal", "powershell", "cmd"),
     "Explorer": ("资源管理器", "explorer", "文件管理器"),
@@ -59,6 +82,14 @@ def _lower(text: str) -> str:
     return text.lower()
 
 
+def _iter_app_aliases_by_specificity() -> list[tuple[str, tuple[str, ...]]]:
+    pairs = []
+    for app_name, aliases in _APP_ALIASES.items():
+        app_aliases = (app_name.lower(), *aliases)
+        pairs.append((app_name, tuple(sorted(app_aliases, key=len, reverse=True))))
+    return sorted(pairs, key=lambda item: max((len(alias) for alias in item[1]), default=0), reverse=True)
+
+
 def _detect_intent(text: str) -> str:
     low = _lower(text)
     stripped = low.strip()
@@ -81,7 +112,7 @@ def _detect_intent(text: str) -> str:
 
 def _explicit_app_from_text(text: str) -> str:
     low = _lower(text)
-    for app_name, aliases in _APP_ALIASES.items():
+    for app_name, aliases in _iter_app_aliases_by_specificity():
         if any(alias in low for alias in aliases):
             return app_name
     return ""
@@ -99,8 +130,8 @@ def _active_window_app(state_snapshot: StateSnapshot) -> str:
 
 def _normalize_app_name(value: str) -> str:
     low = _lower(value)
-    for app_name, aliases in _APP_ALIASES.items():
-        if app_name.lower() in low or any(alias in low for alias in aliases):
+    for app_name, aliases in _iter_app_aliases_by_specificity():
+        if any(alias in low for alias in aliases):
             return app_name
     return value.strip()
 

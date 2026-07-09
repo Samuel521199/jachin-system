@@ -89,7 +89,7 @@ async def execute_turn_closure_memory_writes(
                     goal=f"write TurnClosure memory request {index + 1}",
                     tool="core:local_memory_append",
                     action_input=action_input,
-                    executor=executor or _legacy_memory_executor_should_not_run,
+                    executor=executor or _missing_memory_executor_should_not_run,
                 ),
                 timeout=timeout,
             )
@@ -119,7 +119,7 @@ async def execute_turn_closure_memory_writes(
     return results
 
 
-async def _legacy_memory_executor_should_not_run(_work_order: WorkOrder) -> str:
+async def _missing_memory_executor_should_not_run(_work_order: WorkOrder) -> str:
     raise RuntimeError("MemoryWriteAgent should handle TurnClosure memory writes directly")
 
 

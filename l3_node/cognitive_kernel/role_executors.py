@@ -1,8 +1,8 @@
 """Role-agent execution adapters for WorkOrder dispatch.
 
-Stage C keeps the existing low-level native/MCP executor as a compatibility
-transport, but moves role-specific execution policy, ledger logging, and
-failure shaping out of ``agent_core.py``.
+Role adapters own per-role policy, ledger logging, verification evidence, and
+failure shaping. Unknown tools still pass through a generic low-level transport,
+but every call is wrapped in a WorkOrder and a RoleExecution event.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from .ledger import append_event
 
 logger = logging.getLogger(__name__)
 
-LegacyToolExecutor = Callable[[WorkOrder], Awaitable[str]]
+ToolTransportExecutor = Callable[[WorkOrder], Awaitable[str]]
 _MESSAGE_SEND_DEDUPE: set[str] = set()
 
 
@@ -68,12 +68,12 @@ class RoleExecutionResult:
 
 class RoleExecutionAdapter:
     role_id = "ToolExecutionAgent"
-    adapter_kind = "compatibility"
+    adapter_kind = "role_adapter"
 
     async def execute(
         self,
         work_order: WorkOrder,
-        legacy_executor: LegacyToolExecutor,
+        tool_transport_executor: ToolTransportExecutor,
         context: RoleExecutionContext,
     ) -> RoleExecutionResult:
         started = time.perf_counter()
@@ -91,7 +91,7 @@ class RoleExecutionAdapter:
         )
         try:
             self.preflight(work_order, context)
-            observation = await self._execute(work_order, legacy_executor, context)
+            observation = await self._execute(work_order, tool_transport_executor, context)
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             evidence = self.enrich_evidence(evidence, observation, work_order, context)
             result = RoleExecutionResult(
@@ -138,10 +138,10 @@ class RoleExecutionAdapter:
     async def _execute(
         self,
         work_order: WorkOrder,
-        legacy_executor: LegacyToolExecutor,
+        tool_transport_executor: ToolTransportExecutor,
         context: RoleExecutionContext,
     ) -> str:
-        return await legacy_executor(work_order)
+        return await tool_transport_executor(work_order)
 
     def describe_evidence(self, work_order: WorkOrder, context: RoleExecutionContext) -> dict[str, object]:
         return {
@@ -167,14 +167,14 @@ class AppControlExecutor(RoleExecutionAdapter):
     async def _execute(
         self,
         work_order: WorkOrder,
-        legacy_executor: LegacyToolExecutor,
+        tool_transport_executor: ToolTransportExecutor,
         context: RoleExecutionContext,
     ) -> str:
         tool = (context.tool or "").strip()
         payload = _json_obj(context.action_input)
         args = payload if isinstance(payload, dict) else {}
         if not context.metadata.get("mainline"):
-            return await legacy_executor(work_order)
+            return await tool_transport_executor(work_order)
         if tool == "mcp:windows_open_app":
             from l3_client.local_mcps.windows_uia_mcp import server as windows_uia_server
 
@@ -207,7 +207,7 @@ class AppControlExecutor(RoleExecutionAdapter):
                     str(args.get("out_dir") or ""),
                 )
             )
-        return await legacy_executor(work_order)
+        return await tool_transport_executor(work_order)
 
     def describe_evidence(self, work_order: WorkOrder, context: RoleExecutionContext) -> dict[str, object]:
         return {
@@ -247,7 +247,7 @@ class FileExecutor(RoleExecutionAdapter):
     async def _execute(
         self,
         work_order: WorkOrder,
-        legacy_executor: LegacyToolExecutor,
+        tool_transport_executor: ToolTransportExecutor,
         context: RoleExecutionContext,
     ) -> str:
         tool = (context.tool or "").strip()
@@ -304,7 +304,7 @@ class FileExecutor(RoleExecutionAdapter):
                 },
                 ensure_ascii=False,
             )
-        return await legacy_executor(work_order)
+        return await tool_transport_executor(work_order)
 
     def enrich_evidence(
         self,
@@ -338,7 +338,7 @@ class MessageExecutor(RoleExecutionAdapter):
     async def _execute(
         self,
         work_order: WorkOrder,
-        legacy_executor: LegacyToolExecutor,
+        tool_transport_executor: ToolTransportExecutor,
         context: RoleExecutionContext,
     ) -> str:
         self._validate_send_payload(context)
@@ -354,7 +354,7 @@ class MessageExecutor(RoleExecutionAdapter):
                 },
                 ensure_ascii=False,
             )
-        first = await legacy_executor(work_order)
+        first = await tool_transport_executor(work_order)
         status = _parse_observation_status(first)
         if status.get("ok") is False and _message_error_retryable(str(status.get("reason") or "")):
             append_event(
@@ -367,7 +367,7 @@ class MessageExecutor(RoleExecutionAdapter):
                     "reason": status.get("reason") or "retryable_message_failure",
                 },
             )
-            second = await legacy_executor(work_order)
+            second = await tool_transport_executor(work_order)
             second_status = _parse_observation_status(second)
             if second_status.get("ok") is not False:
                 _MESSAGE_SEND_DEDUPE.add(dedupe_key)
@@ -420,7 +420,7 @@ class MemoryRecallExecutor(RoleExecutionAdapter):
     async def _execute(
         self,
         work_order: WorkOrder,
-        legacy_executor: LegacyToolExecutor,
+        tool_transport_executor: ToolTransportExecutor,
         context: RoleExecutionContext,
     ) -> str:
         tool = (context.tool or "").strip()
@@ -464,7 +464,7 @@ class MemoryRecallExecutor(RoleExecutionAdapter):
                     },
                     ensure_ascii=False,
                 )
-        return await legacy_executor(work_order)
+        return await tool_transport_executor(work_order)
 
     def enrich_evidence(
         self,
@@ -508,11 +508,11 @@ class MemoryWriteExecutor(RoleExecutionAdapter):
     async def _execute(
         self,
         work_order: WorkOrder,
-        legacy_executor: LegacyToolExecutor,
+        tool_transport_executor: ToolTransportExecutor,
         context: RoleExecutionContext,
     ) -> str:
         if context.tool != "core:local_memory_append":
-            return await legacy_executor(work_order)
+            return await tool_transport_executor(work_order)
         content, tags = _extract_memory_payload(context.action_input)
         if not content:
             raise ValueError("memory append requires content/body/text")
@@ -537,15 +537,15 @@ class MemoryWriteExecutor(RoleExecutionAdapter):
         return enriched
 
 
-class CompatibilityExecutor(RoleExecutionAdapter):
+class GenericToolTransportExecutor(RoleExecutionAdapter):
     role_id = "ToolExecutionAgent"
-    adapter_kind = "compatibility"
+    adapter_kind = "role_adapter"
 
     def preflight(self, work_order: WorkOrder, context: RoleExecutionContext) -> None:
         if work_order.role_agent != self.role_id:
-            # Compatibility transport may still be used as an explicit fallback.
+            # Generic transport may still be used as an explicit fallback.
             logger.debug(
-                "[CognitiveKernel][ToolExecutionAgent] compatibility fallback for role=%s tool=%s",
+                "[CognitiveKernel][ToolExecutionAgent] generic transport bridge for role=%s tool=%s",
                 work_order.role_agent,
                 context.tool,
             )
@@ -567,10 +567,10 @@ class RoleExecutorRegistry:
         self,
         role_id: str,
         work_order: WorkOrder,
-        legacy_executor: LegacyToolExecutor,
+        tool_transport_executor: ToolTransportExecutor,
         context: RoleExecutionContext,
     ) -> RoleExecutionResult:
-        return await self.get(role_id).execute(work_order, legacy_executor, context)
+        return await self.get(role_id).execute(work_order, tool_transport_executor, context)
 
 
 def default_role_executors() -> list[RoleExecutionAdapter]:
@@ -580,7 +580,7 @@ def default_role_executors() -> list[RoleExecutionAdapter]:
         MessageExecutor(),
         MemoryRecallExecutor(),
         MemoryWriteExecutor(),
-        CompatibilityExecutor(),
+        GenericToolTransportExecutor(),
     ]
 
 
