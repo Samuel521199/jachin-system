@@ -11,6 +11,10 @@
     "VS Code": {
       "aliases": ["vs code", "vscode", "visual studio code", "ws code", "w s code"],
       "active": true
+    },
+    "WeChat": {
+      "aliases": ["wechat", "weixin", "微信", "WeChat", "Weixin"],
+      "active": true
     }
   },
   "contacts": {

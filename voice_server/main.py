@@ -5,6 +5,7 @@ import json
 import base64
 import asyncio
 import io
+import os
 import struct
 import time
 import wave
@@ -12,7 +13,7 @@ import socket
 import socketserver
 import threading
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -79,6 +80,18 @@ def _make_stt_service():
     return SttService(cfg.stt_dir)
 
 
+def _make_local_stt_service():
+    from services.stt_service import SttService
+
+    logger.info("JVS local STT fallback model_dir=%s", cfg.stt_dir)
+    return SttService(cfg.stt_dir)
+
+
+def _stt_fallback_enabled() -> bool:
+    raw = os.getenv("JACHIN_STT_LOCAL_FALLBACK", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
 def _make_tts_service():
     if cfg.tts_backend == "cloud":
         from services.cloud_tts_service import CloudTtsService
@@ -107,8 +120,21 @@ def _make_tts_service():
 
 
 stt_service = _make_stt_service()
+local_stt_fallback_service = (
+    _make_local_stt_service()
+    if cfg.stt_backend == "cloud" and _stt_fallback_enabled()
+    else None
+)
 tts_service = _make_tts_service()
 sv_service = SvService(cfg.sv_dir)
+
+
+def _stt_http_timeout_seconds() -> float:
+    raw = os.getenv("JACHIN_JVS_STT_HTTP_TIMEOUT_SEC", "").strip()
+    try:
+        return max(3.0, float(raw or "18"))
+    except ValueError:
+        return 18.0
 
 # Raw TCP STT IPC frame types (lower framing overhead vs HTTP/WebSocket).
 _STT_TCP_START = 0x01
@@ -132,6 +158,18 @@ def _warmup_stt_engine() -> None:
         stt_service._load_engine()
     else:
         logger.warning("STT backend not ready: %s", getattr(stt_service, "model_path", "unknown"))
+    if local_stt_fallback_service is not None:
+        if local_stt_fallback_service.ready:
+            logger.info(
+                "Preloading %s local fallback STT engine...",
+                getattr(local_stt_fallback_service, "model_name", "unknown"),
+            )
+            local_stt_fallback_service._load_engine()
+        else:
+            logger.warning(
+                "Local fallback STT not ready: %s",
+                getattr(local_stt_fallback_service, "model_path", "unknown"),
+            )
 
 
 def _warmup_tts_engine() -> None:
@@ -197,6 +235,10 @@ def health() -> dict:
         "stt_model": stt_service.model_name,
         "tts_model": getattr(tts_service, "model_name", "unknown"),
         "stt_backend": cfg.stt_backend,
+        "stt_local_fallback_enabled": local_stt_fallback_service is not None,
+        "stt_local_fallback_ready": bool(local_stt_fallback_service and local_stt_fallback_service.ready),
+        "stt_local_fallback_model": getattr(local_stt_fallback_service, "model_name", ""),
+        "stt_local_fallback_load_error": getattr(local_stt_fallback_service, "load_error", None),
         "tts_backend": cfg.tts_backend,
         "stt_realtime_model": cfg.stt_realtime_model,
         "stt_hotword_model": cfg.stt_hotword_model,
@@ -244,12 +286,118 @@ def _pcm16le_to_wav_bytes(pcm_bytes: bytes, sample_rate: int = 16000, channels: 
 
 async def _stt_transcribe_pcm_async(pcm_bytes: bytes, sample_rate: int = 16000) -> "SttResult":
     wav_bytes = _pcm16le_to_wav_bytes(pcm_bytes, sample_rate=sample_rate, channels=1)
-    return await asyncio.to_thread(stt_service.transcribe, wav_bytes)
+    return await _transcribe_stt_with_local_fallback(wav_bytes, stage="stream_partial")
 
 
 def _stt_transcribe_pcm_sync(pcm_bytes: bytes, sample_rate: int = 16000) -> "SttResult":
     wav_bytes = _pcm16le_to_wav_bytes(pcm_bytes, sample_rate=sample_rate, channels=1)
-    return stt_service.transcribe(wav_bytes)
+    result = stt_service.transcribe(wav_bytes)
+    if _stt_result_needs_local_fallback(result):
+        fallback = _transcribe_with_local_fallback_sync(wav_bytes, reason="primary_error_sync")
+        if fallback is not None:
+            return fallback
+    return result
+
+
+def _stt_result_needs_local_fallback(result: Any) -> bool:
+    text = str(getattr(result, "text", "") or "").strip()
+    if text.startswith("[STT error]") or text.startswith("【STT错误】"):
+        return True
+    if not text and float(getattr(result, "confidence", 0.0) or 0.0) <= 0.0:
+        return True
+    return False
+
+
+def _mark_local_fallback_result(result: Any, reason: str, cloud_elapsed_ms: int | None = None) -> Any:
+    try:
+        result.backend = f"{result.backend}+fallback_from_cloud"
+        result.understanding = {
+            **(getattr(result, "understanding", {}) or {}),
+            "stt_fallback": {
+                "used": True,
+                "reason": reason,
+                "cloud_elapsed_ms": cloud_elapsed_ms,
+                "fallback_model": getattr(local_stt_fallback_service, "model_name", ""),
+            },
+        }
+    except Exception:
+        pass
+    return result
+
+
+def _transcribe_with_local_fallback_sync(audio_bytes: bytes, reason: str, cloud_elapsed_ms: int | None = None) -> Any | None:
+    if local_stt_fallback_service is None:
+        return None
+    if not local_stt_fallback_service.ready:
+        logger.warning(
+            "Local STT fallback unavailable reason=%s model_path=%s",
+            reason,
+            getattr(local_stt_fallback_service, "model_path", "unknown"),
+        )
+        return None
+    started = time.monotonic()
+    fallback = local_stt_fallback_service.transcribe(audio_bytes)
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    logger.warning(
+        "Local STT fallback used reason=%s cloud_elapsed_ms=%s fallback_elapsed_ms=%s text_len=%s",
+        reason,
+        cloud_elapsed_ms,
+        elapsed_ms,
+        len(str(getattr(fallback, "text", "") or "")),
+    )
+    return _mark_local_fallback_result(fallback, reason=reason, cloud_elapsed_ms=cloud_elapsed_ms)
+
+
+async def _transcribe_stt_with_local_fallback(
+    audio_bytes: bytes,
+    *,
+    stage: str,
+    timeout_sec: float | None = None,
+) -> Any:
+    timeout_sec = timeout_sec or _stt_http_timeout_seconds()
+    started = time.monotonic()
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(stt_service.transcribe, audio_bytes),
+            timeout=timeout_sec,
+        )
+    except asyncio.TimeoutError:
+        cloud_elapsed_ms = int((time.monotonic() - started) * 1000)
+        logger.warning(
+            "Primary STT timeout stage=%s bytes=%s timeout_sec=%.1f elapsed_ms=%s; trying local fallback",
+            stage,
+            len(audio_bytes),
+            timeout_sec,
+            cloud_elapsed_ms,
+        )
+        fallback = await asyncio.to_thread(
+            _transcribe_with_local_fallback_sync,
+            audio_bytes,
+            "cloud_timeout",
+            cloud_elapsed_ms,
+        )
+        if fallback is not None:
+            return fallback
+        raise
+
+    cloud_elapsed_ms = int((time.monotonic() - started) * 1000)
+    if _stt_result_needs_local_fallback(result):
+        logger.warning(
+            "Primary STT returned unusable result stage=%s bytes=%s elapsed_ms=%s text=%r; trying local fallback",
+            stage,
+            len(audio_bytes),
+            cloud_elapsed_ms,
+            str(getattr(result, "text", "") or "")[:160],
+        )
+        fallback = await asyncio.to_thread(
+            _transcribe_with_local_fallback_sync,
+            audio_bytes,
+            "cloud_error_result",
+            cloud_elapsed_ms,
+        )
+        if fallback is not None:
+            return fallback
+    return result
 
 
 def _pack_tcp_frame(msg_type: int, payload: bytes = b"") -> bytes:
@@ -429,7 +577,10 @@ def _stop_stt_tcp_server() -> None:
 
 @app.post("/v1/stt/transcribe")
 async def stt_transcribe(audio: UploadFile = File(...), session_id: Optional[str] = None) -> dict:
-    raw = await audio.read()
+    try:
+        raw = await audio.read()
+    finally:
+        await audio.close()
     if not raw:
         raise HTTPException(status_code=400, detail="empty audio payload")
     if not stt_service.ready:
@@ -437,7 +588,33 @@ async def stt_transcribe(audio: UploadFile = File(...), session_id: Optional[str
             status_code=503,
             detail=f"STT backend not ready: {stt_service.model_path}",
         )
-    result = stt_service.transcribe(raw)
+    timeout_sec = _stt_http_timeout_seconds()
+    started = time.monotonic()
+    try:
+        result = await _transcribe_stt_with_local_fallback(
+            raw,
+            stage="http_transcribe",
+            timeout_sec=timeout_sec,
+        )
+    except asyncio.TimeoutError:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        logger.warning(
+            "STT HTTP transcribe timeout without fallback session_id=%s bytes=%s timeout_sec=%.1f elapsed_ms=%s",
+            session_id,
+            len(raw),
+            timeout_sec,
+            elapsed_ms,
+        )
+        raise HTTPException(status_code=504, detail="STT transcribe timeout")
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        logger.exception(
+            "STT HTTP transcribe failed session_id=%s bytes=%s elapsed_ms=%s",
+            session_id,
+            len(raw),
+            elapsed_ms,
+        )
+        raise HTTPException(status_code=500, detail=f"STT transcribe failed: {e}")
     return {**_stt_result_payload(result), "session_id": session_id}
 
 

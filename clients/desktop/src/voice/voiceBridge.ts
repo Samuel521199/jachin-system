@@ -18,6 +18,14 @@ const JVS_BASE =
     ? "/jvs"
     : import.meta.env.VITE_JVS_BASE_URL || "http://127.0.0.1:18982";
 
+const DEFAULT_STT_TIMEOUT_MS = Number(import.meta.env.VITE_JVS_STT_TIMEOUT_MS || 15000);
+
+export type JvsTranscribeOptions = {
+  sessionId?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+};
+
 function jvsWsBase(): string {
   const explicit = import.meta.env.VITE_JVS_WS_BASE_URL;
   if (explicit) return String(explicit).replace(/\/+$/, "");
@@ -64,7 +72,7 @@ export async function warmJvsAudioModels(opts: { stt?: boolean; tts?: boolean; s
     throw new Error(await res.text());
   }
 }
-export async function transcribeByJvs(audioBlob: Blob, sessionId?: string): Promise<{
+export async function transcribeByJvs(audioBlob: Blob, sessionIdOrOptions?: string | JvsTranscribeOptions): Promise<{
   text: string;
   raw_text?: string;
   user_message?: string;
@@ -91,14 +99,51 @@ export async function transcribeByJvs(audioBlob: Blob, sessionId?: string): Prom
     [key: string]: unknown;
   };
 }> {
+  const options: JvsTranscribeOptions =
+    typeof sessionIdOrOptions === "string" ? { sessionId: sessionIdOrOptions } : sessionIdOrOptions || {};
+  const timeoutMs = Math.max(3000, Number(options.timeoutMs || DEFAULT_STT_TIMEOUT_MS || 15000));
   const form = new FormData();
   form.append("audio", audioBlob, "speech.wav");
-  if (sessionId) form.append("session_id", sessionId);
-  const res = await fetch(`${JVS_BASE}/v1/stt/transcribe`, { method: "POST", body: form });
-  if (!res.ok) {
-    throw new Error(await res.text());
+  if (options.sessionId) form.append("session_id", options.sessionId);
+
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const abortFromCaller = () => controller.abort();
+  if (options.signal) {
+    if (options.signal.aborted) {
+      window.clearTimeout(timeout);
+      throw new Error("JVS_STT_ABORTED");
+    }
+    options.signal.addEventListener("abort", abortFromCaller, { once: true });
   }
-  return res.json();
+
+  try {
+    const res = await fetch(`${JVS_BASE}/v1/stt/transcribe`, {
+      method: "POST",
+      body: form,
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+    return res.json();
+  } catch (err) {
+    const name = err instanceof Error ? err.name : "";
+    if (timedOut) {
+      throw new Error(`JVS_STT_TIMEOUT:${timeoutMs}`);
+    }
+    if (controller.signal.aborted || name === "AbortError") {
+      throw new Error("JVS_STT_ABORTED");
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", abortFromCaller);
+  }
 }
 
 export async function synthesizeByJvs(text: string, voice?: string, sessionId?: string, kind: "content" | "cue" = "content"): Promise<Blob> {

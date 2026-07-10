@@ -23,7 +23,10 @@ export function extractPendingConfirmationProtocol(body: string): PendingConfirm
 }
 
 export function stripAssistantUiProtocol(body: string): string {
-  return (body || "").replace(PENDING_CONFIRMATION_PROTOCOL_RE, "").trimEnd();
+  return (body || "")
+    .replace(PENDING_CONFIRMATION_PROTOCOL_RE, "")
+    .replace(/<!--\s*jachin-ui:pending-confirmation[\s\S]*$/i, "")
+    .trimEnd();
 }
 
 export function shouldShowMissionConfirmationControls(

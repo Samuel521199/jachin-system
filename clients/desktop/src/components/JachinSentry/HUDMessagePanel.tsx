@@ -15,6 +15,7 @@ import {
   type VoiceCompanionL3Payload,
 } from "../../voice/voiceCompanionBridge";
 import { initVoiceCompanionDebugLog, voiceCompanionDebug } from "../../voice/voiceCompanionDebugLog";
+import { stripAssistantUiProtocol } from "../Chat/pendingConfirmationProtocol";
 
 type HudRole = "assistant" | "user" | "system";
 type HudMessage = { id: string; role: HudRole; content: string; ts: number };
@@ -166,7 +167,7 @@ export function HUDMessagePanel() {
   }, [touchActivity]);
 
   const appendMessage = useCallback((role: HudRole, content: string, opts?: AppendOpts) => {
-    const t = content.trim();
+    const t = (role === "assistant" || role === "system" ? stripAssistantUiProtocol(content) : content).trim();
     if (!t) return;
 
     const key = dedupeKey(role, t, opts?.runId);
@@ -223,6 +224,8 @@ export function HUDMessagePanel() {
 
   const handleL3StreamChunkUi = useCallback(
     (delta: string, runId?: string, meta?: SensoryChunkMeta) => {
+      delta = stripAssistantUiProtocol(delta);
+      if (!delta.trim()) return;
       if (meta?.isReasoning) {
         setOrbState("thinking");
         return;
@@ -274,9 +277,9 @@ export function HUDMessagePanel() {
 
       revealPanel(true);
       const outcome = meta?.terminalOutcome;
-      const finalText = (answerContent || "").trim();
+      const finalText = stripAssistantUiProtocol(answerContent || "").trim();
       if (outcome === "error" || outcome === "rejected") {
-        appendMessage("system", answerContent || "本轮请求未完成。", {
+        appendMessage("system", finalText || "本轮请求未完成。", {
           source: "system",
           skipDedupe: true,
         });

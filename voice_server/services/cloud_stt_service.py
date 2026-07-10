@@ -17,10 +17,8 @@ import requests
 
 try:
     from services.stt_hotwords import HotwordSnapshot, SttHotwordProvider
-    from services.voice_understanding import VoiceUnderstandingCorrector
 except ModuleNotFoundError:
     from voice_server.services.stt_hotwords import HotwordSnapshot, SttHotwordProvider
-    from voice_server.services.voice_understanding import VoiceUnderstandingCorrector
 
 logger = logging.getLogger("jachin.voice_server.cloud_stt")
 _MEANINGFUL_CHAR_RE = re.compile(r"[\u4e00-\u9fffA-Za-z0-9]")
@@ -78,7 +76,6 @@ class CloudSttService:
         self._sync_attempted = False
         self._synced_vocabulary_id = ""
         self._synced_vocabulary_signature = ""
-        self._understanding = VoiceUnderstandingCorrector()
         self._hotwords = SttHotwordProvider()
         self._client = requests.Session()
 
@@ -151,22 +148,20 @@ class CloudSttService:
                 return self._error_result(self._load_error, duration_ms)
             payload = resp.json()
             raw_text = self._extract_text(payload)
-            text = self._apply_domain_terms(self._sanitize_transcript_text(raw_text))
-            correction: dict[str, Any] = self._understanding.correct(text) if text else {}
-            corrected = self._choose_transcript(text, str(correction.get("corrected_text") or "").strip())
+            corrected = self._apply_domain_terms(self._sanitize_transcript_text(raw_text))
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             logger.info("DashScope ASR ok model=%s elapsed_ms=%s text_len=%s", self.model_name, elapsed_ms, len(corrected))
             return CloudSttResult(
                 text=corrected,
                 raw_text=raw_text,
-                user_message=str(correction.get("user_message") or "").strip(),
-                user_message_source=str(correction.get("user_message_source") or "").strip(),
-                reply_plan=correction.get("reply_plan", {}) if isinstance(correction.get("reply_plan"), dict) else {},
+                user_message="",
+                user_message_source="",
+                reply_plan={},
                 confidence=0.92 if corrected else 0.0,
                 duration_ms=duration_ms,
                 language=self.language or "auto",
                 backend=f"dashscope:{self.model_name}",
-                understanding=correction.get("understanding", {}),
+                understanding={},
             )
         except Exception as e:
             self._load_error = str(e)
@@ -225,9 +220,7 @@ class CloudSttService:
                 return self._error_result(self._load_error, duration_ms)
 
             raw_text = self._extract_fun_asr_text(result)
-            text = self._apply_domain_terms(self._sanitize_transcript_text(raw_text))
-            correction: dict[str, Any] = self._understanding.correct(text) if text else {}
-            corrected = self._choose_transcript(text, str(correction.get("corrected_text") or "").strip())
+            corrected = self._apply_domain_terms(self._sanitize_transcript_text(raw_text))
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             logger.info(
                 "DashScope Fun-ASR ok model=%s elapsed_ms=%s text_len=%s hotwords=%s vocab=%s",
@@ -240,9 +233,9 @@ class CloudSttService:
             return CloudSttResult(
                 text=corrected,
                 raw_text=raw_text,
-                user_message=str(correction.get("user_message") or "").strip(),
-                user_message_source=str(correction.get("user_message_source") or "").strip(),
-                reply_plan=correction.get("reply_plan", {}) if isinstance(correction.get("reply_plan"), dict) else {},
+                user_message="",
+                user_message_source="",
+                reply_plan={},
                 confidence=0.92 if corrected else 0.0,
                 duration_ms=duration_ms,
                 language=self.language or "auto",
@@ -250,7 +243,7 @@ class CloudSttService:
                 hotword_status=self._fun_asr_hotword_status(snapshot, vocabulary_id),
                 hotword_sources=tuple(self._fun_asr_hotword_sources(snapshot, vocabulary_id)),
                 backend=f"dashscope:{model}",
-                understanding=correction.get("understanding", {}),
+                understanding={},
             )
         except Exception as e:
             self._load_error = str(e)

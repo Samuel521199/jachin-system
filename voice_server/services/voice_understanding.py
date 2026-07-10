@@ -638,6 +638,14 @@ def user_message_for_selection(selected: dict[str, Any], raw_text: str) -> str:
 
 
 class VoiceUnderstandingCorrector:
+    """Deprecated STT-only compatibility shim.
+
+    Voice input no longer performs entity correction, intent selection, slot
+    filling, or reply-plan generation in the voice service. Those decisions
+    belong to L3 after plain text enters the normal main loop. This class is
+    kept only so older imports keep working.
+    """
+
     def __init__(self, lexicon_file: Path | None = None, user_aliases_file: Path | None = None) -> None:
         self.lexicon_file = lexicon_file
         self.user_aliases_file = user_aliases_file
@@ -649,23 +657,24 @@ class VoiceUnderstandingCorrector:
         return self._entries
 
     def correct(self, text: str) -> dict[str, Any]:
-        understanding = understand_voice_text(text, self._load_entries())
-        selected = understanding.get("selected") or {}
-        if selected.get("intent") == "no_task":
-            corrected = text
-            confidence = float(selected.get("score") or 0.0)
-            needs_confirmation = False
-        else:
-            corrected = str(selected.get("corrected_text") or text)
-            confidence = float(selected.get("score") or 0.0)
-            needs_confirmation = bool(selected.get("needs_confirmation"))
+        raw = str(text or "")
         return {
-            "raw_text": text,
-            "corrected_text": corrected,
-            "user_message": str(understanding.get("user_message") or "").strip(),
-            "user_message_source": str(understanding.get("user_message_source") or "").strip(),
-            "confidence": round(confidence, 3),
-            "needs_confirmation": needs_confirmation,
-            "understanding": understanding,
-            "reply_plan": understanding.get("reply_plan") or {},
+            "raw_text": raw,
+            "corrected_text": raw,
+            "user_message": "",
+            "user_message_source": "",
+            "confidence": 0.0,
+            "needs_confirmation": False,
+            "understanding": {
+                "strategy": "stt_passthrough",
+                "voice_layer_scope": "stt_only",
+                "asr_texts": [{"engine": "jvs", "text": raw}],
+                "entity_candidates": [],
+                "task_candidates": [],
+                "selected": {},
+                "reply_plan": {},
+                "reply_source": "none",
+                "note": "Voice layer returns STT text only; L3 owns intent, slots, memory, and routing.",
+            },
+            "reply_plan": {},
         }

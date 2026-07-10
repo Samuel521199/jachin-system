@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo } from "@tauri-apps/api/event";
 import type { SensoryAnswerMeta, SensoryChunkMeta } from "../hooks/useSensoryWebSocket";
+import { stripAssistantUiProtocol } from "../components/Chat/pendingConfirmationProtocol";
 
 // chat -> HUD: L3 stream bridge. Chat owns L3 send/TTS; HUD only mirrors UI.
 export const VOICE_COMPANION_L3_EVENT = "voice-companion-l3";
@@ -40,14 +41,23 @@ async function emitToHudPanel(event: string, payload: Record<string, unknown>): 
 }
 
 export async function emitCompanionL3ToHud(payload: VoiceCompanionL3Payload): Promise<void> {
-  await emitToHudPanel(VOICE_COMPANION_L3_EVENT, payload as Record<string, unknown>);
+  await emitToHudPanel(VOICE_COMPANION_L3_EVENT, {
+    ...payload,
+    delta: payload.delta ? stripAssistantUiProtocol(payload.delta) : payload.delta,
+    content: payload.content ? stripAssistantUiProtocol(payload.content) : payload.content,
+  } as Record<string, unknown>);
 }
 
 export async function emitCompanionTtsToChat(payload: VoiceCompanionTtsPayload): Promise<void> {
+  const safePayload = {
+    ...payload,
+    delta: payload.delta ? stripAssistantUiProtocol(payload.delta) : payload.delta,
+    content: payload.content ? stripAssistantUiProtocol(payload.content) : payload.content,
+  } as Record<string, unknown>;
   try {
-    await emitTo("chat", VOICE_COMPANION_TTS_EVENT, payload as Record<string, unknown>);
+    await emitTo("chat", VOICE_COMPANION_TTS_EVENT, safePayload);
   } catch {
-    await emit(VOICE_COMPANION_TTS_EVENT, payload as Record<string, unknown>);
+    await emit(VOICE_COMPANION_TTS_EVENT, safePayload);
   }
 }
 

@@ -110,3 +110,6 @@ Leslie :6.0
 hope :6.0
 germaine :6.0
 Germaine :6.0
+WeChat :8.0
+WECHAT :8.0
+微信 :8.0
