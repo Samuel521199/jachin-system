@@ -1,4 +1,4 @@
-﻿"""PMO 父记录空链接 SSOT 单元测试。"""
+"""PMO 父记录空链接 SSOT 单元测试。"""
 from __future__ import annotations
 
 from l3_node.pmo_parent_record import (

@@ -1,6 +1,6 @@
-﻿"""PMO：禁止「先列目录再读」类 Final Answer — _pmo_final_answer_looks_like_futile_plan_only。"""
+﻿"""PMO：禁止「先列目录再读」类 User-facing result — _pmo_final_answer_looks_like_futile_plan_only。"""
 
-from l3_node.agent_core import _pmo_final_answer_looks_like_futile_plan_only
+from l3_node.pmo_agent_policy import _pmo_final_answer_looks_like_futile_plan_only
 
 
 def test_stall_list_dir_after_pmo_pull_user_case():
@@ -15,7 +15,7 @@ def test_not_stall_normal_completion():
     # 过长 / 非 stall
     assert (
         _pmo_final_answer_looks_like_futile_plan_only(
-            "本轮已按 §1.4 通过 notifier 推送宏观看板，Observation 中 status 为 success。"
+            "本轮已按 §1.4 通过 notifier 推送宏观看板，Verification evidence 中 status 为 success。"
         )
         is False
     )

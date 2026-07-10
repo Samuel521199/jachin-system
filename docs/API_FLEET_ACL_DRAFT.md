@@ -31,7 +31,7 @@
 | `admin` | 该组内管理边缘设备与组成员（在 **org 级权限允许** 的前提下） |
 | `viewer` | 该组只读 |
 
-**有效权限** = `f(orgRole, groupMembership)`（应用层统一计算，不得只信其一）。  
+**有效权限** = `f(orgRole, groupMembership)`（应用层统一计算，不得只信其一）。
 注释：**组表是在 org 级权限之下的细粒度覆写** — 例如仅将某用户限制在特定 `device_groups` 上可见。
 
 ---

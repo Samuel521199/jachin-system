@@ -1,4 +1,4 @@
-﻿"""
+"""
 PMO 多 Agent 方案 B：Worker B / Worker C 任务体与 SQL 模板 SSOT。
 
 业务字段定义见 skills_repo/pmo-copilot/SKILL.md §1.2.2；
@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 _HONESTY_BLOCK = (
-    "**数据诚实（强制）**：Observation 中为 null / 空 / 0 行的字段，Final Answer 中须原样填 null "
+    "**数据诚实（强制）**：Verification evidence 中为 null / 空 / 0 行的字段，User-facing result 中须原样填 null "
     '或 "field_empty": true，**禁止**编造 priority / 日期 / 人名 / 状态。'
     "若某视图无对应列（columns_json 中不存在），填 null 并附 "
     '"column_missing_in_view": true。\n'
@@ -25,7 +25,7 @@ _WORKER_B_TABLE_BLOCK = (
     f"镜像 `source_view='{_PMO_VIEW_PERSONNEL}'`；`personnel_tasks[]` **仅**来自 **B-4**。\n"
     f"- **辅表（强制 1 次 · B-SUP）**：同 table · `view={_PMO_VIEW_REQUIREMENTS}` → "
     f"`source_view='{_PMO_VIEW_REQUIREMENTS}'`；用 B-S1 的 `recent_sprints` 拉需求名/状态/进度，"
-    "在 Final Answer **文字对照** B-4 人员任务，**禁止** UNION/JOIN/子查询拼多表。\n"
+    "在 User-facing result **文字对照** B-4 人员任务，**禁止** UNION/JOIN/子查询拼多表。\n"
     "- **禁止**查产品表（vew8TxMcSh/vewL9Mofgd）、美术表（vewjSEz5Xr）、或其它 view；"
     "跨表一致性由 **Auditor** 读 B/C 两段 JSON 完成。\n"
 )
@@ -62,7 +62,7 @@ _WORKER_B_SPRINT_BLOCK = (
     f"- **B-S1**（必须先于 B-4）：在 `vewCz1FFJi` 取 sprint_date = {_SPRINT_DATE_FROM_FIELDS_EXPR}；\n"
     "  `>= date('now','-21 days')` 降序 **最多 3 个** → `recent_sprints[]`；**禁止** ORDER BY latest_row。\n"
     "- **B-4**：`Sprint IN (recent_sprints)`；有效任务行须 **有任务编号**（排除无负责人的分组占位行）。\n"
-    "- Final Answer 须含：`recent_sprints[]`、`personnel_tasks[]`（来自 B-4）。\n"
+    "- User-facing result 须含：`recent_sprints[]`、`personnel_tasks[]`（来自 B-4）。\n"
 )
 
 _WORKER_B_SELF_HEAL_BLOCK = (
@@ -74,7 +74,7 @@ _WORKER_B_SELF_HEAL_BLOCK = (
     "| B-4 行数过多 | 加 任务编号 过滤；禁止去掉 Sprint IN |\n"
     "| B-SUP 报 C-2 / 任务标题·任务ID | 禁止自编字段；逐字复制 B-SUP（非 Worker C C-2） |\n"
     "| hints / 字段名错误 | 只改当前编号；主表禁止产品字段名 |\n"
-    "Thought 开头写「已完成: B-S1, B-4, B-SUP」；未完成 B-S1 + B-4 + B-SUP 禁止 Final Answer。\n"
+    "Reasoning trace 开头写「已完成: B-S1, B-4, B-SUP」；未完成 B-S1 + B-4 + B-SUP 禁止 User-facing result。\n"
 )
 
 # 镜像 vewpI8lyYw：父记录常为 plain string；空链接可能为 JSON 字符串 text_arr:[]
@@ -112,7 +112,7 @@ _WORKER_C_SELF_HEAL_BLOCK = (
     "| Sprint IN 全表 SELECT | 不算 C-2；须父记录双形态+任务编号 WHERE |\n"
     "| C-3 为 0 但 C-2 有 Epic | 逐字复制 C-3；仍 0 → 执行 C-6 一次，按 row_index 归并 parent_epic |\n"
     "| hints / malformed JSON | 只改当前编号 SQL |\n"
-    "Thought 开头写「已完成: C-x」；未完成 C-1 + C-2 + C-3 禁止 Final Answer（C-6 仅兜底）。\n"
+    "Reasoning trace 开头写「已完成: C-x」；未完成 C-1 + C-2 + C-3 禁止 User-facing result（C-6 仅兜底）。\n"
 )
 
 _SPRINT_TIME_WINDOW_BLOCK = (
@@ -121,10 +121,10 @@ _SPRINT_TIME_WINDOW_BLOCK = (
     f"- **C-1**：`sprint_date` = {_SPRINT_DATE_FROM_FIELDS_EXPR}（**禁止**对 `substr` 直接 `date()`，斜杠会导致 NULL）。\n"
     "  按 sprint_date **降序**，且 `>= date('now','-21 days')`，取 **最多 3 个** → `recent_sprints[]`。\n"
     "  **禁止** `ORDER BY latest_row DESC`（会把 2025 等历史 Sprint 误当成「最近」）。\n"
-    "  C-1 若 0 行且 Observation hints 提到 sprint_date：同编号 **重试 1 次**（复制任务体 C-1 SQL），禁止改 latest_row。\n"
+    "  C-1 若 0 行且 Verification evidence hints 提到 sprint_date：同编号 **重试 1 次**（复制任务体 C-1 SQL），禁止改 latest_row。\n"
     "- **current_sprint**：C-1 结果中 **sprint_date 最大** 的一行（本周战报 Sprint）。\n"
     "- **C-2～C-3**：`Sprint IN (recent_sprints 三个名)`，均在 vewpI8lyYw 单表内完成。\n"
-    "- Final Answer 须含：`current_sprint`、`recent_sprints[]`、`epics[]`、`epic_children[]`。\n"
+    "- User-facing result 须含：`current_sprint`、`recent_sprints[]`、`epics[]`、`epic_children[]`。\n"
 )
 
 # 产品视图 vew8TxMcSh / vewL9Mofgd：需求状态/开发状态为 plain string（非对象数组）
@@ -177,10 +177,10 @@ WORKER_B_TASK = (
     "  1) **B-S1**（`vewCz1FFJi` 近三周 Sprint）\n"
     "  2) **B-4**（`vewCz1FFJi` 人员 SSOT · UNION）\n"
     "  3) **B-SUP**（`vewpI8lyYw` 辅表 · Sprint IN recent_sprints）\n"
-    "未完成 `completed_sql_ids` 含 **B-S1、B-4、B-SUP** 前 **禁止** Final Answer。\n"
-    + "**去重**：B-S1 / B-4 / B-SUP 各只执行一次；Thought 开头写「已完成: B-S1, B-4, B-SUP」。\n"
-    "若 Observation 含 **error / hints / malformed JSON**，同编号最多重试 2 次。\n"
-    "Final Answer JSON 结构：\n"
+    "未完成 `completed_sql_ids` 含 **B-S1、B-4、B-SUP** 前 **禁止** User-facing result。\n"
+    + "**去重**：B-S1 / B-4 / B-SUP 各只执行一次；Reasoning trace 开头写「已完成: B-S1, B-4, B-SUP」。\n"
+    "若 Verification evidence 含 **error / hints / malformed JSON**，同编号最多重试 2 次。\n"
+    "User-facing result JSON 结构：\n"
     "  recent_sprints[]（B-S1）\n"
     "  personnel_tasks[]（B-4 · 主表）\n"
     "  requirement_context[]（B-SUP · 按 Requirement 对照 B-4，文字分析勿多表 SQL）\n"
@@ -195,7 +195,7 @@ WORKER_B_TASK = (
     "GROUP BY json_extract(fields, '$.Sprint')\n"
     "HAVING sprint_date IS NOT NULL AND sprint_date >= date('now', '-21 days')\n"
     "ORDER BY sprint_date DESC LIMIT 3;\n"
-    "（Thought 须写明 recent_sprints = 全部 ≤3 行 sprint 文本，填入 B-4 / B-SUP 的 IN）\n\n"
+    "（Reasoning trace 须写明 recent_sprints = 全部 ≤3 行 sprint 文本，填入 B-4 / B-SUP 的 IN）\n\n"
     "**B-4 · 👥 人员安排 SSOT · vewCz1FFJi（B-S1 后执行 · UNION · 近三周 Sprint）**\n"
     "写入 personnel_tasks[]；**禁止**用 B-5 替代。Person 在镜像中常为 **plain string**（非数组）。\n"
     "（一条 SQL 含 UNION ALL：B-4a=Person 字符串；B-4b=Person 数组+json_each，须同次 db_query 提交）\n"
@@ -274,11 +274,11 @@ WORKER_B_AGENT_TASK_PREVIEW = f"B-TOOL/B-SUP（宿主已预取 personnel_tasks[]
 _WORKER_B_TOOL_FIRST_BLOCK = (
     "**步骤 0（必须优先 · B-TOOL）**：\n"
     "1. 若【宿主预取 JSON】已含 personnel_tasks[] 与 requirement_context[]，**禁止**重跑步骤 0；"
-    "直接复制 current_sprint / recent_sprints / personnel_tasks / requirement_context → Final Answer。\n"
-    "2. 否则 Action: core:pmo_personnel_report\n"
-    '   Action Input: {"recent_window": true}\n'
-    "3. Observation 成功 → 用 report 填 current_sprint、recent_sprints[]、personnel_tasks[]、"
-    "requirement_context[]、completed_sql_ids 含 **B-TOOL** → Final Answer。\n"
+    "直接复制 current_sprint / recent_sprints / personnel_tasks / requirement_context → User-facing result。\n"
+    "2. 否则 WorkOrder: core:pmo_personnel_report\n"
+    '   tool input: {"recent_window": true}\n'
+    "3. Verification evidence 成功 → 用 report 填 current_sprint、recent_sprints[]、personnel_tasks[]、"
+    "requirement_context[]、completed_sql_ids 含 **B-TOOL** → User-facing result。\n"
     "4. **仅**步骤 0 失败时，执行下方 B-SUP（db_query · 最多 2 次）；**禁止**重跑 B-S1/B-4。\n\n"
 )
 
@@ -287,16 +287,16 @@ _WORKER_B_HOST_AGENT_BLOCK = (
     "⛔ **禁止** core:db_query 重跑 B-S1 / B-4 / 任何 `vewCz1FFJi` 人员 UNION。\n"
     "⛔ **禁止**用 recent_sprints[0] 覆盖宿主 current_sprint（须 sd≤today）。\n"
     "   仅当 B-SUP **连续 2 次**失败且 hints 指向 Sprint/字段问题时，才允许 **1 次** B-4 重试。\n"
-    f"**若宿主已给 requirement_context[]**：可直接 Final Answer，无需 db_query。\n"
+    f"**若宿主已给 requirement_context[]**：可直接 User-facing result，无需 db_query。\n"
     f"**否则第 1 次 db_query = B-SUP**（`{_PMO_VIEW_REQUIREMENTS}` · Sprint IN 用预取 recent_sprints）。\n"
     "B-SUP error/0 行：同编号最多重试 2 次；**禁止**自编 任务标题/任务ID/负责人 等字段名。\n"
-    "Final Answer：**原样保留**宿主 current_sprint、recent_sprints[]、personnel_tasks[]，"
+    "User-facing result：**原样保留**宿主 current_sprint、recent_sprints[]、personnel_tasks[]，"
     "追加或保留 requirement_context[]，"
     '`completed_sql_ids`: ["B-TOOL"] 或 ["B-S1","B-4","B-SUP"]。\n\n'
 )
 
 WORKER_B_AGENT_TASK = (
-    "【Worker B · ReAct 段 · B-TOOL 优先 · 仅缺则 B-SUP】\n"
+    "【Worker B · RoleExecutionAgent 段 · B-TOOL 优先 · 仅缺则 B-SUP】\n"
     + _WORKER_B_TOOL_FIRST_BLOCK
     + _WORKER_B_HOST_AGENT_BLOCK
     + _HONESTY_BLOCK
@@ -304,8 +304,8 @@ WORKER_B_AGENT_TASK = (
     + "**自我修复（仅 B-SUP）**：\n"
     "| B-SUP 0 行 | 核对 Sprint IN 与预取 recent_sprints 格式（须 `YYYY/MM/DD-Sprint`）；同编号重试 ≤2 |\n"
     "| hints / 字段名错误 | 逐字复制下方 B-SUP SQL；禁止 C-2 Epic WHERE |\n"
-    "Thought 开头写「已完成: B-TOOL(宿主) 或 B-SUP …」。\n\n"
-    "Final Answer JSON 结构：\n"
+    "Reasoning trace 开头写「已完成: B-TOOL(宿主) 或 B-SUP …」。\n\n"
+    "User-facing result JSON 结构：\n"
     "  current_sprint（从宿主预取复制 · sd≤today）\n"
     "  current_sprint_date（可选）\n"
     "  recent_sprints[]（从宿主预取复制）\n"
@@ -329,7 +329,7 @@ WORKER_B_AGENT_TASK = (
 
 
 def build_worker_b_agent_task(host_seed: dict | None = None) -> str:
-    """FanOut Worker B ReAct 任务体：注入宿主预取的 Sprint IN 列表。"""
+    """FanOut Worker B RoleExecutionAgent 任务体：注入宿主预取的 Sprint IN 列表。"""
     in_clause = sprint_in_clause_from_seed(host_seed or {})
     return WORKER_B_AGENT_TASK.replace("{sprint_in}", in_clause)
 
@@ -356,11 +356,11 @@ def _sprint_names_from_rows(rows: list[dict[str, Any]]) -> list[str]:
 
 _WORKER_C_TOOL_FIRST_BLOCK = (
     "**步骤 0（必须优先 · C-TOOL）**：\n"
-    "1. 若【宿主预取 JSON】已含 epics[]，**禁止**重跑步骤 0；直接整理 Final Answer。\n"
-    "2. 否则 Action: core:pmo_sprint_epic_report\n"
-    '   Action Input: {"recent_window": true}\n'
+    "1. 若【宿主预取 JSON】已含 epics[]，**禁止**重跑步骤 0；直接整理 User-facing result。\n"
+    "2. 否则 WorkOrder: core:pmo_sprint_epic_report\n"
+    '   tool input: {"recent_window": true}\n'
     "   （单 Sprint 探针时用 {\"sprint\": \"<C-1 首行 sprint>\"}。）\n"
-    "3. Observation 成功 → epics[]←report.epics[]；epic_children[]←report.epic_children[] "
+    "3. Verification evidence 成功 → epics[]←report.epics[]；epic_children[]←report.epic_children[] "
     "或 dev_tasks[]；recent_sprints[]/current_sprint 从 report 填入；completed_sql_ids 含 **C-TOOL**。\n"
     "4. **仅**步骤 0 返回 error 或 epic_count=0 且 C-1 有 Sprint 时，才执行下方 C-1→C-2→C-3（每编号最多 2 次）。\n\n"
 )
@@ -373,11 +373,11 @@ WORKER_C_TASK = (
     + _EPIC_HIERARCHY_BLOCK
     + _SPRINT_TIME_WINDOW_BLOCK
     + _WORKER_C_SELF_HEAL_BLOCK
-    + "**db_query · Action Input（强制）**：**只写裸 SQL**（从 SELECT 到 `;`），**禁止** `{\"sql\":\"...\"}` JSON 包装"
+    + "**db_query · tool input（强制）**：**只写裸 SQL**（从 SELECT 到 `;`），**禁止** `{\"sql\":\"...\"}` JSON 包装"
     "（SQL 内 `\"` 会导致 JSON 解析失败 → missing_sql）。\n"
-    + "**去重**：C-1 / C-2 / C-3 各只执行一次（C-6 仅兜底，最多 1 次）；Thought 开头写「已完成: C-x, …」。\n"
+    + "**去重**：C-1 / C-2 / C-3 各只执行一次（C-6 仅兜底，最多 1 次）；Reasoning trace 开头写「已完成: C-x, …」。\n"
     "目标：近 **3 周** Sprint（C-1 的 recent_sprints，非写死某一周期）采集大需求与子任务；战报 📊 **仅 current_sprint**。\n"
-    "Final Answer JSON：current_sprint, recent_sprints[], epics[]（**仅大需求**）, epic_children[], "
+    "User-facing result JSON：current_sprint, recent_sprints[], epics[]（**仅大需求**）, epic_children[], "
     "completed_sql_ids（可含 C-6）\n\n"
     "**C-1 · 当前 Sprint + 近三周 Sprint 名（vewpI8lyYw · 按日期，禁止 latest_row）**\n"
     "SELECT json_extract(fields, '$.Sprint') AS sprint,\n"
@@ -389,7 +389,7 @@ WORKER_C_TASK = (
     "GROUP BY json_extract(fields, '$.Sprint')\n"
     "HAVING sprint_date IS NOT NULL AND sprint_date >= date('now', '-21 days')\n"
     "ORDER BY sprint_date DESC LIMIT 3;\n"
-    "（Thought 须写明：current_sprint = 首行 sprint；recent_sprints = 全部 ≤3 行）\n\n"
+    "（Reasoning trace 须写明：current_sprint = 首行 sprint；recent_sprints = 全部 ≤3 行）\n\n"
     "**C-2 · 近三周大需求（Epic · 须整段逐字复制，禁止删 WHERE）**（C-1 sprint 填入 IN，最多 3 个）\n"
     "⚠️ Person/状态 在 vewpI8lyYw 常为 plain string；**禁止** json_extract(..., '$[0].text')（会 malformed JSON）。\n"
     "SELECT json_extract(fields, '$.Requirement') AS epic_name,\n"
@@ -467,7 +467,7 @@ WORKER_A_TASK = (
     "  WHERE source_view IN ('vew8TxMcSh','vewL9Mofgd','vewpI8lyYw','vewCz1FFJi','vewjSEz5Xr')\n"
     "    AND length(trim(fields)) > 2 AND fields != '{}'\n"
     "  GROUP BY source_view);\n"
-    "Final Answer：JSON 含 views_meta[]、samples[]、field_mapping（按视图列出 JSON 键路径）"
+    "User-facing result：JSON 含 views_meta[]、samples[]、field_mapping（按视图列出 JSON 键路径）"
 )
 
 WORKER_A_MAX_ITERATIONS = 8
@@ -629,12 +629,12 @@ _WORKER_D_TABLE_BLOCK = (
 _WORKER_D_TOOL_FIRST_BLOCK = (
     "**步骤 0（必须优先 · D-TOOL）**：\n"
     "1. 若【宿主预取 JSON】已含 `markdown_section` 或 `completed_sql_ids` 含 **D-TOOL**，"
-    "**禁止**重跑步骤 0；直接复制 window_* / completed_epics[] / markdown_section → Final Answer。\n"
-    "2. 否则 Action: core:pmo_release_epic_mapping\n"
-    '   Action Input: {}\n'
-    "3. Observation status=ok → 填入 completed_epics[]、completed_count、markdown_section、"
+    "**禁止**重跑步骤 0；直接复制 window_* / completed_epics[] / markdown_section → User-facing result。\n"
+    "2. 否则 WorkOrder: core:pmo_release_epic_mapping\n"
+    '   tool input: {}\n'
+    "3. Verification evidence status=ok → 填入 completed_epics[]、completed_count、markdown_section、"
     "window_since/window_until、since_mail_subject、since_maintenance_date；"
-    "completed_sql_ids 含 **D-TOOL** → Final Answer。\n"
+    "completed_sql_ids 含 **D-TOOL** → User-facing result。\n"
     "4. **仅**步骤 0 失败时，可再调 **1 次** core:pmo_release_epic_mapping（禁止同参无限重试）。\n\n"
 )
 
@@ -642,18 +642,18 @@ _WORKER_D_HOST_AGENT_BLOCK = (
     "**【宿主预取 · 已完成 D-TOOL】**（见 user 消息末尾【宿主预取 JSON】）\n"
     "⛔ **禁止**重跑 core:pmo_release_epic_mapping（避免重复调邮件 API）。\n"
     "⛔ **禁止** core:db_query / Version Goal 统计 / 人员表查询。\n"
-    "Final Answer：**原样保留**宿主 completed_epics[]、markdown_section、window 字段，"
+    "User-facing result：**原样保留**宿主 completed_epics[]、markdown_section、window 字段，"
     '`completed_sql_ids`: ["D-TOOL"]。\n\n'
 )
 
 WORKER_D_AGENT_TASK = (
-    "【Worker D · ReAct 段 · D-TOOL 优先 · 发版邮件窗已完成 Epic】\n"
+    "【Worker D · RoleExecutionAgent 段 · D-TOOL 优先 · 发版邮件窗已完成 Epic】\n"
     + _WORKER_D_TOOL_FIRST_BLOCK
     + _WORKER_D_HOST_AGENT_BLOCK
     + _HONESTY_BLOCK
     + _WORKER_D_TABLE_BLOCK
-    + "Thought 开头写「已完成: D-TOOL(宿主) 或 D-TOOL …」。\n\n"
-    "Final Answer JSON 结构：\n"
+    + "Reasoning trace 开头写「已完成: D-TOOL(宿主) 或 D-TOOL …」。\n\n"
+    "User-facing result JSON 结构：\n"
     "  window_since, window_until（ISO 8601）\n"
     "  since_mail_subject, since_maintenance_date（可选）\n"
     "  completed_epics[]（顶层 Epic：epic_name, priority, sprint, completion_date, person）\n"
@@ -667,6 +667,6 @@ WORKER_D_TASK = WORKER_D_AGENT_TASK
 
 
 def build_worker_d_agent_task(host_seed: dict | None = None) -> str:
-    """FanOut Worker D ReAct 任务体（宿主预取为主，无 SQL 注入）。"""
+    """FanOut Worker D RoleExecutionAgent 任务体（宿主预取为主，无 SQL 注入）。"""
     _ = host_seed  # 保留签名与 B/C 对齐
     return WORKER_D_AGENT_TASK

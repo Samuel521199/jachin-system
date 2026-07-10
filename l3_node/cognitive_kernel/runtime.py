@@ -76,8 +76,8 @@ _LOW_PATTERNS = (
 )
 
 
-def classify_tool_risk(tool: str, action_input: str = "") -> RiskLevel:
-    hay = f"{tool or ''}\n{action_input or ''}".lower()
+def classify_tool_risk(tool: str, work_order_input: str = "") -> RiskLevel:
+    hay = f"{tool or ''}\n{work_order_input or ''}".lower()
     if any(p in hay for p in _CRITICAL_PATTERNS):
         return RiskLevel.CRITICAL
     if any(p in hay for p in _HIGH_PATTERNS):
@@ -99,10 +99,10 @@ def build_decision_contract(
     turn_id: str,
     goal: str,
     tool: str,
-    action_input: str,
+    work_order_input: str,
     role_agent: str = "ToolExecutionAgent",
 ) -> DecisionContract:
-    risk = classify_tool_risk(tool, action_input)
+    risk = classify_tool_risk(tool, work_order_input)
     requires_confirmation = confirmation_required(risk)
     policy = ToolPolicy(
         allowed_tools=[tool] if tool else [],
@@ -130,7 +130,7 @@ def build_decision_contract(
         ],
         rationale=[
             "Parsed tool intent was converted into a Cognitive Kernel DecisionContract.",
-            f"Risk classified as {risk.value} from tool id and action input.",
+            f"Risk classified as {risk.value} from tool id and tool input.",
         ],
     )
     record_decision(contract)
@@ -141,7 +141,7 @@ def build_work_order(
     *,
     contract: DecisionContract,
     tool: str,
-    action_input: str,
+    work_order_input: str,
     role_agent: str = "ToolExecutionAgent",
 ) -> WorkOrder:
     wo = WorkOrder(
@@ -149,7 +149,7 @@ def build_work_order(
         decision_id=contract.decision_id,
         role_agent=role_agent,
         task=f"Execute tool {tool}",
-        inputs={"tool": tool, "action_input": action_input},
+        inputs={"tool": tool, "work_order_input": work_order_input},
         tool_policy=contract.tool_policy,
         expected_outputs=["observation", "evidence"],
         verification_criteria=contract.verification_criteria,

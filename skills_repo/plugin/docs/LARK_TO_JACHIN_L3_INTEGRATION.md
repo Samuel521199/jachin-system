@@ -16,7 +16,7 @@ atom_lark_chat.process_lark_message
     ↓ (L3 模式)
 ws://127.0.0.1:18981/sensory
     ↓
-L3 run_agent (ReAct + MCP 工具)
+L3 run_agent (WorkOrder + MCP 工具)
     ↓
 answer 回传 → Lark 消息 API
 ```

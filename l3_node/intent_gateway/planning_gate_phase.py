@@ -1,4 +1,4 @@
-"""
+﻿"""
 Planning Gate：composite 阶段工具白名单、Needs_Info 网关、task_plan 静态 linter 放行。
 """
 from __future__ import annotations
@@ -68,7 +68,7 @@ def filter_skills_for_planning_composite(skills: list[dict[str, Any]], ctx: Any)
 
 
 def planning_composite_gate_blocks_action(parsed: dict[str, Any] | None, ctx: Any) -> bool:
-    """True → 拦截该 Action，要求先完成 task_plan + linter 放行。"""
+    """True → 拦截该 WorkOrder，要求先完成 task_plan + linter 放行。"""
     if parsed is None or not is_composite_planning_locked(ctx):
         return False
     ptype = parsed.get("type")

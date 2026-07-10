@@ -12,9 +12,9 @@
 
 **调用顺序**（以 `generate_response` 为例）：
 
-1. `_inject_env_keys_into_ctx(ctx)` — 优先从 env（含区域化 DashScope）注入  
-2. 若仍无 Key → `try_fetch_keys_from_l2(ctx)` — 从 L2 拉取  
-3. 若仍无 Key → 抛出 `RuntimeError`  
+1. `_inject_env_keys_into_ctx(ctx)` — 优先从 env（含区域化 DashScope）注入
+2. 若仍无 Key → `try_fetch_keys_from_l2(ctx)` — 从 L2 拉取
+3. 若仍无 Key → 抛出 `RuntimeError`
 
 **与 L2 Key 的关系**：若已为当前区域配置 `DASHSCOPE_API_KEY_SEA` 或 `DASHSCOPE_API_KEY_CN`，实际 LiteLLM 调用时 **不会** 用 L2 下发的国内 Key 覆盖区域 Key（避免国际 endpoint + 国服 sk → 401）。见区域文档第三节。
 
@@ -72,18 +72,18 @@ for _p in [Path(_root) / ".env", Path.cwd() / ".env"]:
         break
 ```
 
-- **命令行**：`__file__` 为项目内真实路径，`_root` 正确。  
+- **命令行**：`__file__` 为项目内真实路径，`_root` 正确。
 - **Sidecar**：`__file__` 为解压路径，第一个路径常无效；是否成功还取决于 cwd 下是否有 `.env`。桌面路径已通过 2.3 的 **显式 env 注入** 补偿。
 
 ### 3.2 `_inject_env_keys_into_ctx`（DashScope）
 
-DashScope 使用 `get_dashscope_regional_credentials()`，变量含义与优先级见 [DASHSCOPE_REGIONAL_KEYS.md](./DASHSCOPE_REGIONAL_KEYS.md)。  
+DashScope 使用 `get_dashscope_regional_credentials()`，变量含义与优先级见 [DASHSCOPE_REGIONAL_KEYS.md](./DASHSCOPE_REGIONAL_KEYS.md)。
 其他 provider 仍直接读 `OPENAI_API_KEY` 等（以 `llm_client.py` 为准）。
 
 ### 3.3 桌面的 `load_l3_env_vars`
 
-- 白名单：`L3_ENV_KEYS`（`clients/desktop/src-tauri/src/l3_spawn.rs`）。  
-- **Python 回退、Sidecar、便携直接 exe** 均使用该列表向子进程注入。  
+- 白名单：`L3_ENV_KEYS`（`clients/desktop/src-tauri/src/l3_spawn.rs`）。
+- **Python 回退、Sidecar、便携直接 exe** 均使用该列表向子进程注入。
 - 统帅目录 `.env` 与项目根合并时 **不覆盖** 项目已有同名键。
 
 ---

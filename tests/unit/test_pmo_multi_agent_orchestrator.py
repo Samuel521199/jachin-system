@@ -1,4 +1,4 @@
-﻿"""PMO 多 Agent Worker B/C 任务体与 FanOut 编排测试。"""
+"""PMO 多 Agent Worker B/C 任务体与 FanOut 编排测试。"""
 from __future__ import annotations
 
 from l3_node.pmo_multi_agent_queries import (
@@ -21,9 +21,9 @@ from l3_node.pmo_multi_agent_orchestrator import (
     _phase1_fanout_items,
 )
 
-_LEGACY_EPIC_AFFIRM = "Epic：json_extract(fields,'$.\"父记录\"[0].text') IS NULL"
-_LEGACY_PERSON_EACH = "Person 字段（开发/人员看板）必须用 json_each 展开"
-_LEGACY_DEV_STATUS_NESTED = (
+_ARCHIVED_EPIC_AFFIRM = "Epic：json_extract(fields,'$.\"父记录\"[0].text') IS NULL"
+_ARCHIVED_PERSON_EACH = "Person 字段（开发/人员看板）必须用 json_each 展开"
+_ARCHIVED_DEV_STATUS_NESTED = (
     "开发表「状态」：json_extract(json_extract(fields,'$.\"状态\"'),'$[0].text')"
 )
 
@@ -44,7 +44,7 @@ def test_worker_b_agent_task_host_first_b_tool():
         {"sprint_names_for_in": ["2026/06/01-Sprint", "2026/06/08-Sprint"]}
     )
     assert "2026/06/01-Sprint" in task
-    assert "UNION ALL" not in task.split("B-SUP")[0]  # ReAct 段不含 B-4 UNION
+    assert "UNION ALL" not in task.split("B-SUP")[0]  # RoleExecutionAgent 段不含 B-4 UNION
 
 
 def test_worker_c_covers_epics():
@@ -72,25 +72,25 @@ def test_phase1_fanout_worker_b_uses_host_seed():
     assert "pmo_personnel_report" in b["context_data"]["说明"]
 
 
-def test_worker_c_system_prompt_no_legacy_sql_rules():
+def test_worker_c_system_prompt_no_archived_sql_rules():
     prefix = PMO_WORKER_C_ROLE["system_prefix"]
     assert "父记录双形态" in prefix
     assert "禁止" in prefix and "父记录[0].text IS NULL" in prefix
-    assert _LEGACY_EPIC_AFFIRM not in prefix
-    assert _LEGACY_PERSON_EACH not in prefix
-    assert _LEGACY_DEV_STATUS_NESTED not in prefix
+    assert _ARCHIVED_EPIC_AFFIRM not in prefix
+    assert _ARCHIVED_PERSON_EACH not in prefix
+    assert _ARCHIVED_DEV_STATUS_NESTED not in prefix
     assert "Step4·" not in prefix
     assert "禁止**单 Agent 旧称 Step3/Step4/Step5" in prefix
 
 
-def test_worker_b_system_prompt_no_legacy_epic_or_person_rule():
+def test_worker_b_system_prompt_no_archived_epic_or_person_rule():
     prefix = PMO_WORKER_B_ROLE["system_prefix"]
     assert "B-TOOL" in prefix or "pmo_personnel_report" in prefix
     assert "current_sprint" in prefix
     assert "宿主" in prefix or "预取" in prefix
-    assert _LEGACY_EPIC_AFFIRM not in prefix
-    assert _LEGACY_PERSON_EACH not in prefix
-    assert _LEGACY_DEV_STATUS_NESTED not in prefix
+    assert _ARCHIVED_EPIC_AFFIRM not in prefix
+    assert _ARCHIVED_PERSON_EACH not in prefix
+    assert _ARCHIVED_DEV_STATUS_NESTED not in prefix
     assert "core:pmo_personnel_report" in str(PMO_WORKER_B_ROLE.get("allowed_tools"))
 
 

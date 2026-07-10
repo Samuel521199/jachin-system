@@ -1,4 +1,4 @@
-﻿"""output_format_signals：直连绕过与工具意图启发式。"""
+"""output_format_signals：直连绕过与工具意图启发式。"""
 
 from l3_node.routing.output_format_signals import heuristic_tool_need, should_use_direct_llm_bypass
 

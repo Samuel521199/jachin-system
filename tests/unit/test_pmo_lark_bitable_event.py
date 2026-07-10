@@ -1,4 +1,4 @@
-﻿"""Lark drive.file.bitable_record_changed_v1 解析（无网络）。"""
+"""Lark drive.file.bitable_record_changed_v1 解析（无网络）。"""
 from __future__ import annotations
 
 from l3_node.tools.pmo_bitable_watch import parse_lark_bitable_record_changed

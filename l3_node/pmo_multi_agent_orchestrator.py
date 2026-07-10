@@ -1,4 +1,4 @@
-﻿"""
+"""
 PMO-Copilot 方案 B：三阶段多 Agent 编排。
 
 阶段一 FanOut（并行捞数）→ 阶段二 Verification Agent 交叉审计（``PMO_ENABLE_VERIFICATION_AUDIT=1`` 开启）→ 阶段三 run_agent（排版发报）。
@@ -54,12 +54,12 @@ PMO_WORKER_SYSTEM_PREFIX_MAX_CHARS = 3200
 # 三 Worker 共用：不含 Person/Epic/状态 写法（避免与 queries.py SSOT / 各 Worker 专有块矛盾）。
 _PMO_WORKER_SHARED = (
     "你是 PMO 数据搬砖工（Analyst）。\n"
-    "职责：用 core:db_query 执行 **本 Worker 任务体中的编号 SQL**，Observation → **合法 JSON** Final Answer。\n"
+    "职责：用 core:db_query 执行 **本 Worker 任务体中的编号 SQL**，Verification evidence → **合法 JSON** User-facing result。\n"
     "通用：字段以任务体 SQL / columns_json 为准，禁止臆造键名；"
     "Sprint 用 json_extract(fields,'$.Sprint')（禁止 Sprint 的 [0].text）。\n"
-    "db_query Action Input：**只写裸 SELECT**（从 SELECT 到 `;`），禁止 ``` 围栏、禁止 `{\"sql\":...}`。\n"
-    "Thought 开头「已完成: …」；同编号 SQL 仅 1 次；hints/error 同编号最多重试 2 次。\n"
-    "禁止捏造；Final Answer **仅 JSON**（禁止 GFM 战报）。\n"
+    "db_query tool input：**只写裸 SELECT**（从 SELECT 到 `;`），禁止 ``` 围栏、禁止 `{\"sql\":...}`。\n"
+    "Reasoning trace 开头「已完成: …」；同编号 SQL 仅 1 次；hints/error 同编号最多重试 2 次。\n"
+    "禁止捏造；User-facing result **仅 JSON**（禁止 GFM 战报）。\n"
     "编号只认任务体：B-S1/B-4/B-SUP 或 C-1/C-2/C-3（**禁止**单 Agent 旧称 Step3/Step4/Step5）。\n"
     "SQL 细则以 **user 任务体逐字 SQL** 为准，本 system 不重复旧版单表写法。\n"
 )
@@ -67,7 +67,7 @@ _PMO_WORKER_SHARED = (
 _PMO_WORKER_A_RULES = (
     "【Worker A · Step 1+2 字典】\n"
     "- **唯一**负责：`pmo_views_meta`（五视图 IN）+ 各视图 `fields` 样本（GROUP BY source_view）。\n"
-    "- Final Answer：views_meta[]、samples[]、field_mapping（按视图 JSON 键路径）。\n"
+    "- User-facing result：views_meta[]、samples[]、field_mapping（按视图 JSON 键路径）。\n"
     "- **禁止** B-S1/B-4/B-SUP / C-1～C-3 业务明细 SQL。\n"
 )
 
@@ -77,7 +77,7 @@ _PMO_WORKER_B_RULES_INLINE = (
     "宿主已预取 personnel_tasks[] 时禁止重跑。\n"
     "- **current_sprint**：宿主已按 **sd≤today** 算出；**禁止**用 recent_sprints[0] 覆盖。\n"
     "- **兜底**：仅步骤 0 缺 requirement_context 时执行 B-SUP（db_query）；禁止重跑 B-S1/B-4。\n"
-    "- Final Answer：current_sprint + recent_sprints[] + personnel_tasks[] + requirement_context[]。\n"
+    "- User-facing result：current_sprint + recent_sprints[] + personnel_tasks[] + requirement_context[]。\n"
 )
 
 
@@ -105,7 +105,7 @@ _PMO_WORKER_D_RULES_INLINE = (
     "- **步骤 0（必须）**：`core:pmo_release_epic_mapping` + `{}`；"
     "宿主已预取 markdown_section 时禁止重跑。\n"
     "- **禁止** core:db_query / Version Goal 统计 / 人员表查询。\n"
-    "Final Answer：completed_epics[] + markdown_section + window_* + completed_sql_ids 含 **D-TOOL**。\n"
+    "User-facing result：completed_epics[] + markdown_section + window_* + completed_sql_ids 含 **D-TOOL**。\n"
 )
 
 
@@ -145,9 +145,9 @@ PMO_PUBLISHER_USER_TEMPLATE = """【PMO 多 Agent · 阶段三 · 排版发报�
 前序阶段已完成数据捞取（FanOut Worker A/B/C）。**禁止** core:db_query / mirror_import / bi_project_context。
 
 **第一步（默认 · 宏观看板）**：
-- `Action: core:pmo_macro_dashboard_push`
-- `Action Input: {{}}` **仅此**（禁止传 chat_id；宿主注入主群 + 代码内置监控群）
-- 工具内按 .env / 触发群推送；Observation `status` 为 success/partial 后 **Final Answer ≤3 句**，引用 message_id；**禁止**再调 atom_lark_notifier。
+- `WorkOrder: core:pmo_macro_dashboard_push`
+- `tool input: {{}}` **仅此**（禁止传 chat_id；宿主注入主群 + 代码内置监控群）
+- 工具内按 .env / 触发群推送；Verification evidence `status` 为 success/partial 后 **User-facing result ≤3 句**，引用 message_id；**禁止**再调 atom_lark_notifier。
 - 仅当 push 失败或用户明确要求「风险写入表内/自定义版式」时，执行下方手工任务。
 
 **兜底任务（push 失败或特殊需求时）**：
@@ -158,9 +158,9 @@ PMO_PUBLISHER_USER_TEMPLATE = """【PMO 多 Agent · 阶段三 · 排版发报�
    - {layout_contract}
    - 📦 版本发布需求映射 — **以 Worker D 的 markdown_section 为准**（发版邮件窗内已完成 Epic）；**禁止** Version Goal 填写率
 2. 每表须含表头行 + `|---|---|` 分隔 + 至少 3 行数据（缺口用 ⚠️ 占位行）
-3. 将 **完整 markdown_content 全文** 写入 mcp:atom_lark_notifier（**两次**：宿主分别注入主群与代码内置监控群；**禁止** Action Input 手写 `oc_…` 或 `webhook_url`）：
+3. 将 **完整 markdown_content 全文** 写入 mcp:atom_lark_notifier（**两次**：宿主分别注入主群与代码内置监控群；**禁止** tool input 手写 `oc_…` 或 `webhook_url`）：
    - 均须 `native_table_card: true`
-4. Final Answer 仅在全部目标 notifier success 后 ≤3 句确认
+4. User-facing result 仅在全部目标 notifier success 后 ≤3 句确认
 
 【阶段一 · 字段映射 JSON（Worker A）】
 {worker_a}
@@ -741,7 +741,7 @@ def _build_auditor_task(context: str) -> str:
         "【PMO 多 Agent · 阶段二 · Verification Agent 交叉验证】\n"
         "基于下方 **内联 JSON 数据**（非文件）执行 Step 6 跨视图矛盾检验，"
         "输出《项目风险诊断书》（Markdown）及 **VERDICT: PASS | FAIL | PARTIAL**。\n"
-        "⛔ 禁止调用任何工具；数据已在下方，直接分析并 Final Answer。\n"
+        "⛔ 禁止调用任何工具；数据已在下方，直接分析并 User-facing result。\n"
         "对抗性要求：尽力找出数据矛盾、幽灵需求、状态倒挂；找不到问题才给 PASS。\n\n"
         f"{context}"
     )

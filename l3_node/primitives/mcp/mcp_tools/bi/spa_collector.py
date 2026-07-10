@@ -1,4 +1,4 @@
-﻿"""
+"""
 BI SPA 批量抓取 — 供 scripts 与 main_skill 复用
 
 职责：针对 bi-admin-web 侧栏菜单的批量抓取，输出 raw/*.csv。

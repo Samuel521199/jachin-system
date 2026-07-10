@@ -1,4 +1,4 @@
-﻿"""游戏与生态 KPI：stats_game_daily 平台汇总行提取。"""
+"""游戏与生态 KPI：stats_game_daily 平台汇总行提取。"""
 from __future__ import annotations
 
 import unittest

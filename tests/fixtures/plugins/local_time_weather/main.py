@@ -40,10 +40,10 @@ def get_weather(city: str = "Beijing") -> str:
 def setup(agent_context: dict) -> dict:
     """
     标准插件入口 - 供 Commander 路由调用
-    
+
     Args:
         agent_context: 包含 user_id, session_id 等上下文
-        
+
     Returns:
         能力注册表，供 Commander 路由到具体方法
     """

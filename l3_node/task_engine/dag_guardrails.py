@@ -2,7 +2,7 @@
 DAG 级 Guardrails（AP）—— 跨 Node 预算控制
 
 在 active.json TaskDAG 运行期间，以 dag_id 为粒度跟踪整个 DAG 的资源消耗：
-- 总迭代次数（所有节点 ReAct 轮次之和）
+- 总迭代次数（所有节点 RoleExecutionAgent 轮次之和）
 - 总工具调用次数
 - 总 Token 消耗
 - 单 DAG 实际运行节点数

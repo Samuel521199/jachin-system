@@ -1,4 +1,4 @@
-﻿"""PMO 推送审计日志。"""
+"""PMO 推送审计日志。"""
 from __future__ import annotations
 
 import os

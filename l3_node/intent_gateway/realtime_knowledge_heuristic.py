@@ -1,4 +1,4 @@
-﻿"""
+"""
 实时外部知识需求：启发式快速判定（避免小模型超时导致无法 Tavily 预取）。
 """
 from __future__ import annotations

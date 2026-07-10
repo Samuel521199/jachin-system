@@ -36,7 +36,7 @@ def get_classification_model_litellm_id() -> str:
 
 def get_multimodal_model_litellm_id() -> str:
     """
-    网关 / ReAct 多模态（图、文档抽取、混排 user 块）统一模型（默认 qwen3.5-plus）。
+    网关 / RoleExecutionAgent 多模态（图、文档抽取、混排 user 块）统一模型（默认 qwen3.5-plus）。
     优先级：环境变量 INTENT_GATEWAY_MULTIMODAL_MODEL → nexus intent_gateway.multimodal_model → 默认。
     """
     env_m = (os.environ.get("INTENT_GATEWAY_MULTIMODAL_MODEL") or "").strip()

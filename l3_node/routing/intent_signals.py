@@ -34,7 +34,7 @@ _EXPLICIT_PMO_SWITCH_RE = re.compile(
     re.I,
 )
 
-# 会话 tail 中的 PMO/战报痕迹（Observation、工具名、报告结构）
+# 会话 tail 中的 PMO/战报痕迹（Verification evidence、工具名、报告结构）
 _SESSION_PMO_MARKERS_RE = re.compile(
     r"PMO项目|pmo_macro_dashboard|pmo_personnel_report|core:pmo_|"
     r"人员任务矩阵|Executive\s*Summary|深度交叉分析|current_sprint|"

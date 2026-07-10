@@ -49,14 +49,14 @@ mcp_tools:
 
 ## 分支 B：已有在招岗位 · 轻量收网（飞书 / Lark 常见）
 
-1. **第一轮**：确认走分支 B 后，先问 **岗位名称**（`job_name`），并一句确认：「Boss 上该职位已在招，本次**不**调用发帖工具，可以吗？」  
+1. **第一轮**：确认走分支 B 后，先问 **岗位名称**（`job_name`），并一句确认：「Boss 上该职位已在招，本次**不**调用发帖工具，可以吗？」
    - **岗位记忆**：若 HR **隔一段时间又回到同一岗位**（例如先招 Python、再招 Java、又要 Python），在收集参数前宜先调用 **`mcp:get_recruitment_job_memory`**（传入 `job_name`），将返回的 **`hr_brief_zh`** 向 HR 宣读（pending 份数、已分析报告数、待透析估算、上次调度参数、定时是否在跑等），并明确问：**续接同一数据目录** 还是 **从零新开**（本系统不会自动删盘；新开需 HR 明确要清数据或换目录时再配合其他操作）。
 2. **第二轮**：问 **要不要对推荐牛人打招呼**？
    - 不要 → 仅收网：`enable_greet_recommend=false`。
    - 要 → `enable_greet_recommend=true`（与收网严格交替，非并行）。
 3. **第三轮**：问 **希望累计抓到多少份简历**（`resume_collect_target`）。可给默认建议（如 20、40）。
 4. **第四轮**：问 **达到多少份后自动做透析镜分析**（生成排行榜）？若 HR 说不用自动分析 → `auto_analyze=false`，`resume_collect_target` 仍表示「抓满即停」。
-5. **执行**：HR 确认启动后，**立即**输出 `Action: mcp:add_automated_recruitment_task`，`Action Input` JSON 示例：
+5. **执行**：HR 确认启动后，**立即**输出 `Tool call: mcp:add_automated_recruitment_task`，`tool input` JSON 示例：
 
 ```json
 {
@@ -113,17 +113,17 @@ HR 可用模糊自然语言，你需认真解析为合规配置值。**若解析
 
 ### 第四步：同意后自动执行（**仅分支 A**）
 
-当且仅当当前会话是**分支 A（新发布）**、且 HR 回复「同意」「确认」「确认发布」「就按这个发」「直接发布」时，**立即**输出 Action: mcp:atom_post_job_boss，Action Input 填 {"jd_config": {...}}。系统将**自动**执行：① 在 data/ 下新建以岗位名为名的文件夹；② 复制 jd_to_publish.example.json 为 jd.json 并填入 HR 确认内容；③ 创建 pending、processed、result 子目录；④ 打开 Chrome 发布职位。**无需 HR 额外操作，你不得等待、不得再询问。**
+当且仅当当前会话是**分支 A（新发布）**、且 HR 回复「同意」「确认」「确认发布」「就按这个发」「直接发布」时，**立即**输出 Tool call: mcp:atom_post_job_boss，tool input 填 {"jd_config": {...}}。系统将**自动**执行：① 在 data/ 下新建以岗位名为名的文件夹；② 复制 jd_to_publish.example.json 为 jd.json 并填入 HR 确认内容；③ 创建 pending、processed、result 子目录；④ 打开 Chrome 发布职位。**无需 HR 额外操作，你不得等待、不得再询问。**
 
 若当前是**分支 B**，本条**不适用**——见上文「分支 B」第 5 步，只调用 `add_automated_recruitment_task`。
 
 ### 第五步：无人值守与简历分析
 
-职位发布成功后，**先**调用 **`mcp:hr_scheduler_send_confirm_prompt`**：`Action Input` 至少含 `job_name`（与 `job_title` 一致）；可选：`greet_harvest_switch_interval_minutes`（**牛人沟通 ↔ 抓简历**轮换**基准**分钟，默认 10）、`greet_target`、`max_count_per_harvest_tick`、`analyze_threshold`、`resume_collect_target`、`enable_greet_recommend`。调度为**单页严格交替**（可按轮次提前切换），**已废弃**并行双定时与 `harvest_delay_seconds`。工具写入 `jd.json` 并发飞书确认单；**不启动** APScheduler。HR 飞书 **「同意调度」** 后注册任务；或 **`mcp:add_automated_recruitment_task`**。满 `analyze_threshold` 份触发透析。手工分析：**mcp:hr_analyze_resume**。
+职位发布成功后，**先**调用 **`mcp:hr_scheduler_send_confirm_prompt`**：`tool input` 至少含 `job_name`（与 `job_title` 一致）；可选：`greet_harvest_switch_interval_minutes`（**牛人沟通 ↔ 抓简历**轮换**基准**分钟，默认 10）、`greet_target`、`max_count_per_harvest_tick`、`analyze_threshold`、`resume_collect_target`、`enable_greet_recommend`。调度为**单页严格交替**（可按轮次提前切换），**已废弃**并行双定时与 `harvest_delay_seconds`。工具写入 `jd.json` 并发飞书确认单；**不启动** APScheduler。HR 飞书 **「同意调度」** 后注册任务；或 **`mcp:add_automated_recruitment_task`**。满 `analyze_threshold` 份触发透析。手工分析：**mcp:hr_analyze_resume**。
 
 ## Chrome 与登录
 
-若 Observation 返回「需要登录」「请扫码登录」，原样告知 HR：「已为您打开 Boss 直聘登录页，请扫码登录。登录完成后请回复「已登录」或「继续发布」。」当 HR 回复「已登录」「继续发布」后，**再次调用** atom_post_job_boss，传入上一轮展示的 JSON。
+若 Verification evidence 返回「需要登录」「请扫码登录」，原样告知 HR：「已为您打开 Boss 直聘登录页，请扫码登录。登录完成后请回复「已登录」或「继续发布」。」当 HR 回复「已登录」「继续发布」后，**再次调用** atom_post_job_boss，传入上一轮展示的 JSON。
 
 ## 发布成功提醒（分支 A）
 
@@ -137,4 +137,4 @@ HR 可用模糊自然语言，你需认真解析为合规配置值。**若解析
 
 ## 关闭流程
 
-当 HR 说「关闭」「停止」「取消」招聘、无人值守、自动化流程时，**必须立即**输出 Action: mcp:stop_automated_recruitment，Action Input 为 {"job_name": ""}。**禁止**仅回复「已关闭」却不实际调用工具。
+当 HR 说「关闭」「停止」「取消」招聘、无人值守、自动化流程时，**必须立即**输出 Tool call: mcp:stop_automated_recruitment，tool input 为 {"job_name": ""}。**禁止**仅回复「已关闭」却不实际调用工具。

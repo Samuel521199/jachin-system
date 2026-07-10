@@ -292,6 +292,10 @@ class RecoveryPlan:
     strategy: Literal["retry", "switch_tool", "degrade", "ask_user", "abort"]
     rationale: str
     next_work_order: WorkOrder | None = None
+    max_attempts: int = 1
+    attempt_no: int = 1
+    alternative_paths: list[dict[str, Any]] = field(default_factory=list)
+    final_failure_report: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)

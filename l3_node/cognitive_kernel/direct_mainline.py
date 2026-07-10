@@ -1,9 +1,8 @@
-"""Direct execution bridge for Arbiter-issued low-risk WorkOrders.
+﻿"""Direct execution bridge for Arbiter-issued low-risk WorkOrders.
 
 This module is the narrow mainline bridge between ``run_agent`` and the
-Memory-first Cognitive Kernel. It keeps old ReAct transport out of simple OS
-tasks: ReviewBoard and Arbiter plan first, then WorkOrder Dispatcher executes
-through the right Role Agent.
+Memory-first Cognitive Kernel. ReviewBoard and Arbiter plan first, then
+WorkOrder Dispatcher executes through the right Role Agent.
 """
 
 from __future__ import annotations
@@ -56,7 +55,8 @@ async def try_execute_cognitive_direct_plan(
     """Execute the first low-risk WorkOrder directly through Role Agents.
 
     Returns a user-facing reply when the direct path handled the turn; returns
-    ``None`` when the caller should continue with the compatibility path.
+    ``None`` when the caller should close through Kernel-only fallback instead
+    of returning to a text Action/Verification evidence loop.
     """
 
     if not direct_mainline_enabled():
@@ -394,12 +394,12 @@ async def _execute_work_order(
     run_tool_func: RunToolFunc,
 ):
     async def _mainline_executor(_work_order):
-        action_input = str(_work_order.inputs.get("action_input") or "")
-        if not action_input:
-            from .dispatcher import _action_input_from_work_order
+        work_order_input = str(_work_order.inputs.get("work_order_input") or "")
+        if not work_order_input:
+            from .dispatcher import _work_order_input_from_work_order
 
-            action_input = _action_input_from_work_order(_work_order)
-        return await _call_tool_runner(run_tool_func, tool_id, action_input, allowed_skills)
+            work_order_input = _work_order_input_from_work_order(_work_order)
+        return await _call_tool_runner(run_tool_func, tool_id, work_order_input, allowed_skills)
 
     return await dispatch_existing_work_order(
         contract=contract,
@@ -411,13 +411,13 @@ async def _execute_work_order(
 async def _call_tool_runner(
     run_tool_func: RunToolFunc,
     tool_id: str,
-    action_input: str,
+    work_order_input: str,
     allowed_skills: Optional[list[str]],
 ) -> str:
     if inspect.iscoroutinefunction(run_tool_func):
-        result = await run_tool_func(tool_id, action_input, allowed_skills)
+        result = await run_tool_func(tool_id, work_order_input, allowed_skills)
     else:
-        result = await asyncio.to_thread(run_tool_func, tool_id, action_input, allowed_skills)
+        result = await asyncio.to_thread(run_tool_func, tool_id, work_order_input, allowed_skills)
     if inspect.isawaitable(result):
         result = await result
     return str(result or "")

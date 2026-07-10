@@ -12,7 +12,7 @@ Call log:
       - element is not visible
 ```
 
-选择器：`.el-menu >> text=平台数据`  
+选择器：`.el-menu >> text=平台数据`
 失败阶段：`scroll_into_view_if_needed`（在执行 `click_expand` 时，先滚动元素到视口）
 
 ### 1.2 矛盾现象：首项成功，后续全部失败

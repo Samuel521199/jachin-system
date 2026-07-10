@@ -1,4 +1,4 @@
-﻿"""
+"""
 Configuration management - 配置管理
 
 使用 pydantic-settings BaseSettings 管理环境变量，支持 .env 文件。

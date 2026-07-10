@@ -358,4 +358,3 @@ def format_mission_user_reply(
     for warning in task_result.warnings:
         lines.append(f"\u8bf4\u660e\uff1a{warning}")
     return "\n".join(lines)
-

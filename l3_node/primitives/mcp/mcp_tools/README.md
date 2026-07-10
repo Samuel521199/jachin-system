@@ -1,4 +1,4 @@
-﻿# BI 战报 MCP 工具 — 开发者指南
+# BI 战报 MCP 工具 — 开发者指南
 
 本目录为 A、B 协同开发区域。**禁止修改 mcp_registry.py**。
 
@@ -38,5 +38,5 @@ python scripts/test_bi_mcp_contract.py
 
 ## 生命周期与审批流程
 
-本目录 MCP 为 **L3 本地执行**，开发期可直接使用，无需 L1/L2。  
+本目录 MCP 为 **L3 本地执行**，开发期可直接使用，无需 L1/L2。
 若需走「上传→L1 审核→L2 下载→L3」完整流程，需扩展实现。详见 [MCP_LIFECYCLE_AND_APPROVAL_FLOW.md](./MCP_LIFECYCLE_AND_APPROVAL_FLOW.md)。

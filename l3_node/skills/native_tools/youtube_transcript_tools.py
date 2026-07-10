@@ -1,4 +1,4 @@
-﻿"""
+"""
 YouTube 字幕 — Python 原生工具（PyPI ``youtube-transcript-api``）。
 
 使用与 requests/urllib3 一致的网络栈，**继承进程环境变量** ``HTTP_PROXY`` / ``HTTPS_PROXY``（及系统代理配置），

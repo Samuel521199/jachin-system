@@ -13,7 +13,7 @@ import time
 class DeviceCapability(BaseModel):
     """
     设备能力定义
-    
+
     格式: {category}.{action}
     例如: camera.capture, light.switch, sensor.temperature
     """
@@ -26,9 +26,9 @@ class DeviceCapability(BaseModel):
 class DeviceAnnounce(BaseModel):
     """
     设备广播包 - 设备上线时发送
-    
+
     所有设备 (Client/Node) 必须使用此模型进行广播。
-    
+
     必须包含的字段（根据规则 010-protocol-registry.mdc）:
     - device_id: 设备唯一标识
     - capabilities: 设备能力列表 (List[DeviceCapability])
@@ -37,7 +37,7 @@ class DeviceAnnounce(BaseModel):
     device_id: str  # 设备唯一标识 (e.g., "raspi-living-room")
     capabilities: List[DeviceCapability]  # 设备能力列表（必需）
     location: str  # 设备位置 (e.g., "living_room", "office")（必需）
-    
+
     # 可选字段
     device_type: Optional[str] = None  # "iot-node" | "desktop-client" | "mobile-client" | "web-client"
     metadata: Dict[str, Any] = {}  # 额外元数据（IP、版本、硬件信息等）
@@ -47,7 +47,7 @@ class DeviceAnnounce(BaseModel):
 class DeviceCommand(BaseModel):
     """
     设备指令包 - 大脑向设备发送执行指令
-    
+
     格式: { target: "device_id", action: "camera.snap", params: {...} }
     """
     command_id: str  # 指令唯一标识（UUID）

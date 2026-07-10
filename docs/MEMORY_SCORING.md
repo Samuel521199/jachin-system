@@ -21,8 +21,8 @@
 
 1. **向量分量** `vec_score`：LanceDB 余弦距离 `dist` → `vec_score = max(0, 1 - dist/2)`（`dist≤2`）。
 2. **BM25 分量** `bm25_norm`：对候选正文与 query 做 BM25，再按批次 `max` 归一化到 `[0,1]`。
-3. **混合基分**  
-   `base = vector_weight * vec_score + text_weight * bm25_norm`  
+3. **混合基分**
+   `base = vector_weight * vec_score + text_weight * bm25_norm`
    权重默认 `vector_weight=0.7`, `text_weight=0.3`，可由 `nexus_config.json` → **`memory_scoring`** 覆盖。
 4. **强化增量** `reinforce_bonus`：见下文 §2。
 5. **排序分** `_hybrid_score = base + reinforce_bonus`。

@@ -1,4 +1,4 @@
-﻿"""👥 人员任务矩阵预警行序 SSOT。"""
+"""👥 人员任务矩阵预警行序 SSOT。"""
 from __future__ import annotations
 
 from datetime import date

@@ -21,14 +21,14 @@ OpenClaw 在社区叙事上强在 **memoryFlush**、**MEMORY.md**、**planning-f
 
 ## 3. 统一 memory_score「体感」
 
-- **公式单一事实源**：[MEMORY_SCORING.md](./MEMORY_SCORING.md)  
+- **公式单一事实源**：[MEMORY_SCORING.md](./MEMORY_SCORING.md)
 - **侧车 + 行内 reinforce**：在公式里先 **合并为 `merged_raw`**（profile **A_sum_cap** / **B_l2norm_cap**），再进入 **饱和 bonus**，避免「两个分谁说了算」说不清的观感。
 - **API 可观测**：`GET /api/v2/memory/search?explain=true` 返回每条 `explain`：`vec_score`、`bm25_norm`、`reinforce_bonus`、`total_rank_score`、`memory_scoring_profile` — 便于控制台/Lark **展示「为什么排第一」**，产品层可压过「只有社区口头 memory_score」的 OpenClaw 叙事。
 
 ## 4. 隐式反馈闭环
 
-- **显式**：`POST /api/v2/memory/reinforce`、`POST /api/v2/memory/feedback`（vote）  
-- **隐式**：[IMPLICIT_SIGNALS.md](./IMPLICIT_SIGNALS.md)（跳过/停留/追问）→ `intelligence_e` 可选加权  
+- **显式**：`POST /api/v2/memory/reinforce`、`POST /api/v2/memory/feedback`（vote）
+- **隐式**：[IMPLICIT_SIGNALS.md](./IMPLICIT_SIGNALS.md)（跳过/停留/追问）→ `intelligence_e` 可选加权
 
 对外可概括为：**「显式点赞 + 隐式行为 → 同一套排序公式里的 reinforce 分量」**。
 

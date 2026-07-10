@@ -1,4 +1,4 @@
-﻿"""Worker C C-1 Sprint 时间窗 SQL（按日期，非 row_index）。"""
+"""Worker C C-1 Sprint 时间窗 SQL（按日期，非 row_index）。"""
 from __future__ import annotations
 
 import os

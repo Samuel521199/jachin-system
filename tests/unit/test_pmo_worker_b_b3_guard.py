@@ -1,4 +1,4 @@
-﻿"""Worker B B-SUP 与 Worker C C-2 拦截分流。"""
+"""Worker B B-SUP 与 Worker C C-2 拦截分流。"""
 from __future__ import annotations
 
 import re

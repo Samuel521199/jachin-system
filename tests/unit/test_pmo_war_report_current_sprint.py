@@ -1,4 +1,4 @@
-﻿"""战报 current_sprint：开发表 SSOT，人员看板滞后时不覆盖。"""
+"""战报 current_sprint：开发表 SSOT，人员看板滞后时不覆盖。"""
 from __future__ import annotations
 
 from l3_node.tools import pmo_sprint_query as sq

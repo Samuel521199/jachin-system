@@ -108,9 +108,9 @@ def run_local_memory_append(*, content: str, tags: list[str] | None = None) -> d
     return _run_local_memory_append_sync(content=content, tags=tags)
 
 
-def parse_core_local_memory_append_action_input(action_input: str) -> tuple[str, list[str] | None]:
-    """解析 Action Input → (content, tags)。"""
-    inp = (action_input or "").strip()
+def parse_core_local_memory_append_work_order_input(work_order_input: str) -> tuple[str, list[str] | None]:
+    """解析 tool input → (content, tags)。"""
+    inp = (work_order_input or "").strip()
     body = ""
     tags: list[str] | None = None
     if inp.startswith("{"):

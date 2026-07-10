@@ -11,7 +11,7 @@
 | **脚本** | `scripts/run_bi_scraper_spa.py` | ✅ 一致 |
 | **脚本** | `scripts/import_raw_to_duckdb.py` | ✅ 一致 |
 
-**存数据库部分（data_store、paths）已与 v0.8.45 一致。**  
+**存数据库部分（data_store、paths）已与 v0.8.45 一致。**
 **抓数据部分（spa_collector、tool_web_scraper）当前项目有本地修改，与 v0.8.45 不同。**
 
 ---

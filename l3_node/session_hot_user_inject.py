@@ -1,6 +1,6 @@
 """
 同会话在用户消息「排队等待锁 / 飞书同 chat 已有在途工单」时，将新进线原文暂存，
-供**当前** ``run_agent`` ReAct 在**下一轮 LLM 调用前**以 user 消息并入上下文（路线图 **P** 场景四 · 中段热注入 · 单机版）。
+供**当前** ``run_agent`` RoleExecutionAgent 在**下一轮 LLM 调用前**以 user 消息并入上下文（路线图 **P** 场景四 · 中段热注入 · 单机版）。
 
 - HTTP：在 ``/api/v3/agent/run`` 尝试获取同 ``chat_id``/``session_id`` 锁前，若锁已被占用则 ``record_pending``。
 - 飞书：可选 ``JACHIN_IM_SESSION_HOT_INJECT=1`` 时在 ``prior>0`` 同时入账（默认关闭，避免与 **X** rollup 简单重复；需时可开）。

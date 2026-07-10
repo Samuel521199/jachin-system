@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 
 
 def test_workspace_writeback_policy_detects_intent_and_observations():
@@ -52,6 +52,6 @@ def test_agent_core_no_long_inline_policy_bodies():
 
     assert "def _final_answer_claims_sqlite_was_queried" not in text
     assert "def _hr_answer_claims_job_published" not in text
-    assert "你的 Action 未通过逻辑审查" not in text
+    assert "你的 WorkOrder 未通过逻辑审查" not in text
     assert "当前问题依赖数据库中的**可核验事实**" not in text
     assert "用户要求将总结/提炼后的内容**写回源文件**" not in text

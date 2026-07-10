@@ -1,4 +1,4 @@
-﻿"""
+"""
 PMO-Copilot SKILL.md 路径解析（便携包 / 仓库 / L2 同步缓存）。
 
 供 ``run_pmo_copilot_skill.py``、``pmo_lark_trigger`` 等共用，避免仅打脚本不打 ``skills_repo`` 时启动失败。

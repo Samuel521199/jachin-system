@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """只读 SubAgent 工具层硬隔离。"""
 from __future__ import annotations
 

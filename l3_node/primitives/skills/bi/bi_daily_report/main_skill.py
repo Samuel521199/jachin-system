@@ -1,4 +1,4 @@
-﻿"""
+"""
 BI 每日战报 — 主技能逻辑（一个插件仅此一个 skill）
 
 本 skill 完成 BI 日报全流程：数据新鲜度检查、抓取更新、提纯输出 CSV、同步飞书多维表。
@@ -2495,7 +2495,7 @@ def _refine_game_situation(conn: Any, output_dir: Path, t1: str, t0: str, raw_di
         game_col = _find_col(ccols, "统计范围", "游戏类型", "游戏名称", "游戏", "产品")
         rounds_c = _find_col(ccols, "完成游戏局数", "游戏局数", "总局数", "完成局数", "局数")
         users_c = _find_col(ccols, "完成游戏用户数", "完成用户数", "游戏用户数", "完成用户")
-        legacy_total = _find_col(ccols, "全部用户局数", "完成游戏用户数")
+        archived_total = _find_col(ccols, "全部用户局数", "完成游戏用户数")
         # 核心产品每日数据表：新/老为「参与总局次数」非「完成游戏新/老用户数」；均值为「全用户平均局数」
         new_g = _find_col(
             ccols,
@@ -2547,8 +2547,8 @@ def _refine_game_situation(conn: Any, output_dir: Path, t1: str, t0: str, raw_di
             rr = int(round(_safe_float(r.get(rounds_c)))) if rounds_c else 0
             uu = int(round(_safe_float(r.get(users_c)))) if users_c else 0
             tg = rr if rr else (uu if users_c else 0)
-            if not tg and legacy_total:
-                tg = int(round(_safe_float(r.get(legacy_total))))
+            if not tg and archived_total:
+                tg = int(round(_safe_float(r.get(archived_total))))
             ng = int(round(_safe_float(r.get(new_g)))) if new_g else 0
             og = int(round(_safe_float(r.get(old_g)))) if old_g else 0
             if not tg and (ng + og) > 0:
@@ -2800,7 +2800,7 @@ def _sync_refiner_to_lark(
         field_mapping_per_table = dict(lark_bitable_config.get("field_mapping") or {})
         # 01 表列名已与 Lark 统一为「增幅（%）」；06 表为「留存率（%）」。若 Lark 表用其他字段名，可在 field_mapping 中配置
         # 10/11 若 Lark 列名与 CSV 不一致（如「不同充值金分等级」），须在 bi_daily_report.yaml 的 field_mapping 中按 CSV→Lark 配置
-    
+
         _lb = lark_bitable_config or {}
         # 仅当 YAML 显式写了 replace_table 时才尊重其布尔值；未写该键时保持旧行为（见下方 do_replace）
         _has_replace_table_key = "replace_table" in _lb
@@ -4490,7 +4490,7 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
 <hr style="margin:20px 0; border:none; border-top:1px solid #eee;"/>
 <p style="color:#999; font-size:12px;">— Jachin OS BI 战报系统 · 自动发送</p>
 </body></html>"""
-                action_input = json.dumps({
+                work_order_input = json.dumps({
                 "smtp_config": smtp_config,
                 "to_addrs": to_addrs,
                     "subject": subject,
@@ -4500,7 +4500,7 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
                 from l3_node.primitives.mcp.registry import get_mcp_registry
                 mcp_registry = get_mcp_registry()
                 _bi_debug("Step 3.6", "mcp_invoke", data={"to_count": len(to_addrs)})
-                r_str = await mcp_registry.invoke("mcp:atom_email_sender", action_input, timeout=60.0)
+                r_str = await mcp_registry.invoke("mcp:atom_email_sender", work_order_input, timeout=60.0)
                 try:
                     r = json.loads(r_str) if isinstance(r_str, str) and r_str.strip().startswith("{") else {}
                 except Exception:

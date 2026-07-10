@@ -1,4 +1,4 @@
-﻿# K11 游戏 L3 Agent 执行技能（DOM 文本驱动）
+# K11 游戏 L3 Agent 执行技能（DOM 文本驱动）
 
 本文件供 **Executor**（`test_k11_l3_agent_games_smoke.py`）在每次调用 L3 `POST /api/v3/agent/run` 时，将全文或摘要注入 `user_input`，作为「大脑」的领域知识与操作边界。**不要在 Python 里写死具体 UI 路径；由本技能 + 页面文本树驱动决策。**
 
@@ -46,7 +46,7 @@
 
 ## 输出规范（强制）
 
-你必须 **只输出一段可被解析的 JSON**（建议单行），不要 Markdown、不要 Thought/ReAct。**禁止调用任何 MCP/工具**（当前交互由 Executor 执行）；不要用代码块包裹 JSON；**不要在 JSON 前后写任何说明文字**（例如「我已经分析了页面」），否则 Executor 可能解析失败。
+你必须 **只输出一段可被解析的 JSON**（建议单行），不要 Markdown、不要 Reasoning trace/WorkOrder。**禁止调用任何 MCP/工具**（当前交互由 Executor 执行）；不要用代码块包裹 JSON；**不要在 JSON 前后写任何说明文字**（例如「我已经分析了页面」），否则 Executor 可能解析失败。
 
 PAGE_CONTEXT 里 **`inner_text`** 是 Executor 摘要用的字段名，**不是** DOM 属性；禁止编造 `div[txt='…']`、`div[inner_text='…']` 之类选择器——浏览器不存在这些属性。请使用 **`selector_hint` / `class` / `id`** 能推出的合法 CSS，或无法命中时用 **`wait`** / **`fail`**。
 
@@ -107,4 +107,3 @@ Executor 在各 iframe 内使用 ``document.querySelector`` 与 Playwright ``loc
 **版本**：与 `scripts/test_k11_l3_agent_games_smoke.py` 同步演进；Skill 文档位于 **`docs/tests/game_test_skill.md`**。新增游戏时只需扩展本节「领域知识」与阶段策略，无需改 Executor 框架代码。
 
 **说明**：Executor 会把本文件与 **页面 DOM 全文**拼进 L3 的 `user_input`。站内文案可能含「取消」或单独的「招」「聘」字样（分区导航等）；扩展本节时请避免写入 **`关闭` 紧邻 `招聘`** 等易被 Intent Registry 误判为停招指令的连续词。**服务端**另已按 channel `http_k11_l3_agent_games_smoke` 跳过部分 HR 关键词预检；Skill 侧仍需避免上述四字紧邻以防 Registry 抢先短路。
-

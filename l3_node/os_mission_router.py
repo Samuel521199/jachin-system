@@ -1081,6 +1081,12 @@ async def maybe_run_codex_lark_mission(
         )
         return _clarification_question_for_intent(intent, clarification)
     if should_hold_for_confirmation(intent, plan):
+        preview.requires_confirmation = True
+        preview.auto_execute = False
+        preview.confirmation_reason = preview.confirmation_reason or "mission_preview_confirmation_required"
+        preview.execution_policy["requires_confirmation"] = True
+        preview.execution_policy["auto_execute"] = False
+        preview.execution_policy["confirmation_reason"] = preview.confirmation_reason
         saved = save_pending_mission(
             {
                 "initial_user_input": user_input,

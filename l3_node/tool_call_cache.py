@@ -1,4 +1,4 @@
-"""
+﻿"""
 P1：MCP / 只读类工具调用短期缓存（tool_id + 规范化参数 → 结果，TTL 可配）。
 """
 from __future__ import annotations
@@ -28,8 +28,8 @@ _DEFAULT_CACHE_ALLOWLIST = frozenset(
 )
 
 
-def _normalize_action_input(action_input: str) -> str:
-    s = (action_input or "").strip()
+def _normalize_work_order_input(work_order_input: str) -> str:
+    s = (work_order_input or "").strip()
     if not s:
         return ""
     if s.startswith("{") and "}" in s:
@@ -42,9 +42,9 @@ def _normalize_action_input(action_input: str) -> str:
     return s
 
 
-def _cache_key(tool_id: str, action_input: str) -> str:
+def _cache_key(tool_id: str, work_order_input: str) -> str:
     tid = (tool_id or "").strip().lower()
-    norm = _normalize_action_input(action_input)
+    norm = _normalize_work_order_input(work_order_input)
     raw = f"{tid}\n{norm}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -119,10 +119,10 @@ def _prune_and_save(store: dict[str, Any]) -> None:
         logger.warning("[P1] 写入工具缓存失败: %s", e)
 
 
-def try_get_cached(tool_id: str, action_input: str) -> str | None:
+def try_get_cached(tool_id: str, work_order_input: str) -> str | None:
     if not _should_cache_tool(tool_id):
         return None
-    key = _cache_key(tool_id, action_input)
+    key = _cache_key(tool_id, work_order_input)
     store = _load_store()
     entries = store.get("entries")
     if not isinstance(entries, dict):
@@ -142,7 +142,7 @@ def try_get_cached(tool_id: str, action_input: str) -> str | None:
     return result
 
 
-def store_if_cacheable(tool_id: str, action_input: str, result: str) -> str:
+def store_if_cacheable(tool_id: str, work_order_input: str, result: str) -> str:
     """若可缓存且结果健康则写入；始终返回 result。"""
     if not _should_cache_tool(tool_id):
         return result
@@ -155,7 +155,7 @@ def store_if_cacheable(tool_id: str, action_input: str, result: str) -> str:
         ttl_sec = 3600.0
     if ttl_sec <= 0:
         ttl_sec = 3600.0
-    key = _cache_key(tool_id, action_input)
+    key = _cache_key(tool_id, work_order_input)
     store = _load_store()
     entries = store.get("entries")
     if not isinstance(entries, dict):

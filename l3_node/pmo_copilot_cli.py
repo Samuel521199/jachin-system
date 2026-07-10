@@ -1,4 +1,4 @@
-﻿"""
+"""
 PMO Copilot CLI 入口（L3 侧车 ``--run-pmo-copilot`` 与开发机脚本共用）。
 
 打包后桌面端通过 ``bin/l3_node-<triple>.exe --run-pmo-copilot`` 启动，

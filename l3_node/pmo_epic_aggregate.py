@@ -1,4 +1,4 @@
-﻿"""
+"""
 PMO 大需求行聚合 SSOT：子任务 → epic_name → 参与人/完成度/时间跨度。
 
 供 Publisher、宏观看板脚本、后续 notifier 组装复用。

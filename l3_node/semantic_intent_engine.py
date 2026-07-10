@@ -1,4 +1,4 @@
-﻿"""Two-layer semantic intent engine.
+"""Two-layer semantic intent engine.
 
 Layer 1 is the deterministic parser in semantic_slot_parser.py.
 Layer 2 is an optional LLM parser that returns the same MissionIntent schema.
@@ -400,4 +400,3 @@ async def parse_semantic_intent_async(user_input: str, *, engine: Any | None = N
         "disagreement": disagreement,
     }
     return SemanticIntentResult(chosen, meta)
-

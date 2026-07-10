@@ -1,4 +1,4 @@
-﻿"""终端 turn 日志「人类可读」分区。"""
+"""终端 turn 日志「人类可读」分区。"""
 from __future__ import annotations
 
 import contextvars
@@ -33,7 +33,7 @@ def test_human_journal_round_and_recap(debug_log_dir):
             "run_id": "run-abc",
         }
     )
-    tlog.log_react_iteration_start(1, "t1", context={"max_iterations": 8})
+    tlog.log_role_execution_iteration_start(1, "t1", context={"max_iterations": 8})
     tlog.log_parsed_action_detail(
         1,
         {"type": "native", "tool": "core:db_query", "input": '{"sql":"SELECT 1"}'},
@@ -49,7 +49,7 @@ def test_human_journal_round_and_recap(debug_log_dir):
         mcp=False,
         elapsed_ms=42.5,
         output_len=1200,
-        action_input_len=50,
+        work_order_input_len=50,
         used_foreground_timeout=False,
         sync_timeout_sec=None,
     )
@@ -79,8 +79,8 @@ def test_human_journal_round_and_recap(debug_log_dir):
     assert "【人类可读】" in text
     assert "谁手头有什么任务" in text
     assert "Cognitive Kernel 主循环" in text
-    assert "采用 ReAct 多轮推理" not in text
-    assert "TextReasoningAgent" in text
+    assert "采用 RoleExecutionAgent 多轮推理" not in text
+    assert "RoleExecutionAgent" in text
     assert "第 1 轮" in text
     assert "模型在想什么" in text
     assert "core:db_query" in text
@@ -88,7 +88,7 @@ def test_human_journal_round_and_recap(debug_log_dir):
     assert "本轮会话复盘" in text
     assert "共 1 轮" in text
     assert "张三手头有 2 项任务" in text
-    assert "[ReAct 第 1 轮]" in text
+    assert "[RoleExecutionAgent 第 1 轮]" in text
 
 
 def test_turn_log_header_contains_user_message_anchor(debug_log_dir):
@@ -347,7 +347,7 @@ def test_cognitive_kernel_mainline_nodes_are_logged(debug_log_dir):
     assert "role_reviews" in text
 
 
-def test_direct_mainline_intro_and_recap_are_not_react_misleading(debug_log_dir):
+def test_direct_mainline_intro_and_recap_are_not_role_execution_misleading(debug_log_dir):
     from l3_node import terminal_turn_debug_log as tlog
 
     tlog.begin_turn("帮我打开微信", extra={"run_id": "ck-direct", "channel": "websocket_terminal"})
@@ -360,5 +360,5 @@ def test_direct_mainline_intro_and_recap_are_not_react_misleading(debug_log_dir)
 
     text = next(debug_log_dir.glob("terminal_turn_*.log")).read_text(encoding="utf-8")
     assert "先进入 Cognitive Kernel 主循环" in text
-    assert "采用 ReAct 多轮推理" not in text
-    assert "共 0 轮 TextReasoningAgent 步骤；本轮由 Cognitive Kernel direct mainline 直接完成。" in text
+    assert "采用 RoleExecutionAgent 多轮推理" not in text
+    assert "共 0 轮 RoleExecutionAgent 步骤；本轮由 Cognitive Kernel direct mainline 直接完成。" in text

@@ -1,4 +1,4 @@
-﻿"""PMO atom_bi_project_context 落盘路径 SSOT。"""
+"""PMO atom_bi_project_context 落盘路径 SSOT。"""
 from __future__ import annotations
 
 import os

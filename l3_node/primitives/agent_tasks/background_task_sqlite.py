@@ -119,5 +119,3 @@ def job_to_payload(job: Any) -> dict[str, Any]:
             "created_at": getattr(job, "created_at", time.time()),
         }
     return dict(job)  # type: ignore[arg-type]
-
-

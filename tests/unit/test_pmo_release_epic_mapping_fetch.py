@@ -1,4 +1,4 @@
-﻿"""发版邮件拉取韧性：单封失败跳过、瞬态错误重试。"""
+"""发版邮件拉取韧性：单封失败跳过、瞬态错误重试。"""
 from __future__ import annotations
 
 from unittest.mock import patch

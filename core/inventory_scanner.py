@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus V2 - 本地数字仓库扫描器（L2 / 工具脚本共用）
 
 扫描 ~/.jachin/inventory/ 下的侧载技能与 MCP 配置，缓存 Wasm 技能元数据。
@@ -94,7 +94,7 @@ def _mcp_placeholder_project_root() -> Path:
 registered_local_skills: dict[str, dict[str, Any]] = {}
 
 
-def _remap_legacy_hr_jds_root(project_root: Path, expanded: str) -> str:
+def _remap_archived_hr_jds_root(project_root: Path, expanded: str) -> str:
     """
     历史上 inventory 曾写 ``__PROJECT_ROOT__/config/hr_jds``，该目录可能从未创建；
     规范路径为 ``config/skills/com.jachin.hr.analyzer4/hr_jds``（见 get_hr_jds_dir）。
@@ -102,10 +102,10 @@ def _remap_legacy_hr_jds_root(project_root: Path, expanded: str) -> str:
     """
     try:
         p = Path(expanded)
-        legacy = (project_root / "config" / "hr_jds").resolve()
-        if p.resolve() != legacy:
+        archived = (project_root / "config" / "hr_jds").resolve()
+        if p.resolve() != archived:
             return expanded
-        if legacy.is_dir():
+        if archived.is_dir():
             return expanded
         from l3_node.jachin_config import get_hr_jds_dir
 
@@ -232,7 +232,7 @@ def _extract_mcp_configs(data: dict[str, Any]) -> list[dict[str, Any]]:
                                 sub = a.replace("__PROJECT_ROOT__/", "").replace("__PROJECT_ROOT__", "").lstrip("/")
                                 root = _mcp_placeholder_project_root()
                                 raw = str((root / sub).resolve()) if sub else str(root.resolve())
-                                resolved.append(_remap_legacy_hr_jds_root(root, raw))
+                                resolved.append(_remap_archived_hr_jds_root(root, raw))
                             else:
                                 resolved.append(a)
                         pruned = _prune_mcp_filesystem_roots(resolved)

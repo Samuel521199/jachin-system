@@ -1,7 +1,7 @@
-"""
+﻿"""
 招聘 MCP 工具返回值的 HR 可读中文封装。
 
-插件层仍返回 JSON 便于程序与日志；经 mcp_registry 包装后再进入 Agent Observation / 飞书。
+插件层仍返回 JSON 便于程序与日志；经 mcp_registry 包装后再进入 Agent Verification evidence / 飞书。
 """
 
 from __future__ import annotations

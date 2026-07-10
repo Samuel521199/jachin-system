@@ -780,7 +780,7 @@ def submit_background_task_sync(inp: str, *, allowed_skills: Optional[list[str]]
     if isinstance(rs, list):
         require_skills = [str(x).strip() for x in rs if str(x).strip()]
 
-    # 短时实况天气不应走后台：避免用户看到「已入队」与前台即时 Observation 矛盾
+    # 短时实况天气不应走后台：避免用户看到「已入队」与前台即时 Verification evidence 矛盾
     if _only_util_get_weather_lite_skills(require_skills):
         return json.dumps(
             {
@@ -788,8 +788,8 @@ def submit_background_task_sync(inp: str, *, allowed_skills: Optional[list[str]]
                 "reason": "weather_must_foreground",
                 "message": (
                     "util:get_weather_lite 为短时网络查询，应在当前对话中前台直接调用，"
-                    "勿使用 core:submit_background_task。请输出 Action: util:get_weather_lite，"
-                    'Action Input: {"city":"城市名"} 或 {"location":"地区"}。'
+                    "勿使用 core:submit_background_task。请生成 WorkOrder: util:get_weather_lite，"
+                    'tool input: {"city":"城市名"} 或 {"location":"地区"}。'
                 ),
             },
             ensure_ascii=False,
@@ -945,7 +945,7 @@ def check_background_task_status_sync(inp: str) -> str:
 def check_interrupted_tasks_sync(inp: str) -> str:
     """读取 zombie_tasks.json 中崩溃或断电时未跑完的后台任务摘要。
 
-    Action Input 可选 JSON `{"consume": true}`，成功读取后清空列表。
+    tool input 可选 JSON `{"consume": true}`，成功读取后清空列表。
     """
     raw = (inp or "").strip()
     consume = False

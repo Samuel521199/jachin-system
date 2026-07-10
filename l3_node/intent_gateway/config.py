@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 _DEFAULT: dict[str, Any] = {
-    # L2 / 网关侧「小模型」：JSON 分类、指代消解等（与 ReAct 主模型 LLM_MODEL 解耦）
+    # L2 / 网关侧「小模型」：JSON 分类、指代消解等（与 RoleExecutionAgent 主模型 LLM_MODEL 解耦）
     "classification_model": "qwen-turbo",
     # 附件含图或需视觉理解时的网关/直连 completion 模型
     "multimodal_model": "qwen-vl-max",
@@ -61,7 +61,7 @@ _DEFAULT: dict[str, Any] = {
     "planning_static_linter_max_retries": 2,
     # §9.3 实体消解 Top1/Top2 分数差低于此则禁止静默消解
     "entity_resolver_min_top1_top2_margin": 0.08,
-    # §7.2 composite 规划门禁（默认关，避免改变现有 ReAct；企业节点在 nexus 开启）
+    # §7.2 composite 规划门禁（默认关，避免改变现有 RoleExecutionAgent；企业节点在 nexus 开启）
     "planning_composite_gate_enabled": False,
     "needs_info_gateway_enabled": True,
     # §6 / §3.4：长输入或模糊面可抬升为 composite（配合 planning_composite_gate_enabled）
@@ -90,11 +90,11 @@ _DEFAULT: dict[str, Any] = {
     "os_mission_llm_intent_enabled": True,
     "os_mission_llm_intent_timeout_sec": 4.0,
     "os_mission_llm_intent_max_tokens": 600,
-    # 实时外部知识意图（小模型 JSON；主 ReAct 前 Tavily 预取注入，默认开）
+    # 实时外部知识意图（小模型 JSON；主 RoleExecutionAgent 前 Tavily 预取注入，默认开）
     "realtime_knowledge_llm_enabled": True,
     "realtime_knowledge_llm_timeout_sec": 5.0,
     "realtime_knowledge_llm_max_tokens": 96,
-    # 动态专家智囊团（小模型 JSON → agent_core 身份钢印 + 多视角 Thought；默认开）
+    # 动态专家智囊团（小模型 JSON → agent_core 身份钢印 + 多视角 Reasoning trace；默认开）
     "domain_experts_llm_enabled": True,
     "domain_experts_llm_timeout_sec": 3.0,
     "domain_experts_llm_max_tokens": 220,

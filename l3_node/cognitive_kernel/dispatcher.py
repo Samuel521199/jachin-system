@@ -1,16 +1,17 @@
-"""WorkOrder dispatcher for role-agent mediated tool execution."""
+﻿"""WorkOrder dispatcher for role-agent mediated tool execution."""
 
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+import os
 from typing import Awaitable, Callable
 
 from .contracts import DecisionContract, RecoveryPlan, VerificationReport, WorkOrder
+from .recovery_planner import RecoveryAttemptRecord, RecoveryPlanner
 from .runtime import (
     blocked_confirmation_observation,
     build_decision_contract,
-    build_recovery_plan,
     build_work_order,
     classify_tool_risk,
     mark_work_order_done,
@@ -35,6 +36,8 @@ class DispatchResult:
     work_order: WorkOrder
     verification: VerificationReport
     recovery_plan: RecoveryPlan | None = None
+    attempts: list[dict] | None = None
+    final_failure_report: dict | None = None
 
 
 async def dispatch_tool_work_order(
@@ -42,20 +45,20 @@ async def dispatch_tool_work_order(
     turn_id: str,
     goal: str,
     tool: str,
-    action_input: str,
+    work_order_input: str,
     executor: ToolExecutor,
     registry: RoleAgentRegistry | None = None,
     executor_registry: RoleExecutorRegistry | None = None,
 ) -> DispatchResult:
     registry = registry or get_default_role_registry()
     executor_registry = executor_registry or get_default_role_executor_registry()
-    risk = classify_tool_risk(tool, action_input)
-    role = registry.select_for_tool(tool, action_input=action_input, risk=risk)
+    risk = classify_tool_risk(tool, work_order_input)
+    role = registry.select_for_tool(tool, work_order_input=work_order_input, risk=risk)
     provisional = build_decision_contract(
         turn_id=turn_id,
         goal=goal,
         tool=tool,
-        action_input=action_input,
+        work_order_input=work_order_input,
         role_agent=role.role_id,
     )
     provisional.selected_roles = [role.role_id, "VerificationAgent", "RecoveryAgent", "TurnClosureAgent"]
@@ -69,7 +72,7 @@ async def dispatch_tool_work_order(
     work_order = build_work_order(
         contract=provisional,
         tool=tool,
-        action_input=action_input,
+        work_order_input=work_order_input,
         role_agent=role.role_id,
     )
     started = time.perf_counter()
@@ -82,127 +85,24 @@ async def dispatch_tool_work_order(
             observation=observation,
             elapsed_ms=(time.perf_counter() - started) * 1000.0,
         )
-        recovery = build_recovery_plan(
-            turn_id=provisional.turn_id,
-            work_order=work_order,
+        recovery = RecoveryPlanner(max_attempts=1).initial_plan(
+            contract=provisional,
+            failed_work_order=work_order,
             verification=verification,
+            attempt_no=1,
         )
         return DispatchResult(observation, provisional, work_order, verification, recovery)
 
-    mark_work_order_running(work_order, provisional.turn_id)
-    role_context = RoleExecutionContext(
-        turn_id=provisional.turn_id,
-        goal=goal,
-        tool=tool,
-        role_id=role.role_id,
-        action_input=action_input,
-        metadata={
-            "decision_id": provisional.decision_id,
-            "work_order_id": work_order.work_order_id,
-            "selected_workflow": provisional.selected_workflow,
-            "risk_level": provisional.risk_level.value,
-        },
-    )
-    role_result = None
-    try:
-        role_result = await executor_registry.execute(role.role_id, work_order, executor, role_context)
-        observation = role_result.observation
-    except Exception as exc:
-        observation = f"[tool execution failed] {type(exc).__name__}: {exc}"
-        verification = verify_work_order(
-            turn_id=provisional.turn_id,
-            work_order=work_order,
-            observation=observation,
-            elapsed_ms=(time.perf_counter() - started) * 1000.0,
-        )
-        mark_work_order_done(work_order, provisional.turn_id, ok=False)
-        recovery = build_recovery_plan(
-            turn_id=provisional.turn_id,
-            work_order=work_order,
-            verification=verification,
-        )
-        return DispatchResult(observation, provisional, work_order, verification, recovery)
-
-    verification = verify_work_order(
-        turn_id=provisional.turn_id,
+    observation, verification, recovery, attempts, final_failure = await _execute_with_recovery(
+        contract=provisional,
         work_order=work_order,
-        observation=str(observation or ""),
-        elapsed_ms=(time.perf_counter() - started) * 1000.0,
-        extra_evidence=[
-            {
-                "type": "role_execution",
-                "role_id": role.role_id,
-                "adapter_kind": role_result.evidence.get("strategy") if role_result else "",
-                "adapter_elapsed_ms": role_result.elapsed_ms if role_result else None,
-                "adapter_ok": role_result.ok if role_result else None,
-                "adapter_evidence": role_result.evidence if role_result else {},
-            }
-        ],
+        executor=executor,
+        registry=registry,
+        executor_registry=executor_registry,
+        goal=goal,
+        mainline=False,
     )
-    mark_work_order_done(work_order, provisional.turn_id, ok=bool(verification.ok))
-    recovery = None
-    if not verification.ok:
-        recovery = build_recovery_plan(
-            turn_id=provisional.turn_id,
-            work_order=work_order,
-            verification=verification,
-        )
-        if _should_auto_recover(recovery, role.role_id, provisional.risk_level.value):
-            append_event(
-                "recovery_execution_started",
-                provisional.turn_id,
-                {
-                    "recovery_id": recovery.recovery_id,
-                    "strategy": recovery.strategy,
-                    "role_id": role.role_id,
-                    "work_order_id": work_order.work_order_id,
-                    "tool": tool,
-                    "rationale": recovery.rationale,
-                },
-            )
-            retry_started = time.perf_counter()
-            mark_work_order_running(work_order, provisional.turn_id)
-            try:
-                retry_result = await executor_registry.execute(role.role_id, work_order, executor, role_context)
-                retry_observation = retry_result.observation
-            except Exception as exc:
-                retry_observation = f"[recovery retry failed] {type(exc).__name__}: {exc}"
-                retry_result = None
-            retry_verification = verify_work_order(
-                turn_id=provisional.turn_id,
-                work_order=work_order,
-                observation=str(retry_observation or ""),
-                elapsed_ms=(time.perf_counter() - retry_started) * 1000.0,
-                extra_evidence=[
-                    {
-                        "type": "role_execution",
-                        "role_id": role.role_id,
-                        "adapter_kind": retry_result.evidence.get("strategy") if retry_result else "",
-                        "adapter_elapsed_ms": retry_result.elapsed_ms if retry_result else None,
-                        "adapter_ok": retry_result.ok if retry_result else False,
-                        "adapter_evidence": retry_result.evidence if retry_result else {},
-                        "recovery_retry": True,
-                    }
-                ],
-            )
-            mark_work_order_done(work_order, provisional.turn_id, ok=bool(retry_verification.ok))
-            append_event(
-                "recovery_execution_finished",
-                provisional.turn_id,
-                {
-                    "recovery_id": recovery.recovery_id,
-                    "strategy": recovery.strategy,
-                    "role_id": role.role_id,
-                    "work_order_id": work_order.work_order_id,
-                    "tool": tool,
-                    "ok": bool(retry_verification.ok),
-                    "verification_id": retry_verification.verification_id,
-                    "observation_preview": str(retry_observation or "")[:800],
-                },
-            )
-            observation = retry_observation
-            verification = retry_verification
-    return DispatchResult(str(observation or ""), provisional, work_order, verification, recovery)
+    return DispatchResult(str(observation or ""), provisional, work_order, verification, recovery, attempts, final_failure)
 
 
 async def dispatch_existing_work_order(
@@ -222,7 +122,7 @@ async def dispatch_existing_work_order(
     registry = registry or get_default_role_registry()
     executor_registry = executor_registry or get_default_role_executor_registry()
     tool = str(work_order.inputs.get("tool") or (contract.tool_policy.allowed_tools[0] if contract.tool_policy.allowed_tools else ""))
-    action_input = _action_input_from_work_order(work_order)
+    work_order_input = _work_order_input_from_work_order(work_order)
     allowed, reason = registry.is_allowed(work_order.role_agent, tool, contract.risk_level)
     if not contract.execution_allowed:
         reason = contract.clarification_question or "DecisionContract does not allow execution"
@@ -240,23 +140,55 @@ async def dispatch_existing_work_order(
             observation=observation,
             elapsed_ms=0.0,
         )
-        recovery = build_recovery_plan(turn_id=contract.turn_id, work_order=work_order, verification=verification)
+        recovery = RecoveryPlanner(max_attempts=1).initial_plan(
+            contract=contract,
+            failed_work_order=work_order,
+            verification=verification,
+            attempt_no=1,
+        )
         return DispatchResult(observation, contract, work_order, verification, recovery)
 
+    observation, verification, recovery, attempts, final_failure = await _execute_with_recovery(
+        contract=contract,
+        work_order=work_order,
+        executor=executor,
+        registry=registry,
+        executor_registry=executor_registry,
+        goal=contract.goal,
+        mainline=True,
+    )
+    return DispatchResult(str(observation or ""), contract, work_order, verification, recovery, attempts, final_failure)
+
+
+async def _execute_verified_work_order(
+    *,
+    contract: DecisionContract,
+    work_order: WorkOrder,
+    executor: ToolExecutor,
+    executor_registry: RoleExecutorRegistry,
+    goal: str,
+    mainline: bool,
+    recovery_attempt: int = 1,
+    recovery_strategy: str = "initial",
+) -> tuple[str, VerificationReport, float]:
     started = time.perf_counter()
     mark_work_order_running(work_order, contract.turn_id)
+    tool = str(work_order.inputs.get("tool") or (contract.tool_policy.allowed_tools[0] if contract.tool_policy.allowed_tools else ""))
+    work_order_input = _work_order_input_from_work_order(work_order)
     role_context = RoleExecutionContext(
         turn_id=contract.turn_id,
-        goal=contract.goal,
+        goal=goal,
         tool=tool,
         role_id=work_order.role_agent,
-        action_input=action_input,
+        work_order_input=work_order_input,
         metadata={
             "decision_id": contract.decision_id,
             "work_order_id": work_order.work_order_id,
             "selected_workflow": contract.selected_workflow,
             "risk_level": contract.risk_level.value,
-            "mainline": True,
+            "mainline": mainline,
+            "recovery_attempt": recovery_attempt,
+            "recovery_strategy": recovery_strategy,
         },
     )
     role_result = None
@@ -278,88 +210,208 @@ async def dispatch_existing_work_order(
                 "adapter_elapsed_ms": role_result.elapsed_ms if role_result else None,
                 "adapter_ok": role_result.ok if role_result else False,
                 "adapter_evidence": role_result.evidence if role_result else {},
-                "mainline": True,
+                "mainline": mainline,
+                "recovery_attempt": recovery_attempt,
+                "recovery_strategy": recovery_strategy,
             }
         ],
     )
     mark_work_order_done(work_order, contract.turn_id, ok=bool(verification.ok))
-    recovery = None if verification.ok else build_recovery_plan(
-        turn_id=contract.turn_id,
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    return str(observation or ""), verification, elapsed_ms
+
+
+async def _execute_with_recovery(
+    *,
+    contract: DecisionContract,
+    work_order: WorkOrder,
+    executor: ToolExecutor,
+    registry: RoleAgentRegistry,
+    executor_registry: RoleExecutorRegistry,
+    goal: str,
+    mainline: bool,
+) -> tuple[str, VerificationReport, RecoveryPlan | None, list[dict], dict | None]:
+    planner = RecoveryPlanner(max_attempts=_recovery_budget())
+    observation, verification, elapsed_ms = await _execute_verified_work_order(
+        contract=contract,
         work_order=work_order,
-        verification=verification,
+        executor=executor,
+        executor_registry=executor_registry,
+        goal=goal,
+        mainline=mainline,
+        recovery_attempt=1,
+        recovery_strategy="initial",
     )
-    if not verification.ok and _should_auto_recover(recovery, work_order.role_agent, contract.risk_level.value):
+    attempt_records = [
+        _attempt_record(
+            attempt_no=1,
+            work_order=work_order,
+            strategy="initial",
+            rationale="initial execution path",
+            verification=verification,
+            observation=observation,
+            elapsed_ms=elapsed_ms,
+        )
+    ]
+    recovery = None if verification.ok else planner.initial_plan(
+        contract=contract,
+        failed_work_order=work_order,
+        verification=verification,
+        attempt_no=1,
+    )
+    current_work_order = work_order
+    while not verification.ok:
+        next_plan = planner.next_attempt(
+            contract=contract,
+            failed_work_order=current_work_order,
+            verification=verification,
+            attempt_records=attempt_records,
+        )
+        if next_plan is None:
+            break
+        next_tool = str(next_plan.work_order.inputs.get("tool") or "")
+        allowed, reason = registry.is_allowed(next_plan.work_order.role_agent, next_tool, contract.risk_level)
+        append_event(
+            "recovery_attempt_planned",
+            contract.turn_id,
+            {
+                "attempt_no": next_plan.attempt_no,
+                "strategy": next_plan.strategy,
+                "role_id": next_plan.work_order.role_agent,
+                "work_order_id": next_plan.work_order.work_order_id,
+                "tool": next_tool,
+                "allowed": bool(allowed),
+                "blocked_reason": reason,
+                "candidate_path": next_plan.candidate_path,
+                "mainline": mainline,
+            },
+        )
+        if not allowed:
+            observation = f"[recovery blocked] {reason}"
+            verification = verify_work_order(
+                turn_id=contract.turn_id,
+                work_order=next_plan.work_order,
+                observation=observation,
+                elapsed_ms=0.0,
+            )
+            mark_work_order_done(next_plan.work_order, contract.turn_id, ok=False)
+            attempt_records.append(
+                _attempt_record(
+                    attempt_no=next_plan.attempt_no,
+                    work_order=next_plan.work_order,
+                    strategy=next_plan.strategy,
+                    rationale=next_plan.rationale,
+                    verification=verification,
+                    observation=observation,
+                    elapsed_ms=0.0,
+                )
+            )
+            break
         append_event(
             "recovery_execution_started",
             contract.turn_id,
             {
                 "recovery_id": recovery.recovery_id if recovery else "",
-                "strategy": recovery.strategy if recovery else "",
-                "role_id": work_order.role_agent,
-                "work_order_id": work_order.work_order_id,
-                "tool": tool,
-                "rationale": recovery.rationale if recovery else "",
-                "mainline": True,
+                "attempt_no": next_plan.attempt_no,
+                "strategy": next_plan.strategy,
+                "role_id": next_plan.work_order.role_agent,
+                "work_order_id": next_plan.work_order.work_order_id,
+                "tool": next_tool,
+                "rationale": next_plan.rationale,
+                "mainline": mainline,
             },
         )
-        retry_started = time.perf_counter()
-        mark_work_order_running(work_order, contract.turn_id)
-        retry_result = None
-        try:
-            retry_result = await executor_registry.execute(work_order.role_agent, work_order, executor, role_context)
-            retry_observation = retry_result.observation
-        except Exception as exc:
-            retry_observation = f"[mainline recovery retry failed] {type(exc).__name__}: {exc}"
-        retry_verification = verify_work_order(
-            turn_id=contract.turn_id,
-            work_order=work_order,
-            observation=str(retry_observation or ""),
-            elapsed_ms=(time.perf_counter() - retry_started) * 1000.0,
-            extra_evidence=[
-                {
-                    "type": "role_execution",
-                    "role_id": work_order.role_agent,
-                    "adapter_kind": retry_result.evidence.get("strategy") if retry_result else "",
-                    "adapter_elapsed_ms": retry_result.elapsed_ms if retry_result else None,
-                    "adapter_ok": retry_result.ok if retry_result else False,
-                    "adapter_evidence": retry_result.evidence if retry_result else {},
-                    "recovery_retry": True,
-                    "mainline": True,
-                }
-            ],
+        observation, verification, elapsed_ms = await _execute_verified_work_order(
+            contract=contract,
+            work_order=next_plan.work_order,
+            executor=executor,
+            executor_registry=executor_registry,
+            goal=goal,
+            mainline=mainline,
+            recovery_attempt=next_plan.attempt_no,
+            recovery_strategy=next_plan.strategy,
         )
-        mark_work_order_done(work_order, contract.turn_id, ok=bool(retry_verification.ok))
+        current_work_order = next_plan.work_order
+        attempt_records.append(
+            _attempt_record(
+                attempt_no=next_plan.attempt_no,
+                work_order=next_plan.work_order,
+                strategy=next_plan.strategy,
+                rationale=next_plan.rationale,
+                verification=verification,
+                observation=observation,
+                elapsed_ms=elapsed_ms,
+            )
+        )
         append_event(
             "recovery_execution_finished",
             contract.turn_id,
             {
                 "recovery_id": recovery.recovery_id if recovery else "",
-                "strategy": recovery.strategy if recovery else "",
-                "role_id": work_order.role_agent,
-                "work_order_id": work_order.work_order_id,
-                "tool": tool,
-                "ok": bool(retry_verification.ok),
-                "verification_id": retry_verification.verification_id,
-                "observation_preview": str(retry_observation or "")[:800],
-                "mainline": True,
+                "attempt_no": next_plan.attempt_no,
+                "strategy": next_plan.strategy,
+                "role_id": next_plan.work_order.role_agent,
+                "work_order_id": next_plan.work_order.work_order_id,
+                "tool": next_tool,
+                "ok": bool(verification.ok),
+                "verification_id": verification.verification_id,
+                "observation_preview": str(observation or "")[:800],
+                "mainline": mainline,
             },
         )
-        observation = retry_observation
-        verification = retry_verification
-    return DispatchResult(str(observation or ""), contract, work_order, verification, recovery)
+        if verification.ok:
+            break
+
+    final_failure = None
+    if not verification.ok:
+        final_failure = planner.final_failure_report(
+            contract=contract,
+            attempt_records=attempt_records,
+            last_verification=verification,
+        )
+        if recovery is not None:
+            recovery.final_failure_report = final_failure
+        append_event("final_failure_report", contract.turn_id, final_failure)
+    if recovery is not None:
+        recovery.max_attempts = planner.max_attempts
+    return observation, verification, recovery, [x.to_dict() for x in attempt_records], final_failure
 
 
-def _should_auto_recover(recovery: RecoveryPlan | None, role_id: str, risk_level: str) -> bool:
-    if recovery is None or recovery.strategy != "retry":
-        return False
-    if risk_level == "critical":
-        return False
-    # MessageExecutorAgent already has recipient-aware retry logic. Retrying it here could duplicate sends.
-    return role_id in {"AppControlExecutorAgent", "FileExecutorAgent", "ToolExecutionAgent"}
+def _attempt_record(
+    *,
+    attempt_no: int,
+    work_order: WorkOrder,
+    strategy: str,
+    rationale: str,
+    verification: VerificationReport,
+    observation: str,
+    elapsed_ms: float | None,
+) -> RecoveryAttemptRecord:
+    return RecoveryAttemptRecord(
+        attempt_no=attempt_no,
+        work_order_id=work_order.work_order_id,
+        role_agent=work_order.role_agent,
+        tool=str(work_order.inputs.get("tool") or ""),
+        strategy=strategy,
+        rationale=rationale,
+        ok=bool(verification.ok),
+        verification_id=verification.verification_id,
+        failure_reason=verification.failure_reason,
+        observation_preview=str(observation or "")[:800],
+        elapsed_ms=elapsed_ms,
+    )
 
 
-def _action_input_from_work_order(work_order: WorkOrder) -> str:
-    existing = work_order.inputs.get("action_input")
+def _recovery_budget() -> int:
+    raw = os.getenv("JACHIN_RECOVERY_MAX_ATTEMPTS", "").strip()
+    try:
+        return max(1, min(8, int(raw))) if raw else 5
+    except Exception:
+        return 5
+
+
+def _work_order_input_from_work_order(work_order: WorkOrder) -> str:
+    existing = work_order.inputs.get("work_order_input")
     if isinstance(existing, str) and existing.strip():
         return existing
     tool = str(work_order.inputs.get("tool") or "")

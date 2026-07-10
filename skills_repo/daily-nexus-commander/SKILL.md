@@ -44,11 +44,11 @@ tools:
 
 # 标准工作流（每天早晨一条链，顺序不要跳）
 
-按下面 **1→7** 执行；任一步失败时记录 **Observation 原文或 error**，早报中单列「异常」，**禁止**用臆测数字填补。
+按下面 **1→7** 执行；任一步失败时记录 **Verification evidence 原文或 error**，早报中单列「异常」，**禁止**用臆测数字填补。
 
 ## 1. 本机健康：`sys:health_stats`
 
-- Action Input 可为 `{}`。
+- tool input 可为 `{}`。
 - 早报章节：**《机器脉搏》** — CPU / 内存 / 磁盘余量（以返回字段为准）。
 
 ## 2. 天气：`util:get_weather_lite`

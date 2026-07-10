@@ -1,4 +1,4 @@
-"""
+﻿"""
 Node Registry - 节点注册与发现
 
 v4.0 蜂群：谁在线？有什么硬件？供 Swarm Scheduler 分配任务
@@ -49,7 +49,7 @@ class NodeInfo:
 
 @dataclass
 class Node:
-    """节点 (Action Plan 兼容)：node_id, ip, capabilities, status"""
+    """节点 (WorkOrder Plan 兼容)：node_id, ip, capabilities, status"""
     node_id: str
     ip: str
     capabilities: List[str]
@@ -139,7 +139,7 @@ class NodeRegistry:
         **kwargs,
     ) -> bool:
         """
-        注册节点 (Action Plan 兼容接口)
+        注册节点 (WorkOrder Plan 兼容接口)
         capabilities: 如 ['gpu', 'camera']
         """
         node_type = kwargs.get("node_type", "worker")
@@ -170,7 +170,7 @@ class NodeRegistry:
         return result
 
     def get_nodes_as_node(self, capability: Optional[str] = None) -> List[Node]:
-        """返回 Node 列表（Action Plan 兼容）"""
+        """返回 Node 列表（WorkOrder Plan 兼容）"""
         if capability:
             infos = self.get_capable_nodes(capability)
         else:

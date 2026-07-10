@@ -1,4 +1,4 @@
-"""Workspace file write-back guard for ReAct compatibility turns."""
+﻿"""Workspace write-back guards owned by the FileExecutor capability layer."""
 
 from __future__ import annotations
 
@@ -7,9 +7,14 @@ import logging
 import re
 from typing import Any
 
+from l3_node.cognitive_kernel.capability_hook_bridge import build_work_order_suggestion
 from l3_node.engine.hooks_pipeline import HOOK_ON_RETRY, PipelineContext, global_hooks
 
 logger = logging.getLogger(__name__)
+
+_READ_FLAG = "_work_order_did_workspace_read"
+_WRITE_FLAG = "_work_order_did_workspace_write"
+_RETRY_FLAG = "_work_order_writeback_guard_retry_done"
 
 
 def user_text_requests_workspace_writeback(text: str) -> bool:
@@ -18,96 +23,70 @@ def user_text_requests_workspace_writeback(text: str) -> bool:
     t = (text or "").strip()
     if not t:
         return False
-    if re.search(
-        r"(覆盖|改写|重写|替换|写回).{0,80}(源|原文|文档|文件|该\s*文|该\s*份|本\s*文)",
-        t,
-        re.I,
-    ):
-        return True
-    if re.search(r"(源|原文|文档|文件).{0,80}(覆盖|改写|重写|替换)", t, re.I):
-        return True
-    if "将源文档" in t or "将原文" in t or "源文档内容" in t:
-        return True
-    if re.search(r"(用|将).{0,48}(总结|摘要|提炼|改写|重写).{0,72}(覆盖|写入|保存|写回)", t, re.I):
-        return True
-    return False
+    has_file_hint = bool(re.search(r"[/\\]|\.(?:txt|md|json|csv|py|docx?)\b|workspace|文件|文档|源码", t, re.I))
+    has_write_hint = bool(re.search(r"覆盖|改写|重写|替换|写回|写入|保存|update|overwrite|rewrite|replace|save", t, re.I))
+    return has_file_hint and has_write_hint
 
 
 def user_intent_requests_workspace_writeback(messages: list[dict[str, Any]] | None) -> bool:
     """Find write-back intent in real user turns, ignoring injected system nudges."""
 
-    for m in reversed(messages or []):
-        if not isinstance(m, dict) or m.get("role") != "user":
+    for item in reversed(messages or []):
+        if not isinstance(item, dict) or item.get("role") != "user":
             continue
-        t = str(m.get("content") or "").strip()
-        if not t:
+        text = str(item.get("content") or "").strip()
+        if not text or "jachin-kernel:work-order-suggestion" in text:
             continue
-        if t.startswith("【") or t.startswith("Observation:"):
-            continue
-        if not re.search(
-            r"[/\\]|\.(?:txt|md|json|csv|py|docx?)\b|workspace|工作区|文件",
-            t,
-            re.I,
-        ):
-            continue
-        if user_text_requests_workspace_writeback(t):
+        if user_text_requests_workspace_writeback(text):
             return True
     return False
 
 
 def observation_suggests_workspace_read_ok(tool: str, obs: str) -> bool:
-    tl = (tool or "").lower()
-    if "fs_read" not in tl and "read_file" not in tl:
+    tid = (tool or "").lower()
+    if "fs_read" not in tid and "read_file" not in tid:
         return False
-    o = (obs or "").strip()
-    if not o:
+    text = (obs or "").strip().lower()
+    if not text:
         return False
-    ol = o.lower()
     return not any(
-        x in ol
-        for x in (
+        marker in text
+        for marker in (
             "securityexception",
-            "路径越界",
-            "路径无效",
-            "-32602",
             "enoent",
             "not found",
             "failed to read",
             "missing_path",
             "invalid arguments",
-            "[read_file]",
+            "mcp error",
+            '"ok": false',
+            '"ok":false',
         )
     )
 
 
 def observation_suggests_workspace_write_ok(tool: str, base_tool: str, obs: str) -> bool:
-    tl = (tool or "").lower()
-    bt = (base_tool or "").lower()
-    o = (obs or "").strip()
-    if not o:
+    tid = (tool or "").lower()
+    base = (base_tool or "").lower()
+    text = (obs or "").strip().lower()
+    if not text:
         return False
-    ol = o.lower()
     if any(
-        x in ol
-        for x in (
-            "-32602",
+        marker in text
+        for marker in (
             "securityexception",
-            "路径越界",
-            "路径无效",
             "enoent",
             "errno",
-            "error_class",
-            '"ok": false',
-            '"ok":false',
+            "not found",
             "missing_path",
             "invalid arguments",
             "mcp error",
+            '"ok": false',
+            '"ok":false',
         )
     ):
         return False
-    if "fs_write" in tl or "apply_patch" in tl:
-        return True
-    return bt in ("write_file", "create_file", "edit_file", "search_replace")
+    return "fs_write" in tid or "apply_patch" in tid or base in {"write_file", "create_file", "edit_file", "search_replace"}
 
 
 def mark_workspace_io_flags(ctx: PipelineContext, tool: str, observation_full: str) -> None:
@@ -116,21 +95,25 @@ def mark_workspace_io_flags(ctx: PipelineContext, tool: str, observation_full: s
     base_tool = (tool or "").replace("mcp:", "").strip()
     obs = str(observation_full or "")
     if observation_suggests_workspace_read_ok(tool, obs):
-        ctx.metadata["_react_did_workspace_read"] = True
+        ctx.metadata[_READ_FLAG] = True
     if observation_suggests_workspace_write_ok(tool, base_tool, obs):
-        ctx.metadata["_react_did_workspace_write"] = True
+        ctx.metadata[_WRITE_FLAG] = True
 
 
 def build_writeback_missing_prompt() -> str:
-    return (
-        "【系统校验】用户要求将总结/提炼后的内容**写回源文件**完成覆盖；"
-        "你已通过读类工具（如 core:fs_read、mcp:read_file）取得原文，但尚未执行**写盘**工具完成覆盖。\n"
-        "禁止用 core:local_memory_append 或仅口头复述代替写文件。\n"
-        "请下一步输出 ReAct：\n"
-        "Thought: …\n"
-        "Action: core:fs_write（或白名单内的 mcp:write_file / mcp:create_file）\n"
-        "Action Input: JSON，须含 path 或 file_path（与用户给出的路径一致，可为绝对路径或相对 ~/.jachin/workspace）"
-        "与 content（提炼后的完整替换正文）。工具返回成功后再输出 Final Answer，并明确说明已覆盖该路径。"
+    return build_work_order_suggestion(
+        tool="core:fs_write",
+        work_order_input={
+            "path": "$requested_source_path",
+            "content": "$verified_replacement_content",
+            "mode": "overwrite",
+        },
+        reason="workspace_writeback_missing",
+        role_agent="FileExecutorAgent",
+        visible_message=(
+            "用户要求写回文件，但本轮尚未产生写盘证据；已生成文件写入 WorkOrder 建议，"
+            "由认知内核重新裁决、校验路径和覆盖风险。"
+        ),
     )
 
 
@@ -145,23 +128,23 @@ def reject_workspace_writeback_missing_guard(
     """Reject a final answer when the requested file write-back has not happened."""
 
     _ = ans
-    if ctx.metadata.get("_react_writeback_guard_retry_done"):
+    if ctx.metadata.get(_RETRY_FLAG):
         return False
-    if not ctx.metadata.get("_react_did_workspace_read"):
+    if not ctx.metadata.get(_READ_FLAG):
         return False
-    if ctx.metadata.get("_react_did_workspace_write"):
+    if ctx.metadata.get(_WRITE_FLAG):
         return False
     if not user_intent_requests_workspace_writeback(messages):
         return False
-    ctx.metadata["_react_writeback_guard_retry_done"] = True
+
+    ctx.metadata[_RETRY_FLAG] = True
     ctx.metadata["_retry_reason"] = "workspace_writeback_guard"
     try:
         asyncio.get_running_loop().create_task(global_hooks.run(HOOK_ON_RETRY, ctx))
     except RuntimeError:
         pass
     logger.warning(
-        "[CapabilityHook][workspace_writeback] trace=%s via=%s missing write-back; retry injected",
-        str(ctx.metadata.get("_react_step_trace") or ""),
+        "[CapabilityHook][workspace_writeback] via=%s missing write-back; WorkOrder suggestion injected",
         via,
     )
     messages.append({"role": "assistant", "content": response})

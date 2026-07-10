@@ -34,7 +34,7 @@ HookHandler = Callable[["PipelineContext"], Awaitable[None]]
 
 
 class HookRegistry:
-    """全局 Hook 注册表，供 agent_loop 在 ReAct 各阶段调用"""
+    """全局 Hook 注册表，供 agent_loop 在 RoleExecutionAgent 各阶段调用"""
 
     def __init__(self) -> None:
         self._hooks: dict[str, list[HookHandler]] = {}

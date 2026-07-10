@@ -1,5 +1,5 @@
 """
-Tavily REST 直连：主 ReAct 前「实时知识预取」注入（与 npm `tavily-mcp` 进程内 MCP 解耦）。
+Tavily REST 直连：主 RoleExecutionAgent 前「实时知识预取」注入（与 npm `tavily-mcp` 进程内 MCP 解耦）。
 失败静默，不向上抛异常。
 """
 from __future__ import annotations

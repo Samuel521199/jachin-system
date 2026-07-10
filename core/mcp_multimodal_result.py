@@ -1,8 +1,8 @@
 """
-MCP 工具返回中的图片块序列化为 ReAct Observation 可解析的 JSON 信封。
+MCP 工具返回中的图片块序列化为 RoleExecutionAgent Verification evidence 可解析的 JSON 信封。
 
 stdio MCP（如 mcp-pyautogui-server screenshot）常返回 ImageContent；若仅拼接 text，
-主 ReAct 循环无法「看图」。本模块供 core.mcp_client 写出、l3_node.react_observation_vision 读出。
+主 RoleExecutionAgent 循环无法「看图」。本模块供 core.mcp_client 写出、l3_node.role_execution_observation_vision 读出。
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def build_multimodal_observation_payload(
     text_parts: list[str],
     image_data_urls: list[str],
 ) -> str:
-    """将 MCP 文本 + 图片 data URL 序列化为 Observation 字符串（JSON）。"""
+    """将 MCP 文本 + 图片 data URL 序列化为 Verification evidence 字符串（JSON）。"""
     urls = [u.strip() for u in image_data_urls if isinstance(u, str) and u.strip()]
     text = "\n".join(p.strip() for p in text_parts if (p or "").strip()).strip()
     if not urls:
@@ -41,7 +41,7 @@ def build_multimodal_observation_payload(
 
 def parse_multimodal_observation_payload(observation: str) -> tuple[str, list[str]]:
     """
-    从 Observation 解析多模态信封。
+    从 Verification evidence 解析多模态信封。
 
     Returns:
         (text_for_prompt, data_url_list)
@@ -72,7 +72,7 @@ def parse_multimodal_observation_payload(observation: str) -> tuple[str, list[st
 
 
 def strip_huge_data_urls_from_text(text: str) -> str:
-    """从纯文本 Observation 中移除嵌入式 data:image base64，避免重复占满上下文。"""
+    """从纯文本 Verification evidence 中移除嵌入式 data:image base64，避免重复占满上下文。"""
     if not text or "data:image/" not in text:
         return text
     return re.sub(

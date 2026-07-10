@@ -1,4 +1,4 @@
-"""
+﻿"""
 意图级 task_plan.md 门禁（与 HR 招聘路径独立；HR 相关用户话术 **豁免**）。
 
 启用：`nexus_config.json` → `intelligence_b.force_task_plan_file: true`
@@ -48,7 +48,7 @@ def should_enforce_task_plan_file(user_message: str) -> bool:
     return user_message_suggests_multi_step_task(user_message)
 
 
-def fs_write_targets_workspace_task_plan(tool_id: str, action_input: str) -> bool:
+def fs_write_targets_workspace_task_plan(tool_id: str, work_order_input: str) -> bool:
     """是否 core:fs_write 指向 ~/.jachin/workspace/task_plan.md（允许先写计划文件）。"""
     tid = (tool_id or "").strip().lower()
     if tid != "core:fs_write":
@@ -59,7 +59,7 @@ def fs_write_targets_workspace_task_plan(tool_id: str, action_input: str) -> boo
         target = get_task_plan_path().resolve()
     except Exception:
         return False
-    raw = (action_input or "").strip()
+    raw = (work_order_input or "").strip()
     fp = ""
     if raw.startswith("{"):
         try:

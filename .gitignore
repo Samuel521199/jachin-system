@@ -180,6 +180,7 @@ deploy/l1-docker-cloud/*.tar.gz
 deploy/l1-docker-cloud/l1.env
 
 # FB 广告报告 CSV（脚本产出数据，不入仓库）
+scripts/fb_report_scheduler.env
 fb_ads_report_*.csv
 fb_campaign_report_*.csv
 

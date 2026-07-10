@@ -1,4 +1,4 @@
-﻿"""PMO Worker 结果宿主回填单元测试。"""
+"""PMO Worker 结果宿主回填单元测试。"""
 from __future__ import annotations
 
 import json

@@ -9,7 +9,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_FOOTER_CHUNK = "react_footer"
+_FOOTER_CHUNK = "role_execution_footer"
 _PLAN_DISK = "task_plan_disk"
 
 

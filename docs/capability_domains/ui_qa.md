@@ -1,7 +1,7 @@
 # 能力域：Vision UI / 桌面视觉 QA
 
-**域 id**: `ui_qa`  
-**L3 进程内工具**: `mcp:get_parsed_screen`、`mcp:click_element`、`mcp:type_text`  
+**域 id**: `ui_qa`
+**L3 进程内工具**: `mcp:get_parsed_screen`、`mcp:click_element`、`mcp:type_text`
 **Skill**: `l3_node/skills/ui_qa/ui_qa_skill.md`
 
 <!-- PROMPT_INJECT_UI_QA_START -->

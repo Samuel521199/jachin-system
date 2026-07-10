@@ -61,16 +61,16 @@ This first version must not call external LLMs. It should route to the installed
 ## Examples
 
 User: 帮我纠错：I very like play basketball
-Action: call `mcp:english_correct_sentence` with `text="I very like play basketball"`.
+Tool call: call `mcp:english_correct_sentence` with `text="I very like play basketball"`.
 
 User: 翻译：项目进展
-Action: call `mcp:english_translate_cn_en` with `text="项目进展"`.
+Tool call: call `mcp:english_translate_cn_en` with `text="项目进展"`.
 
 User: 讲一下 progress
-Action: call `mcp:english_explain_word` with `word="progress"`.
+Tool call: call `mcp:english_explain_word` with `word="progress"`.
 
 User: 用 workflow 造 3 个句子
-Action: call `mcp:english_make_examples` with `topic_or_word="workflow"`, `count=3`.
+Tool call: call `mcp:english_make_examples` with `topic_or_word="workflow"`, `count=3`.
 
 User: 给我出 5 道项目英语测验
-Action: call `mcp:english_quiz_generate` with `topic="project English"`, `count=5`.
+Tool call: call `mcp:english_quiz_generate` with `topic="project English"`, `count=5`.

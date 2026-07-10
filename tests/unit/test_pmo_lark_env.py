@@ -1,4 +1,4 @@
-﻿"""PMO 飞书 chat_id · 项目根 .env SSOT。"""
+"""PMO 飞书 chat_id · 项目根 .env SSOT。"""
 from __future__ import annotations
 
 import os

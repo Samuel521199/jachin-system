@@ -4,7 +4,7 @@ Verification Agent — 对抗性验证 SubAgent 角色（SSOT）。
 设计原则（借鉴 Claude Code verification 类型）：
 - 任务是**证明交付物不能工作**，而不是走过场盖章
 - 必须基于**实际核对**（读文件 / 跑命令 / 阅读内联数据），禁止未验证即 PASS
-- Final Answer **必须**含 ``VERDICT: PASS | FAIL | PARTIAL`` 行
+- User-facing result **必须**含 ``VERDICT: PASS | FAIL | PARTIAL`` 行
 
 用法：
 - delegate: ``{"role": "verification", "task": "..."}``
@@ -40,7 +40,7 @@ VERIFICATION_SYSTEM_PROMPT = (
     "3. **证据链**：每条发现须附具体依据（文件路径+行号、命令输出摘要、JSON 字段名、数据片段）。\n"
     "4. **不确定即标注**：无法判定的项单独列出，不得假装已验证。\n\n"
     "【输出格式 · 强制】\n"
-    "Final Answer 须含以下结构（Markdown）：\n"
+    "User-facing result 须含以下结构（Markdown）：\n"
     "## 验证摘要\n"
     "（1–3 句：验证了什么、怎么验证的）\n"
     "## 发现\n"
@@ -95,7 +95,7 @@ def build_verification_role(
 
 
 def format_verification_run_report_line(verdict: str, preview: str = "") -> str:
-    """供 delegate / fanout Observation 首行摘要。"""
+    """供 delegate / fanout Verification evidence 首行摘要。"""
     line = f"[verification RunReport] VERDICT={verdict}"
     if preview.strip():
         line += f" | {preview.strip()[:120]}"

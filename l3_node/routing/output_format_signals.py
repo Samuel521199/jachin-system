@@ -1,6 +1,6 @@
-﻿"""
+"""
 检测用户消息中的「格式强约束」与直连 LLM 可行性。
-用于：动态瘦身系统提示词、在无需工具时绕过 ReAct。
+用于：动态瘦身系统提示词、在无需工具时绕过 RoleExecutionAgent。
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ _TOOL_NEED_RE = re.compile(
     r"grep|rg\s|搜索代码|apply_patch|写文件|fs_write|submit_background_task|check_background_task|"
     r"delegate|coordinate|recall_memory|local_memory_search|"
     r"atom_post|add_automated|透析镜|mcp:|jpp:com\.jachin|"
-    # PPTX / Office MCP：避免走 direct_llm_bypass 后模型编造「无法连接 MCP」；须进 ReAct 调 mcp:create_presentation 等
+    # PPTX / Office MCP：避免走 direct_llm_bypass 后模型编造「无法连接 MCP」；须进 RoleExecutionAgent 调 mcp:create_presentation 等
     r"pptx?|powerpoint|幻灯片|演示文稿|\.pptx|"
     r"create_presentation|save_presentation|add_slide|populate_placeholder|"
     r"(?:用|通过|调用)\s*MCP|MCP\s*(?:新建|创建|生成|做)|"
@@ -23,21 +23,21 @@ _TOOL_NEED_RE = re.compile(
     r"(?:查|看|问|说说).{0,4}天气|天气.{0,16}(?:怎么样|如何|多少|冷不冷)|"
     r"(?:今日|今天|明天|当地|外面).{0,12}天气|天气预报|气温|下雨|下雪|台风|空气质量|AQI|"
     r"weather\s+in|what.{0,28}weather|util:get_weather_lite|"
-    # 原生 Office / 本机落盘：直连模式下模型会「假装」执行 Python/code_interpreter，文件不会真写入；须走 ReAct 调 util:generate_office_doc 等
+    # 原生 Office / 本机落盘：直连模式下模型会「假装」执行 Python/code_interpreter，文件不会真写入；须走 RoleExecutionAgent 调 util:generate_office_doc 等
     r"util:generate_office_doc|openpyxl|python-docx|code_interpreter|"
     r"\.xlsx|\.docx|\.xlsm?\b|excel|工作表|工作簿|预算表|"
     r"保存.{0,32}(?:到|在|至).{0,16}(?:桌面|电脑|本机)|"
     r"(?:桌面|Downloads|Documents|下载|文档)(?:路径|文件夹|目录)?|"
     r"(?:生成|导出|写出|另存).{0,24}(?:word|excel|xlsx|docx|表格|文档|报告)|"
     r"(?:word|excel).{0,12}(?:报告|文档|表格|文件)|"
-    # 含 URL / 明确抓网页：须走 mcp:fetch、stealth 等；禁止直连否则只输出「Action:」假动作、不执行工具（见 terminal_turn 只有流式无 Observation）
+    # 含 URL / 明确抓网页：须走 mcp:fetch、stealth 等；禁止直连否则只输出「WorkOrder:」假动作、不执行工具（见 terminal_turn 只有流式无 Verification evidence）
     r"https?://|抓取|抓网页|爬取|爬虫|下载网页|网页内容",
     re.I,
 )
 
 # 强格式接管：用户明确要求不要套话 / 仅结构化输出等（正文中避免出现井号标题样例，以免模型照抄）
 _USER_LED_STRICT_RE = re.compile(
-    r"(?:禁止|不要|严禁|不得|绝不能|请勿).{0,48}(?:问候|寒暄|开场白|思考过程|Thought|Final\s*Answer|结束语|套话|markdown\s*标题)"
+    r"(?:禁止|不要|严禁|不得|绝不能|请勿).{0,48}(?:问候|寒暄|开场白|思考过程|Reasoning trace|Final\s*Answer|结束语|套话|markdown\s*标题)"
     r"|(?:只要|仅|只|必须).{0,32}(?:输出|回复|返回).{0,24}(?:json|JSON|`\s*json|合法\s*json)"
     r"|(?:仅|只|必须).{0,20}(?:以|从)\s*[\{\[]"
     r"|必须且只能"
@@ -70,7 +70,7 @@ class OutputFormatSignals:
     """本轮输出格式信号。"""
 
     user_led_strict: bool
-    """用户是否显式要求接管输出形态（问候/ReAct 套话/仅 JSON 等）。"""
+    """用户是否显式要求接管输出形态（问候/RoleExecutionAgent 套话/仅 JSON 等）。"""
 
     prefer_json_object: bool
     """是否建议对 API 使用 json_object（直连模式，需与 user_led 或 json 意图同时成立时由调用方解释）。"""
@@ -94,7 +94,7 @@ def heuristic_tool_need(user_text: str) -> bool:
     return bool(_TOOL_NEED_RE.search(user_text or ""))
 
 
-# 极短寒暄 / 礼貌用语：无任务语义时允许直连 completion，避免被长会话历史拖进 ReAct+大工具池
+# 极短寒暄 / 礼貌用语：无任务语义时允许直连 completion，避免被长会话历史拖进 RoleExecutionAgent+大工具池
 _TRIVIAL_CHITCHAT_BLOCK_RE = re.compile(
     r"读|写|文件|执行|命令|代码|http|www\.|toutiao|\.txt|\.py|mcp|工具|总结|抓取|覆盖|工作区|shell|powershell|curl|帮我|请帮",
     re.I,
@@ -136,7 +136,7 @@ _SHELL_SAFETY_LOCK_RE = re.compile(
 def heuristic_safety_lock_domains(user_text: str) -> list[str]:
     """
     返回需按需挂载的安全锁域 id：db | shell。
-    未命中时调用方应 **不** 注入大块全局安全锁（仅允许 pin / 极短 legacy 头）。
+    未命中时调用方应 **不** 注入大块全局安全锁（仅允许 pin / 极短 archived 头）。
     """
     t = user_text or ""
     out: list[str] = []

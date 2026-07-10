@@ -1,4 +1,4 @@
-﻿# 语音与 TTS 指南 (Jarvis 协议)
+# 语音与 TTS 指南 (Jarvis 协议)
 
 **版本**: v8.0 (The Singularity OS)
 
@@ -17,7 +17,7 @@
 1. **唤醒词**：Layer 3 集成 Porcupine 或 Snowboy，监听“Hey Jachin”
 2. **录音**：唤醒后开始录音，VAD 检测结束（静音 800ms 或满 15 秒）
 3. **STT**：Whisper 转文本，发送至 Layer 2 Agent
-4. **执行**：ReAct 循环，得到 Final Answer
+4. **执行**：WorkOrder 循环，得到 User-facing result
 5. **TTS**：MOSS ONNX/XTTS 播报结果
 
 **实现位置**：`clients/desktop/src-tauri/src/stt/`，参考 `.cursor/rules/ambient-audio.mdc`、`057-voice-endpointing.mdc`

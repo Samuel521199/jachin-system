@@ -1,16 +1,16 @@
 """
-Guardrails — ReAct 主循环安全护栏（AN）
+Guardrails — RoleExecutionAgent 主循环安全护栏（AN）
 
-在 run_agent ReAct 主循环的每一步入口检查多维度上限，防止失控迭代、工具滥用、
+在 run_agent RoleExecutionAgent 主循环的每一步入口检查多维度上限，防止失控迭代、工具滥用、
 Token 超支。遇到违规时返回 GuardrailsViolation，调用方可按 action 执行：
     warn      — 将警告注入下一条 user 消息，继续运行
-    truncate  — 强制结束当前 ReAct 轮次，返回 ExecutionBrief
+    truncate  — 强制结束当前 RoleExecutionAgent 轮次，返回 ExecutionBrief
     abort     — 立即停止，抛出 GuardrailsAbortError
 
 环境变量（所有默认关闭 / 宽松值）
 --------------------------------------
 JACHIN_GUARDRAILS_ENABLE=1             开启 Guardrails（默认关）
-JACHIN_GR_MAX_ITERATIONS=20            单次 run_agent 最大 ReAct 轮次（默认 20）
+JACHIN_GR_MAX_ITERATIONS=20            单次 run_agent 最大 RoleExecutionAgent 轮次（默认 20）
 JACHIN_GR_MAX_TOOL_CALLS=40            单次 run_agent 最大工具调用次数（默认 40）
 JACHIN_GR_MAX_TOKENS=200000            单次 run_agent 最大 token 消耗（默认 200000）
 JACHIN_GR_FORBIDDEN_TOOLS             逗号分隔，禁止调用的工具 id 前缀（默认空）
@@ -100,19 +100,19 @@ class GuardrailsState:
     # 工具调用指纹 → 调用次数（用于重复调用检测）
     tool_call_fingerprints: dict[str, int] = field(default_factory=dict)
 
-    def record_tool_call(self, tool_id: str, action_input: str) -> None:
+    def record_tool_call(self, tool_id: str, work_order_input: str) -> None:
         self.tool_calls += 1
-        fp = _fingerprint(tool_id, action_input)
+        fp = _fingerprint(tool_id, work_order_input)
         self.tool_call_fingerprints[fp] = self.tool_call_fingerprints.get(fp, 0) + 1
 
-    def tool_call_repeat_count(self, tool_id: str, action_input: str) -> int:
-        return self.tool_call_fingerprints.get(_fingerprint(tool_id, action_input), 0)
+    def tool_call_repeat_count(self, tool_id: str, work_order_input: str) -> int:
+        return self.tool_call_fingerprints.get(_fingerprint(tool_id, work_order_input), 0)
 
 
-def _fingerprint(tool_id: str, action_input: str) -> str:
+def _fingerprint(tool_id: str, work_order_input: str) -> str:
     """生成工具调用指纹（工具 id + 参数的 hash，容忍空白差异）。"""
     normalized = json.dumps(
-        {"t": tool_id, "a": action_input.strip()},
+        {"t": tool_id, "a": work_order_input.strip()},
         ensure_ascii=False, sort_keys=True
     )
     return hashlib.md5(normalized.encode()).hexdigest()
@@ -124,7 +124,7 @@ def _fingerprint(tool_id: str, action_input: str) -> str:
 
 class GuardrailsChecker:
     """
-    在 run_agent ReAct 循环中调用 check_*，若返回 GuardrailsViolation，
+    在 run_agent RoleExecutionAgent 循环中调用 check_*，若返回 GuardrailsViolation，
     调用方按 violation.action 决定 warn / truncate / abort。
     """
 
@@ -147,20 +147,20 @@ class GuardrailsChecker:
         self._state.tokens_used += max(0, delta)
 
     def check_iteration_limit(self) -> GuardrailsViolation | None:
-        """检查 ReAct 迭代次数。"""
+        """检查 RoleExecutionAgent 迭代次数。"""
         if self._state.iterations >= self._max_iter:
             return GuardrailsViolation(
                 rule="max_iterations",
                 action="truncate",
                 message=(
                     f"[Guardrails] 迭代次数达到上限 {self._max_iter}，"
-                    "强制结束本轮 ReAct，产出 ExecutionBrief。"
+                    "强制结束本轮 RoleExecutionAgent，产出 ExecutionBrief。"
                 ),
                 context={"iterations": self._state.iterations, "limit": self._max_iter},
             )
         return None
 
-    def check_tool_call(self, tool_id: str, action_input: str) -> GuardrailsViolation | None:
+    def check_tool_call(self, tool_id: str, work_order_input: str) -> GuardrailsViolation | None:
         """
         在执行工具前调用：
         1. 检查工具调用总次数。
@@ -184,13 +184,13 @@ class GuardrailsChecker:
                 action="truncate",
                 message=(
                     f"[Guardrails] 工具调用次数达到上限 {self._max_tc}，"
-                    "强制结束本轮 ReAct。"
+                    "强制结束本轮 RoleExecutionAgent。"
                 ),
                 context={"tool_calls": self._state.tool_calls, "limit": self._max_tc},
             )
 
         # 重复调用
-        repeat = self._state.tool_call_repeat_count(tool_id, action_input)
+        repeat = self._state.tool_call_repeat_count(tool_id, work_order_input)
         if repeat >= self._repeat_max:
             return GuardrailsViolation(
                 rule="repeat_tool_action",
@@ -203,11 +203,11 @@ class GuardrailsChecker:
                     "tool_id": tool_id,
                     "repeat_count": repeat,
                     "limit": self._repeat_max,
-                    "action_input_preview": action_input[:200],
+                    "work_order_input_preview": work_order_input[:200],
                 },
             )
         # 记录本次调用
-        self._state.record_tool_call(tool_id, action_input)
+        self._state.record_tool_call(tool_id, work_order_input)
         return None
 
     def check_token_budget(self) -> GuardrailsViolation | None:
@@ -224,14 +224,14 @@ class GuardrailsChecker:
             )
         return None
 
-    def check_all_pre_tool(self, tool_id: str, action_input: str) -> GuardrailsViolation | None:
+    def check_all_pre_tool(self, tool_id: str, work_order_input: str) -> GuardrailsViolation | None:
         """工具执行前的聚合检查（顺序：forbidden → total_calls → repeat）。"""
         if not guardrails_enabled():
             return None
-        return self.check_tool_call(tool_id, action_input)
+        return self.check_tool_call(tool_id, work_order_input)
 
     def check_all_pre_iteration(self) -> GuardrailsViolation | None:
-        """每轮 ReAct 迭代开始时的聚合检查（迭代次数 + token）。"""
+        """每轮 RoleExecutionAgent 迭代开始时的聚合检查（迭代次数 + token）。"""
         if not guardrails_enabled():
             return None
         v = self.check_iteration_limit()
@@ -240,10 +240,10 @@ class GuardrailsChecker:
         return self.check_token_budget()
 
     def execution_brief(self) -> str:
-        """生成 ExecutionBrief 摘要，供 truncate 时注入 Final Answer。"""
+        """生成 ExecutionBrief 摘要，供 truncate 时注入 User-facing result。"""
         return (
             f"[ExecutionBrief·Guardrails] 本轮执行摘要：\n"
-            f"- ReAct 迭代次数：{self._state.iterations}（上限 {self._max_iter}）\n"
+            f"- RoleExecutionAgent 迭代次数：{self._state.iterations}（上限 {self._max_iter}）\n"
             f"- 工具调用次数：{self._state.tool_calls}（上限 {self._max_tc}）\n"
             f"- Token 消耗估算：{self._state.tokens_used}（上限 {self._max_tok}）\n"
             f"- 建议：检查意图是否过于复杂，或分拆为多个子任务。"
@@ -258,8 +258,8 @@ async def emit_guardrails_execution_brief(
     violation: "GuardrailsViolation | None" = None,
 ) -> str:
     """
-    Guardrails truncate/abort 统一打 HOOK_ON_EXECUTION_BRIEF 并返回 Final Answer 行。
-    brief_body 为 execution_brief() 正文（不含 Final Answer 前缀）。
+    Guardrails truncate/abort 统一打 HOOK_ON_EXECUTION_BRIEF 并返回 User-facing result 行。
+    brief_body 为 execution_brief() 正文（不含 User-facing result 前缀）。
     """
     from l3_node.engine.hooks_pipeline import HOOK_ON_EXECUTION_BRIEF, global_hooks
 
@@ -277,7 +277,7 @@ async def emit_guardrails_execution_brief(
         ctx.metadata["_execution_brief_reason"] = reason
     except Exception:
         pass
-    final_line = f"Final Answer: {brief_body}"
+    final_line = f"User-facing result: {brief_body}"
     try:
         ctx.final_answer = brief_body
     except Exception:

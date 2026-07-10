@@ -48,7 +48,7 @@
 | 7 | `l3_node/requirements-bi.txt`（A 需 beautifulsoup4） | ✅ |
 | 8 | `scripts/test_bi_mcp_contract.py` 契约验收 | ✅ |
 
-**A 分支**: `feat/bi-scraper`，仅修改 `bi/tool_web_scraper.py`  
+**A 分支**: `feat/bi-scraper`，仅修改 `bi/tool_web_scraper.py`
 **B 分支**: `feat/bi-broadcaster`，仅修改 `tool_broadcaster.py`
 
 ---

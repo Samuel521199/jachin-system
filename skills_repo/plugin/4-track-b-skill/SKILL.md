@@ -39,7 +39,7 @@ tools:
 
 - 当用户请求「筛选简历」或「帮我筛简历」时：使用 `pdf_text_extractor` 获取本地 PDF 文本，或 `atom_radar_scraper` 获取在线简历，调用 `hr_swarm_engine`。hr_criteria 从 recruitment_status 读取。
 - 输出格式：Markdown 表格呈现 `decision`、`tech_score`、`hr_score`、`brief`。
-- 任务完成时输出：Final Answer: 并附带结果摘要。
+- 任务完成时输出：User-facing result: 并附带结果摘要。
 
 ## 关联技能
 

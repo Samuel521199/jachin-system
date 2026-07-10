@@ -1,4 +1,4 @@
-﻿"""Worker B B-S1 / B-4 vewCz1FFJi 人员 SSOT SQL。"""
+"""Worker B B-S1 / B-4 vewCz1FFJi 人员 SSOT SQL。"""
 from __future__ import annotations
 
 import os

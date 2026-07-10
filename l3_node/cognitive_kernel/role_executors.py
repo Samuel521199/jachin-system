@@ -31,7 +31,7 @@ class RoleExecutionContext:
     goal: str
     tool: str
     role_id: str
-    action_input: str = ""
+    work_order_input: str = ""
     metadata: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
@@ -40,7 +40,7 @@ class RoleExecutionContext:
             "goal": self.goal,
             "tool": self.tool,
             "role_id": self.role_id,
-            "action_input_len": len(self.action_input or ""),
+            "work_order_input_len": len(self.work_order_input or ""),
             "metadata": self.metadata,
         }
 
@@ -198,7 +198,7 @@ class AppControlExecutor(RoleExecutionAdapter):
         context: RoleExecutionContext,
     ) -> str:
         tool = (context.tool or "").strip()
-        payload = _json_obj(context.action_input)
+        payload = _json_obj(context.work_order_input)
         args = payload if isinstance(payload, dict) else {}
         if not context.metadata.get("mainline"):
             return await tool_transport_executor(work_order)
@@ -240,7 +240,7 @@ class AppControlExecutor(RoleExecutionAdapter):
         return {
             **super().describe_evidence(work_order, context),
             "preflight": "window_or_app_control_request",
-            "window_hints": _extract_window_like_values(context.action_input),
+            "window_hints": _extract_window_like_values(context.work_order_input),
             "expected_evidence": ["active_window", "screenshot", "process_or_window_title"],
         }
 
@@ -267,7 +267,7 @@ class FileExecutor(RoleExecutionAdapter):
     def describe_evidence(self, work_order: WorkOrder, context: RoleExecutionContext) -> dict[str, object]:
         return {
             **super().describe_evidence(work_order, context),
-            "paths": _extract_path_like_values(context.action_input),
+            "paths": _extract_path_like_values(context.work_order_input),
             "expected_evidence": ["file_path", "exists_or_changed", "operation_result"],
         }
 
@@ -279,7 +279,7 @@ class FileExecutor(RoleExecutionAdapter):
     ) -> str:
         tool = (context.tool or "").strip()
         if tool == "core:fs_read":
-            path = _extract_single_path(context.action_input)
+            path = _extract_single_path(context.work_order_input)
             if not path:
                 raise ValueError("core:fs_read requires path or file_path")
             from core.native_tools import core_fs_read
@@ -300,7 +300,7 @@ class FileExecutor(RoleExecutionAdapter):
             "mcp:windows_file_open",
             "mcp:windows_file_reveal_in_explorer",
         }:
-            path = _extract_single_path(context.action_input)
+            path = _extract_single_path(context.work_order_input)
             if not path:
                 raise ValueError(f"{tool} requires path or file_path")
             from l3_client.local_mcps.windows_uia_mcp import server as windows_uia_server
@@ -309,7 +309,7 @@ class FileExecutor(RoleExecutionAdapter):
                 return await _run_sync(lambda: windows_uia_server.windows_file_open(path, ""))
             return await _run_sync(lambda: windows_uia_server.windows_file_reveal_in_explorer(path, ""))
         if tool == "core:fs_write":
-            path, content = _extract_write_payload(context.action_input)
+            path, content = _extract_write_payload(context.work_order_input)
             if not path:
                 raise ValueError("core:fs_write requires path or file_path")
             from core.native_tools import core_fs_write
@@ -351,11 +351,11 @@ class MessageExecutor(RoleExecutionAdapter):
     adapter_kind = "message"
 
     def describe_evidence(self, work_order: WorkOrder, context: RoleExecutionContext) -> dict[str, object]:
-        preview = _extract_message_preview(context.action_input)
+        preview = _extract_message_preview(context.work_order_input)
         dedupe_key = _message_dedupe_key(work_order, context)
         return {
             **super().describe_evidence(work_order, context),
-            "recipient_hints": _extract_recipient_like_values(context.action_input),
+            "recipient_hints": _extract_recipient_like_values(context.work_order_input),
             "send_preview": preview[:300],
             "preview_len": len(preview),
             "dedupe_key": dedupe_key,
@@ -377,7 +377,7 @@ class MessageExecutor(RoleExecutionAdapter):
                     "duplicate_skipped": True,
                     "channel": "MessageExecutorAgent.dedupe",
                     "dedupe_key": dedupe_key,
-                    "recipients": _extract_recipient_like_values(context.action_input),
+                    "recipients": _extract_recipient_like_values(context.work_order_input),
                 },
                 ensure_ascii=False,
             )
@@ -404,8 +404,8 @@ class MessageExecutor(RoleExecutionAdapter):
         return first
 
     def _validate_send_payload(self, context: RoleExecutionContext) -> None:
-        recipients = _extract_recipient_like_values(context.action_input)
-        message = _extract_message_preview(context.action_input)
+        recipients = _extract_recipient_like_values(context.work_order_input)
+        message = _extract_message_preview(context.work_order_input)
         low_tool = (context.tool or "").lower()
         if any(x in low_tool for x in ("lark", "send", "smtp", "post", "publish")):
             if not recipients and "publish" not in low_tool and "upload" not in low_tool:
@@ -436,7 +436,7 @@ class MemoryRecallExecutor(RoleExecutionAdapter):
     adapter_kind = "memory_recall"
 
     def describe_evidence(self, work_order: WorkOrder, context: RoleExecutionContext) -> dict[str, object]:
-        query = _extract_memory_query(context.action_input)
+        query = _extract_memory_query(context.work_order_input)
         return {
             **super().describe_evidence(work_order, context),
             "memory_query_preview": query[:300],
@@ -451,7 +451,7 @@ class MemoryRecallExecutor(RoleExecutionAdapter):
         context: RoleExecutionContext,
     ) -> str:
         tool = (context.tool or "").strip()
-        query = _extract_memory_query(context.action_input)
+        query = _extract_memory_query(context.work_order_input)
         if tool == "recall_memory":
             from l3_node.cognitive_kernel.memory_tools import recall_memory_search
 
@@ -461,10 +461,10 @@ class MemoryRecallExecutor(RoleExecutionAdapter):
                 from l3_node.local_memory_search import (
                     async_search_local_memories,
                     get_local_memory_search_timeout_sec,
-                    parse_core_local_memory_search_action_input,
+                    parse_core_local_memory_search_work_order_input,
                 )
 
-                kwargs = parse_core_local_memory_search_action_input(context.action_input)
+                kwargs = parse_core_local_memory_search_work_order_input(context.work_order_input)
                 timeout = get_local_memory_search_timeout_sec()
                 result = await __import__("asyncio").wait_for(
                     async_search_local_memories(**kwargs),
@@ -518,14 +518,14 @@ class MemoryWriteExecutor(RoleExecutionAdapter):
 
     def preflight(self, work_order: WorkOrder, context: RoleExecutionContext) -> None:
         super().preflight(work_order, context)
-        if context.tool == "core:local_memory_append" and not (context.action_input or "").strip():
-            raise ValueError("memory append requires non-empty action input")
+        if context.tool == "core:local_memory_append" and not (context.work_order_input or "").strip():
+            raise ValueError("memory append requires non-empty tool input")
 
     def describe_evidence(self, work_order: WorkOrder, context: RoleExecutionContext) -> dict[str, object]:
-        content, tags = _extract_memory_payload(context.action_input)
+        content, tags = _extract_memory_payload(context.work_order_input)
         return {
             **super().describe_evidence(work_order, context),
-            "memory_write_len": len(context.action_input or ""),
+            "memory_write_len": len(context.work_order_input or ""),
             "memory_content_len": len(content),
             "memory_tags": tags or [],
             "memory_class": _classify_memory_tags(tags),
@@ -540,7 +540,7 @@ class MemoryWriteExecutor(RoleExecutionAdapter):
     ) -> str:
         if context.tool != "core:local_memory_append":
             return await tool_transport_executor(work_order)
-        content, tags = _extract_memory_payload(context.action_input)
+        content, tags = _extract_memory_payload(context.work_order_input)
         if not content:
             raise ValueError("memory append requires content/body/text")
         from l3_node.tools.core_local_memory_append import async_run_local_memory_append
@@ -618,8 +618,8 @@ def get_default_role_executor_registry() -> RoleExecutorRegistry:
     return DEFAULT_ROLE_EXECUTOR_REGISTRY
 
 
-def _extract_path_like_values(action_input: str) -> list[str]:
-    obj = _json_obj(action_input)
+def _extract_path_like_values(work_order_input: str) -> list[str]:
+    obj = _json_obj(work_order_input)
     if not isinstance(obj, dict):
         return []
     keys = ("path", "file_path", "source", "target", "src", "dst", "directory", "cwd")
@@ -643,21 +643,21 @@ def _resolve_effective_workspace_path(path: str) -> Path:
         return p.resolve()
 
 
-def _extract_single_path(action_input: str) -> str:
-    obj = _json_obj(action_input)
+def _extract_single_path(work_order_input: str) -> str:
+    obj = _json_obj(work_order_input)
     if isinstance(obj, dict):
         for key in ("path", "file_path", "target", "source"):
             value = obj.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
-    raw = (action_input or "").strip()
+    raw = (work_order_input or "").strip()
     if raw and not raw.startswith("{"):
         return raw.strip('"').strip("'")
     return ""
 
 
-def _extract_write_payload(action_input: str) -> tuple[str, str]:
-    obj = _json_obj(action_input)
+def _extract_write_payload(work_order_input: str) -> tuple[str, str]:
+    obj = _json_obj(work_order_input)
     if isinstance(obj, dict):
         path = ""
         for key in ("path", "file_path", "target"):
@@ -674,8 +674,8 @@ def _extract_write_payload(action_input: str) -> tuple[str, str]:
     return "", ""
 
 
-def _extract_recipient_like_values(action_input: str) -> list[str]:
-    obj = _json_obj(action_input)
+def _extract_recipient_like_values(work_order_input: str) -> list[str]:
+    obj = _json_obj(work_order_input)
     if not isinstance(obj, dict):
         return []
     keys = ("recipient", "recipients", "recipients_json", "chat_id", "chat_ids", "user", "users", "to")
@@ -699,10 +699,10 @@ def _extract_recipient_like_values(action_input: str) -> list[str]:
     return out[:12]
 
 
-def _extract_window_like_values(action_input: str) -> list[str]:
-    obj = _json_obj(action_input)
+def _extract_window_like_values(work_order_input: str) -> list[str]:
+    obj = _json_obj(work_order_input)
     if not isinstance(obj, dict):
-        raw = (action_input or "").strip()
+        raw = (work_order_input or "").strip()
         return [raw] if raw else []
     keys = ("app", "app_name", "window", "window_title", "keywords", "title", "name")
     out: list[str] = []
@@ -713,22 +713,22 @@ def _extract_window_like_values(action_input: str) -> list[str]:
     return out[:8]
 
 
-def _extract_message_preview(action_input: str) -> str:
-    obj = _json_obj(action_input)
+def _extract_message_preview(work_order_input: str) -> str:
+    obj = _json_obj(work_order_input)
     if isinstance(obj, dict):
         for key in ("message", "text", "content", "body", "summary"):
             value = obj.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
-    raw = (action_input or "").strip()
+    raw = (work_order_input or "").strip()
     if raw and not raw.startswith("{"):
         return raw[:500]
     return ""
 
 
 def _message_dedupe_key(work_order: WorkOrder, context: RoleExecutionContext) -> str:
-    recipients = sorted(x.strip().lower() for x in _extract_recipient_like_values(context.action_input) if x.strip())
-    preview = _extract_message_preview(context.action_input).strip()
+    recipients = sorted(x.strip().lower() for x in _extract_recipient_like_values(context.work_order_input) if x.strip())
+    preview = _extract_message_preview(context.work_order_input).strip()
     digest = hashlib.sha256(
         json.dumps(
             {
@@ -743,13 +743,13 @@ def _message_dedupe_key(work_order: WorkOrder, context: RoleExecutionContext) ->
     return f"msg:{digest}"
 
 
-def _extract_memory_payload(action_input: str) -> tuple[str, list[str] | None]:
+def _extract_memory_payload(work_order_input: str) -> tuple[str, list[str] | None]:
     try:
-        from l3_node.tools.core_local_memory_append import parse_core_local_memory_append_action_input
+        from l3_node.tools.core_local_memory_append import parse_core_local_memory_append_work_order_input
 
-        return parse_core_local_memory_append_action_input(action_input)
+        return parse_core_local_memory_append_work_order_input(work_order_input)
     except Exception:
-        obj = _json_obj(action_input)
+        obj = _json_obj(work_order_input)
         if isinstance(obj, dict):
             content = str(obj.get("content") or obj.get("body") or obj.get("text") or "").strip()
             tags_obj = obj.get("tags")
@@ -759,17 +759,17 @@ def _extract_memory_payload(action_input: str) -> tuple[str, list[str] | None]:
             elif isinstance(tags_obj, list):
                 tags = [str(x).strip() for x in tags_obj if str(x).strip()]
             return content, tags
-        return (action_input or "").strip(), None
+        return (work_order_input or "").strip(), None
 
 
-def _extract_memory_query(action_input: str) -> str:
-    obj = _json_obj(action_input)
+def _extract_memory_query(work_order_input: str) -> str:
+    obj = _json_obj(work_order_input)
     if isinstance(obj, dict):
         for key in ("query", "q", "text", "content", "keywords"):
             value = obj.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
-    return (action_input or "").strip()
+    return (work_order_input or "").strip()
 
 
 def _classify_memory_tags(tags: list[str] | None) -> str:
@@ -816,9 +816,9 @@ def _observation_mentions_any(observation: str, needles: list[str]) -> bool:
     return any(n.lower() in low for n in needles)
 
 
-def _json_obj(action_input: str) -> object | None:
+def _json_obj(work_order_input: str) -> object | None:
     try:
-        return json.loads(action_input or "{}")
+        return json.loads(work_order_input or "{}")
     except Exception:
         return None
 

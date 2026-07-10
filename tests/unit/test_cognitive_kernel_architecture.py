@@ -113,12 +113,12 @@ def test_role_agent_registry_matches_memory_first_design_doc():
 def test_cognitive_kernel_prompt_is_doc_aligned_main_agent_boundary():
     from l3_node.cognitive_kernel.kernel_prompts import (
         build_cognitive_kernel_system_prompt,
-        build_text_reasoning_role_system_prefix,
+        build_role_execution_system_prefix,
         build_user_facing_reply_agent_system_prompt,
     )
 
     kernel_prompt = build_cognitive_kernel_system_prompt()
-    text_role_prompt = build_text_reasoning_role_system_prefix()
+    text_role_prompt = build_role_execution_system_prefix()
     reply_prompt = build_user_facing_reply_agent_system_prompt()
 
     assert "你是 Jachin 的认知内核" in kernel_prompt
@@ -127,7 +127,7 @@ def test_cognitive_kernel_prompt_is_doc_aligned_main_agent_boundary():
     assert "VerificationAgent" in kernel_prompt
     assert "TurnClosure" in kernel_prompt
 
-    assert "TextReasoningAgent" in text_role_prompt
+    assert "RoleExecutionAgent" in text_role_prompt
     assert "不是认知内核本身" in text_role_prompt
     assert "工具调用会被宿主转换为 DecisionContract -> WorkOrder" in text_role_prompt
 
@@ -324,7 +324,7 @@ def test_mainline_message_review_to_work_order(tmp_path, monkeypatch):
     assert result.decision_contract.task_type == "message_delivery"
     assert result.work_orders[0].role_agent == "MessageExecutorAgent"
     assert result.work_orders[0].inputs["tool"] == "mcp:windows_lark_send_message"
-    payload = json.loads(result.work_orders[0].inputs["action_input"])
+    payload = json.loads(result.work_orders[0].inputs["work_order_input"])
     assert json.loads(payload["recipients_json"]) == ["Neil"]
     assert payload["message"] == "hello"
 
@@ -353,7 +353,7 @@ def test_mainline_file_read_open_reveal_and_mutating_gate(tmp_path, monkeypatch)
     assert write_plan.work_orders[0].inputs["tool"] == "core:fs_write"
     assert write_plan.decision_contract.execution_allowed is False
     assert write_plan.decision_contract.tool_policy.requires_confirmation is True
-    payload = json.loads(write_plan.work_orders[0].inputs["action_input"])
+    payload = json.loads(write_plan.work_orders[0].inputs["work_order_input"])
     assert payload["path"] == "notes/today.txt"
     assert payload["content"] == "hello"
 
@@ -406,10 +406,10 @@ def test_mainline_message_direct_entry_uses_work_order_dispatcher(tmp_path, monk
     plan = plan_cognitive_turn(_ctx("send to Neil: hello from direct mainline", turn_id="ck-arch-direct-message"))
     calls = {"run_tool": 0}
 
-    def fake_run_tool(tool_id: str, action_input: str, allowed_skills=None):
+    def fake_run_tool(tool_id: str, work_order_input: str, allowed_skills=None):
         calls["run_tool"] += 1
         assert tool_id == "mcp:windows_lark_send_message"
-        payload = json.loads(action_input)
+        payload = json.loads(work_order_input)
         assert json.loads(payload["recipients_json"]) == ["Neil"]
         assert payload["message"] == "hello from direct mainline"
         return json.dumps({"ok": True, "send_ok": True, "recipient": "Neil", "message_id": "m1"}, ensure_ascii=False)
@@ -509,7 +509,7 @@ def test_message_executor_dedupe_skips_repeat_send(tmp_path, monkeypatch):
     asyncio.run(_run())
 
 
-def test_run_agent_message_direct_mainline_bypasses_legacy_react(tmp_path, monkeypatch):
+def test_run_agent_message_direct_mainline_bypasses_role_execution_transport(tmp_path, monkeypatch):
     monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
 
     import l3_node.agent_core as agent_core
@@ -520,9 +520,9 @@ def test_run_agent_message_direct_mainline_bypasses_legacy_react(tmp_path, monke
     async def fake_assemble_tool_pool(*_args, **_kwargs):
         return [{"id": "mcp:windows_lark_send_message", "name": "windows_lark_send_message"}]
 
-    def fake_run_tool(tool_id: str, action_input: str, allowed_skills=None):
+    def fake_run_tool(tool_id: str, work_order_input: str, allowed_skills=None):
         assert tool_id == "mcp:windows_lark_send_message"
-        payload = json.loads(action_input)
+        payload = json.loads(work_order_input)
         assert json.loads(payload["recipients_json"]) == ["Neil"]
         assert payload["message"] == "hello from run_agent"
         return json.dumps({"ok": True, "send_ok": True, "message_id": "run-agent-1"}, ensure_ascii=False)
@@ -533,7 +533,6 @@ def test_run_agent_message_direct_mainline_bypasses_legacy_react(tmp_path, monke
     monkeypatch.setattr(agent_core, "build_cognitive_turn_context", fake_build_context)
     monkeypatch.setattr(agent_core, "assemble_tool_pool", fake_assemble_tool_pool)
     monkeypatch.setattr(agent_core, "run_tool", fake_run_tool)
-    monkeypatch.setattr(agent_core, "_run_text_transport_core", text_transport_core_should_not_run)
 
     reply = asyncio.run(
         agent_core.run_agent(
@@ -572,7 +571,6 @@ def test_run_agent_appcontrol_direct_mainline_open_switch_close(tmp_path, monkey
         return json.dumps({"ok": True, "window_closed": keywords, "still_exists": False}, ensure_ascii=False)
 
     monkeypatch.setattr(agent_core, "assemble_tool_pool", fake_assemble_tool_pool)
-    monkeypatch.setattr(agent_core, "_run_text_transport_core", text_transport_core_should_not_run)
     monkeypatch.setattr(windows_uia_server, "windows_open_app", fake_open_app)
     monkeypatch.setattr(windows_uia_server, "windows_window_switch", fake_switch_window)
     monkeypatch.setattr(windows_uia_server, "windows_window_close", fake_close_window)
@@ -637,7 +635,6 @@ def test_run_agent_appcontrol_confirmation_pending_then_resume(tmp_path, monkeyp
 
     monkeypatch.setattr(agent_core, "build_cognitive_turn_context", fake_build_context)
     monkeypatch.setattr(agent_core, "assemble_tool_pool", fake_assemble_tool_pool)
-    monkeypatch.setattr(agent_core, "_run_text_transport_core", text_transport_core_should_not_run)
     monkeypatch.setattr(windows_uia_server, "windows_window_close", fake_close_window)
 
     first_reply = asyncio.run(
@@ -685,7 +682,7 @@ def test_run_agent_file_direct_mainline_read_open_reveal(tmp_path, monkeypatch):
         ]
 
     def transport_run_tool_should_not_run(*_args, **_kwargs):
-        raise AssertionError("File direct mainline should use FileExecutorAgent, not legacy run_tool")
+        raise AssertionError("File direct mainline should use FileExecutorAgent, not raw run_tool")
 
     async def text_transport_core_should_not_run(*_args, **_kwargs):
         raise AssertionError("File direct mainline should bypass text transport core")
@@ -705,7 +702,6 @@ def test_run_agent_file_direct_mainline_read_open_reveal(tmp_path, monkeypatch):
     monkeypatch.setattr(agent_core, "build_cognitive_turn_context", fake_build_context)
     monkeypatch.setattr(agent_core, "assemble_tool_pool", fake_assemble_tool_pool)
     monkeypatch.setattr(agent_core, "run_tool", transport_run_tool_should_not_run)
-    monkeypatch.setattr(agent_core, "_run_text_transport_core", text_transport_core_should_not_run)
     monkeypatch.setattr(native_tools, "core_fs_read", fake_fs_read)
     monkeypatch.setattr(windows_uia_server, "windows_file_open", fake_file_open)
     monkeypatch.setattr(windows_uia_server, "windows_file_reveal_in_explorer", fake_file_reveal)

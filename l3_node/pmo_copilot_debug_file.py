@@ -1,4 +1,4 @@
-﻿"""
+"""
 PMO-Copilot 人类可读调试日志（v8 统一格式 · 全模式）。
 
 启用：环境变量 ``JACHIN_PMO_COPILOT_DEBUG_LOG`` = 绝对路径 ``.txt``（``run_pmo_copilot_skill.py`` 自动设置）。
@@ -25,9 +25,9 @@ _ma_debug_ctx: contextvars.ContextVar[dict[str, Any] | None] = contextvars.Conte
 
 
 def _default_pmo_max_iterations() -> int:
-    from l3_node.pmo_agent_policy import MAX_PMO_REACT_ITERATIONS
+    from l3_node.pmo_agent_policy import MAX_PMO_ROLE_EXECUTION_ITERATIONS
 
-    return max(1, int(MAX_PMO_REACT_ITERATIONS))
+    return max(1, int(MAX_PMO_ROLE_EXECUTION_ITERATIONS))
 
 
 def _session_max_iterations_cap() -> int:
@@ -104,22 +104,22 @@ def _mode_profile(mode: str) -> dict[str, Any]:
                 "  阶段三: mcp:atom_lark_notifier 双群战报推送",
             ],
             "auto_bootstrap": True,
-            "phase_title": "全流程 ReAct",
+            "phase_title": "全流程 RoleExecutionAgent",
             "phase_detail": "若库未就绪先 INIT，再七步 db_query 分析，最后三表 GFM + 双群 Lark",
             "agent_label": "主编排 Agent",
-            "role_label": "单 Agent · 主 ReAct 循环",
+            "role_label": "单 Agent · 主 RoleExecutionAgent 循环",
         },
         "analysis-only": {
             "display": "仅分析 · 单 Agent",
             "arch": [
                 "  跳过 INIT（镜像库已就绪）",
-                "  七步 core:db_query → Thought 三表 GFM 草稿 → atom_lark_notifier 双群推送",
+                "  七步 core:db_query → Reasoning trace 三表 GFM 草稿 → atom_lark_notifier 双群推送",
             ],
             "auto_bootstrap": True,
             "phase_title": "分析 + 发报",
             "phase_detail": "§1.2.1 七步框架 db_query，禁止 mirror_import / bi_project_context",
             "agent_label": "主编排 Agent",
-            "role_label": "单 Agent · 分析 ReAct",
+            "role_label": "单 Agent · 分析 RoleExecutionAgent",
         },
         "init": {
             "display": "INIT 入库",
@@ -225,17 +225,17 @@ def sync_pmo_debug_max_iterations(max_iterations: int) -> None:
         return
     try:
         text = Path(fp).read_text(encoding="utf-8")
-        new_line = f"ReAct 上限: {cap} 轮（本运行主循环）"
-        if re.search(r"^ReAct 上限:\s*\d+\s*轮", text, flags=re.MULTILINE):
+        new_line = f"RoleExecutionAgent 上限: {cap} 轮（本运行主循环）"
+        if re.search(r"^RoleExecutionAgent 上限:\s*\d+\s*轮", text, flags=re.MULTILINE):
             text = re.sub(
-                r"^ReAct 上限:\s*\d+\s*轮[^\n]*$",
+                r"^RoleExecutionAgent 上限:\s*\d+\s*轮[^\n]*$",
                 new_line,
                 text,
                 count=1,
                 flags=re.MULTILINE,
             )
         else:
-            text = text.replace(f"ReAct 上限: {old} 轮", new_line, 1)
+            text = text.replace(f"RoleExecutionAgent 上限: {old} 轮", new_line, 1)
         Path(fp).write_text(text, encoding="utf-8")
     except OSError:
         pass
@@ -272,7 +272,7 @@ def init_pmo_debug_session(
             f"开始时间: {_session['started_at']}",
             f"任务 ID: {correlation_id or '—'}",
             f"运行模式: {profile['display']}",
-            f"ReAct 上限: {cap} 轮（本运行主循环）",
+            f"RoleExecutionAgent 上限: {cap} 轮（本运行主循环）",
             f"日志文件: {fp}",
             "",
             "【架构速览】",
@@ -392,7 +392,7 @@ def append_pmo_lark_push_line(
 
 
 def append_pmo_debug_status(message: str) -> None:
-    """追加网关/环境嗅探等状态行（非 ReAct 轮次）。"""
+    """追加网关/环境嗅探等状态行（非 RoleExecutionAgent 轮次）。"""
     if not debug_log_path():
         return
     raw = (message or "").strip()
@@ -483,7 +483,7 @@ def append_pmo_debug_agent_begin(
     if task_preview.strip():
         lines.append(f"   任务: {_truncate(task_preview.strip(), 200)}")
     if max_iterations:
-        lines.append(f"   ReAct 上限: {max_iterations} 轮")
+        lines.append(f"   RoleExecutionAgent 上限: {max_iterations} 轮")
     lines.extend(["-" * 72, ""])
     _append_lines(lines)
 
@@ -528,10 +528,10 @@ def finalize_pmo_debug_log(final_answer: str = "", *, aborted: bool = False) -> 
         lines.append("状态: 中断或未正常完成")
     ans = (final_answer or "").strip()
     if ans:
-        preview = ans if len(ans) <= 800 else ans[:800] + f"\n…（共 {len(ans)} 字，完整内容见控制台 Final Answer）"
+        preview = ans if len(ans) <= 800 else ans[:800] + f"\n…（共 {len(ans)} 字，完整内容见控制台 User-facing result）"
         lines.extend(["", "最终回复摘要:", preview])
     else:
-        lines.append("状态: 无 Final Answer")
+        lines.append("状态: 无 User-facing result")
     lines.append(f"结束时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     _append_lines(lines)
 
@@ -557,7 +557,7 @@ def append_pmo_debug_observation(*, tool: str, observation_full: str, iteration:
     block = _format_round_block(
         iteration=iteration,
         tool=act_tool or tool,
-        action_input=act_inp,
+        work_order_input=act_inp,
         observation=str(observation_full or ""),
         thought=act_thought,
     )
@@ -576,7 +576,7 @@ def _append_lines(lines: list[str]) -> None:
 
 
 def _format_round_block(
-    *, iteration: int, tool: str, action_input: str, observation: str, thought: str = ""
+    *, iteration: int, tool: str, work_order_input: str, observation: str, thought: str = ""
 ) -> list[str]:
     n = iteration + 1
     ctx = get_effective_debug_context()
@@ -585,10 +585,10 @@ def _format_round_block(
     else:
         cap = _session_max_iterations_cap()
     t = (tool or "").strip()
-    step_phase = _phase_label(t, action_input, observation)
-    purpose, _idea_raw = _split_thought(thought, tool=t, action_input=action_input)
-    human_purpose = _humanize_purpose(purpose, tool=t, action_input=action_input)
-    human_idea = _humanize_agent_idea(thought, tool=t, action_input=action_input)
+    step_phase = _phase_label(t, work_order_input, observation)
+    purpose, _idea_raw = _split_thought(thought, tool=t, work_order_input=work_order_input)
+    human_purpose = _humanize_purpose(purpose, tool=t, work_order_input=work_order_input)
+    human_idea = _humanize_agent_idea(thought, tool=t, work_order_input=work_order_input)
 
     if ctx and ctx.get("agent_label"):
         cn = _phase_cn(int(ctx.get("phase") or 1))
@@ -623,12 +623,12 @@ def _format_round_block(
             "📋 具体操作",
         ]
     )
-    op_lines = _format_operation(t, action_input)
+    op_lines = _format_operation(t, work_order_input)
     lines.extend(f"   {ln}" if ln else "" for ln in op_lines)
 
     lines.append("")
     lines.append("📊 发生了什么")
-    effect_lines, error_lines = _summarize_effect(t, action_input, observation)
+    effect_lines, error_lines = _summarize_effect(t, work_order_input, observation)
     lines.extend(f"   {ln}" if ln else "" for ln in effect_lines)
 
     lines.append("")
@@ -664,7 +664,7 @@ def _looks_like_gfm_or_table_blob(text: str) -> bool:
 
 
 def _extract_prose_from_thought(thought: str) -> str:
-    """从 Thought 中提取可读 prose，跳过 GFM 表格行与草稿占位。"""
+    """从 Reasoning trace 中提取可读 prose，跳过 GFM 表格行与草稿占位。"""
     kept: list[str] = []
     for ln in (thought or "").splitlines():
         stripped = ln.strip()
@@ -683,7 +683,7 @@ def _extract_prose_from_thought(thought: str) -> str:
 
 
 def _summarize_gfm_draft_rows(thought: str) -> str:
-    """把 Thought 里的 GFM 表草稿改写成人类可读摘要。"""
+    """把 Reasoning trace 里的 GFM 表草稿改写成人类可读摘要。"""
     rows: list[str] = []
     for ln in (thought or "").splitlines():
         stripped = ln.strip()
@@ -711,7 +711,7 @@ def _summarize_gfm_draft_rows(thought: str) -> str:
     if not rows:
         pipe_n = sum(1 for ln in thought.splitlines() if _looks_like_gfm_table_line(ln.strip()))
         if pipe_n:
-            return f"Thought 含 {pipe_n} 行 GFM 表草稿（列名/数据占位，已省略原文）"
+            return f"Reasoning trace 含 {pipe_n} 行 GFM 表草稿（列名/数据占位，已省略原文）"
         return ""
     summary = "表草稿：" + "；".join(rows[:6])
     if len(rows) > 6:
@@ -721,14 +721,14 @@ def _summarize_gfm_draft_rows(thought: str) -> str:
     return summary
 
 
-def _humanize_agent_idea(thought: str, *, tool: str = "", action_input: str = "") -> str:
+def _humanize_agent_idea(thought: str, *, tool: str = "", work_order_input: str = "") -> str:
     """Agent 想法：保留 prose，GFM 表草稿改为摘要，避免整段 JSON/管道符刷屏。"""
     t = (thought or "").strip()
     if t in ("（API function calling）", "API function calling"):
         t = ""
     if not t:
-        inferred = infer_tool_purpose_from_input(tool, action_input)
-        return inferred or "（模型未输出文本 Thought，已由宿主根据工具输入推断目的）"
+        inferred = infer_tool_purpose_from_input(tool, work_order_input)
+        return inferred or "（模型未输出文本 Reasoning trace，已由宿主根据工具输入推断目的）"
     prose = _extract_prose_from_thought(t)
     draft_summary = _summarize_gfm_draft_rows(t) if _looks_like_gfm_or_table_blob(t) else ""
     if prose and draft_summary:
@@ -740,7 +740,7 @@ def _humanize_agent_idea(thought: str, *, tool: str = "", action_input: str = ""
     if draft_summary:
         return draft_summary
     if _looks_like_gfm_or_table_blob(t):
-        return _summarize_gfm_draft_rows(t) or "（Thought 主要为 GFM 表草稿，已省略管道符原文）"
+        return _summarize_gfm_draft_rows(t) or "（Reasoning trace 主要为 GFM 表草稿，已省略管道符原文）"
     if len(t) <= 500:
         return t
     return t[:500].rstrip() + f"…（共 {len(t)} 字）"
@@ -751,9 +751,9 @@ def _debug_agent_label() -> str:
     return str((ctx or {}).get("agent_label") or "").strip()
 
 
-def _humanize_purpose(purpose: str, *, tool: str, action_input: str) -> str:
+def _humanize_purpose(purpose: str, *, tool: str, work_order_input: str) -> str:
     """把宿主推断的目的改写成非技术人员也能读懂的一句话。"""
-    sql = _extract_sql(action_input)
+    sql = _extract_sql(work_order_input)
     sl = (sql or "").lower()
     tb = (tool or "").replace("mcp:", "").lower()
     raw_purpose = (purpose or "").strip()
@@ -815,22 +815,22 @@ def _humanize_purpose(purpose: str, *, tool: str, action_input: str) -> str:
         if inferred:
             return inferred
     if "lark_notifier" in tb:
-        obj = _try_parse_json(action_input)
+        obj = _try_parse_json(work_order_input)
         md_len = 0
         if isinstance(obj, dict):
             md_len = len(str(obj.get("markdown_content") or ""))
         return f"把 PMO 战报发到飞书群（markdown 约 {md_len} 字）"
-    if raw_purpose and raw_purpose != "（未捕获 Thought，见下方 SQL/操作）":
+    if raw_purpose and raw_purpose != "（未捕获 Reasoning trace，见下方 SQL/操作）":
         if len(raw_purpose) <= 120 and not _looks_like_gfm_or_table_blob(raw_purpose):
             return raw_purpose
-    inferred = infer_tool_purpose_from_input(tool, action_input)
+    inferred = infer_tool_purpose_from_input(tool, work_order_input)
     if inferred:
         return inferred
     return raw_purpose or "执行工具调用"
 
 
 def infer_tool_purpose_from_input(tool: str, inp: str) -> str:
-    """从工具 id + Action Input 推断人类可读目的（function calling 无 Thought 时兜底）。"""
+    """从工具 id + tool input 推断人类可读目的（function calling 无 Reasoning trace 时兜底）。"""
     tb = (tool or "").replace("mcp:", "").strip().lower()
     if "db_query" in tb:
         return _infer_purpose_from_sql(_extract_sql(inp))
@@ -903,18 +903,18 @@ def _infer_purpose_from_sql(sql: str) -> str:
     return "执行 SQLite 只读查询"
 
 
-def _split_thought(thought: str, *, tool: str = "", action_input: str = "") -> tuple[str, str]:
+def _split_thought(thought: str, *, tool: str = "", work_order_input: str = "") -> tuple[str, str]:
     t = (thought or "").strip()
     if t in ("（API function calling）", "API function calling"):
         t = ""
     if not t:
-        inferred = infer_tool_purpose_from_input(tool, action_input)
+        inferred = infer_tool_purpose_from_input(tool, work_order_input)
         if inferred:
             return inferred, inferred
-        return "（未捕获 Thought，见下方 SQL/操作）", "（模型未输出文本 Thought，已由宿主根据工具输入推断目的）"
+        return "（未捕获 Reasoning trace，见下方 SQL/操作）", "（模型未输出文本 Reasoning trace，已由宿主根据工具输入推断目的）"
     if _looks_like_gfm_or_table_blob(t):
-        inferred = infer_tool_purpose_from_input(tool, action_input)
-        return inferred or "（Thought 为表草稿，目的见 SQL）", t
+        inferred = infer_tool_purpose_from_input(tool, work_order_input)
+        return inferred or "（Reasoning trace 为表草稿，目的见 SQL）", t
     prose = _extract_prose_from_thought(t)
     body = prose if prose else t
     m = re.match(r"^(.+?[。！？!?])\s*(.+)$", body, re.DOTALL)
@@ -1006,7 +1006,7 @@ def _format_operation(tool: str, inp: str) -> list[str]:
             p = inp.strip()[:300]
         return [Path(p).name if p else "（未知文件）"]
     target = _action_target_summary(tool, inp)
-    return [target] if target else ["（见 Action Input）"]
+    return [target] if target else ["（见 tool input）"]
 
 
 def _summarize_effect(tool: str, inp: str, observation: str) -> tuple[list[str], list[str]]:
@@ -1053,7 +1053,7 @@ def _summarize_effect(tool: str, inp: str, observation: str) -> tuple[list[str],
                 md_files = [f for f in files if f.lower().endswith(".md")]
                 lines.append(f"结果: ✅ 成功 — 写入 {len(md_files) or len(files)} 个文件")
             else:
-                lines.append("结果: ⚠️ 状态不明，请检查 Observation")
+                lines.append("结果: ⚠️ 状态不明，请检查 Verification evidence")
 
             if out_dir:
                 lines.append(f"  落盘目录: {out_dir}")
@@ -1074,7 +1074,7 @@ def _summarize_effect(tool: str, inp: str, observation: str) -> tuple[list[str],
                 if e:
                     errors.append(str(e))
         else:
-            lines.append(f"结果: ⚠️ 无法解析 JSON（Observation 长度 {len(obs)} 字）")
+            lines.append(f"结果: ⚠️ 无法解析 JSON（Verification evidence 长度 {len(obs)} 字）")
 
     elif "fs_read" in tb or tb == "read_file":
         low = obs.lower()
@@ -1293,7 +1293,7 @@ def _summarize_db_query_observation(inp: str, obs: str, errors: list[str]) -> li
     if row_count > shown:
         lines.append(f"  … 另有 {row_count - shown} 行未展示")
     if truncated:
-        lines.append("  （Observation 已截断，完整结果见 DB）")
+        lines.append("  （Verification evidence 已截断，完整结果见 DB）")
     hints = data.get("hints")
     if isinstance(hints, list) and row_count == 0:
         for h in hints[:3]:
@@ -1357,7 +1357,7 @@ def _explain_notifier_block(data: dict[str, Any], *, markdown_len: int = 0) -> t
             lines.append(f"  缺少: {sec_txt}")
         errors.append("战报缺少 §1.4 三张 GFM 表格（📊需求进度 / 👥人员矩阵 / 📦版本映射），飞书未发送")
         errors.append(
-            "解决办法: 把 Thought 里写好的三表 markdown 全文粘贴到 atom_lark_notifier 的 markdown_content 字段，"
+            "解决办法: 把 Reasoning trace 里写好的三表 markdown 全文粘贴到 atom_lark_notifier 的 markdown_content 字段，"
             "不要只写摘要；若分析已完成则禁止重跑查库"
         )
     elif reason == "analysis_incomplete" or missing_probes:
@@ -1431,9 +1431,9 @@ def _format_detail_row(row: dict[str, Any]) -> str:
 
 def _extract_sql(inp: str) -> str:
     try:
-        from l3_node.tools.pmo_db_tools import parse_db_query_action_input
+        from l3_node.tools.pmo_db_tools import parse_db_query_work_order_input
 
-        return str(parse_db_query_action_input(inp).get("sql") or "").strip()
+        return str(parse_db_query_work_order_input(inp).get("sql") or "").strip()
     except Exception:
         obj = _try_parse_json(inp)
         if isinstance(obj, dict):
@@ -1545,7 +1545,7 @@ def _truncate(s: str, n: int) -> str:
 
 
 # 兼容旧 import
-def parse_wiki_urls_from_bi_action_input(inp: str) -> list[str]:
+def parse_wiki_urls_from_bi_work_order_input(inp: str) -> list[str]:
     return _extract_wiki_urls(_try_parse_json(inp), inp)
 
 

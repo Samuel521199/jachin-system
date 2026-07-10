@@ -1,4 +1,4 @@
-"""
+﻿"""
 L3：轮询 ``GET /api/v2/mcp/delegate/poll``，消费 Redis ``l3_mcp_delegate_queue:{node_id}``，
 校验 ``task_token`` 后本地 ``mcp_registry.invoke``，再 ``POST .../delegate/result``。
 
@@ -67,7 +67,7 @@ async def _handle_one_mcp_delegate_task(
             return
 
         arguments = task.get("arguments") if isinstance(task.get("arguments"), dict) else {}
-        action_input = json.dumps(arguments, ensure_ascii=False)
+        work_order_input = json.dumps(arguments, ensure_ascii=False)
         tool_id = f"mcp:{tool_name}" if not tool_name.startswith("mcp:") else tool_name
 
         headers = {"X-Sub-Account-Id": sub_account_id, "Content-Type": "application/json"}
@@ -77,12 +77,12 @@ async def _handle_one_mcp_delegate_task(
             from core.mcp_task_token import verify_mcp_delegate_task_token
 
             tok = str(task.get("task_token") or "").strip()
-            allow_legacy = os.environ.get("JACHIN_MCP_DELEGATE_ALLOW_LEGACY_NO_TOKEN", "0").strip().lower() in (
+            allow_archived = os.environ.get("JACHIN_MCP_DELEGATE_ALLOW_ARCHIVED_NO_TOKEN", "0").strip().lower() in (
                 "1",
                 "true",
                 "yes",
             )
-            if not tok and not allow_legacy:
+            if not tok and not allow_archived:
                 logger.warning("[MCP Pull] 拒绝无 task_token 的代跑任务 task_id=%s", task_id)
                 try:
                     import httpx
@@ -166,7 +166,7 @@ async def _handle_one_mcp_delegate_task(
             registry = get_mcp_registry()
             result_text = await registry.invoke(
                 tool_id,
-                action_input,
+                work_order_input,
                 timeout=float(os.environ.get("JACHIN_MCP_DELEGATE_TOOL_TIMEOUT", "120")),
                 allow_l2_delegate=False,
             )

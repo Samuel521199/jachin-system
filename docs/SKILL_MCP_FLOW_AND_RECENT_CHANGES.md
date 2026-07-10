@@ -1,8 +1,8 @@
 # Skill / MCP 流转与近期变更文档
 
-**版本**: V2 (2026-04)  
-**状态**: 当前实现基准  
-**定位**: 三层架构中 Skill 与 MCP 的完整流转、云端上传流程、近期代码变更说明  
+**版本**: V2 (2026-04)
+**状态**: 当前实现基准
+**定位**: 三层架构中 Skill 与 MCP 的完整流转、云端上传流程、近期代码变更说明
 
 **架构总览（索引）**：[architecture/CURRENT_SYSTEM_ARCHITECTURE.md](./architecture/CURRENT_SYSTEM_ARCHITECTURE.md)
 
@@ -229,7 +229,7 @@ jachin publish --visibility PRIVATE            # 仅元数据（影子上传）
 |------|------|
 | `GET /api/v2/mcp/tools` | 默认：**Redis 聚合**各 L3 `mcp_tools`；`JACHIN_L2_STDIO_MCP=1` 时合并 L2 本机侧载 |
 | `POST /api/v2/mcp/invoke` | L3 缺工具入口；L2 **委托**（Pull / HTTP）；仅回滚标志开启时 L2 本机 stdio |
-| `POST /api/v3/mcp/execute` | L2 对 **可达** peer 触发本机 MCP（须 `task_id`+`task_token`；`JACHIN_L3_MCP_EXECUTE_ALLOW_LEGACY=1` 可跳过） |
+| `POST /api/v3/mcp/execute` | L2 对 **可达** peer 触发本机 MCP（须 `task_id`+`task_token`；`JACHIN_L3_MCP_EXECUTE_ALLOW_ARCHIVED=1` 可跳过） |
 
 ### 4.6 mcp_read_file 实现逻辑（wasm_runner）
 

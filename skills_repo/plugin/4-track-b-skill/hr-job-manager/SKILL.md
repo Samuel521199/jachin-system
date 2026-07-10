@@ -32,4 +32,4 @@ tools:
 
 ## 输出
 
-- 任务完成时输出：Final Answer: 并附带 job_title、rules_path、发布状态。
+- 任务完成时输出：User-facing result: 并附带 job_title、rules_path、发布状态。

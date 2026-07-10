@@ -1,4 +1,4 @@
-﻿"""
+"""
 BI 项目上下文同步 — mcp:atom_bi_project_context
 
 从配置的一组 Lark 知识库 Wiki 链接拉取：节点元信息、多维表格全量（或指定子表）、

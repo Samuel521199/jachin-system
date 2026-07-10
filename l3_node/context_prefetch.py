@@ -37,7 +37,7 @@ def _load_prefetch_cfg() -> dict[str, Any]:
             "core:local_memory_append",
             "recall_memory",
             "core:check_background_task",
-            # SQLite / DB 只读：Observation 应保持短小（表清单或行集），勿再拼 workspace Markdown，
+            # SQLite / DB 只读：Verification evidence 应保持短小（表清单或行集），勿再拼 workspace Markdown，
             # 否则易触发误判（长文含 ##/**）并污染用户可见流。
             "list_tables",
             "get_table_schema",
@@ -111,14 +111,14 @@ def _norm_path_key(p: Path) -> str:
 
 def _register_tool_paths_for_dedupe(
     tool_id: str,
-    action_input: str,
+    work_order_input: str,
     shown: set[str],
     meta: dict[str, Any],
     window_size: int,
-    react_iteration: int = 0,
+    role_execution_iteration: int = 0,
 ) -> None:
     tid = (tool_id or "").strip().lower()
-    raw = (action_input or "").strip()
+    raw = (work_order_input or "").strip()
     paths: list[str] = []
     if tid == "core:fs_read":
         if raw.startswith("{"):
@@ -151,17 +151,17 @@ def _register_tool_paths_for_dedupe(
                 fp = (_jachin_workspace() / p).resolve()
             nk = _norm_path_key(fp)
             _prefetch_touch_shown_path(shown, meta, nk, window_size)
-            if react_iteration > 0:
+            if role_execution_iteration > 0:
                 from l3_node.context_path_ledger import touch_tool_read_path_iteration
 
-                touch_tool_read_path_iteration(meta, nk, react_iteration)
+                touch_tool_read_path_iteration(meta, nk, role_execution_iteration)
         except Exception:
             nk = p.strip().lower()
             _prefetch_touch_shown_path(shown, meta, nk, window_size)
-            if react_iteration > 0:
+            if role_execution_iteration > 0:
                 from l3_node.context_path_ledger import touch_tool_read_path_iteration
 
-                touch_tool_read_path_iteration(meta, nk, react_iteration)
+                touch_tool_read_path_iteration(meta, nk, role_execution_iteration)
 
 
 def _prefetch_touch_shown_path(shown: set[str], meta: dict[str, Any], nk: str, window_size: int) -> None:
@@ -182,12 +182,12 @@ def _prefetch_touch_shown_path(shown: set[str], meta: dict[str, Any], nk: str, w
 def build_prefetch_attachment(
     ctx: Any,
     tool_id: str,
-    action_input: str,
+    work_order_input: str,
     observation: str,
     *,
     assistant_response: str = "",
 ) -> str:
-    """返回可拼在 Observation 后的 Markdown 块；无内容则返回空串。
+    """返回可拼在 Verification evidence 后的 Markdown 块；无内容则返回空串。
     ctx 须为 PipelineContext，使用 metadata 中 _prefetch_paths_shown / _prefetch_session_bytes。
     """
     cfg = _load_prefetch_cfg()
@@ -221,8 +221,8 @@ def build_prefetch_attachment(
 
     _win = int(cfg.get("path_sliding_window_size") or 12)
     _led_w = int(cfg.get("ledger_iteration_window") or 8)
-    _react_it = int(meta.get("_react_iteration") or 0)
-    _register_tool_paths_for_dedupe(tool_id, action_input, shown, meta, _win, react_iteration=_react_it)
+    _role_execution_it = int(meta.get("_role_execution_iteration") or 0)
+    _register_tool_paths_for_dedupe(tool_id, work_order_input, shown, meta, _win, role_execution_iteration=_role_execution_it)
 
     kws = _extract_keywords(getattr(ctx, "intent", "") or "")
     if not kws:
@@ -243,7 +243,7 @@ def build_prefetch_attachment(
         # 不允许自动 prefetch，否则旧批次/其他分支数据会污染当前轮上下文
         "pmo_lark_pull", "pmo_resource_monitor",
         # pmo_docs / bi_project：BI 日报或旧版 PMO 同步落盘，数据滞后；
-        # context_prefetch 会把旧 Sprint 数据（如 2026/04/13）注入 Observation 前部，
+        # context_prefetch 会把旧 Sprint 数据（如 2026/04/13）注入 Verification evidence 前部，
         # 导致模型误以为该 Sprint 是当前最新，产生「项目进度倒退」幻觉；
         # PMO 分支 A 必须从 pmo_lark_pull 的本轮拉取结果读取，不得依赖 prefetch 旁路
         "pmo_docs", "bi_project",
@@ -273,7 +273,7 @@ def build_prefetch_attachment(
         nk = _norm_path_key(p)
         if nk in shown:
             continue
-        if _react_it > 0 and should_block_prefetch_path(meta, nk, _react_it, _led_w):
+        if _role_execution_it > 0 and should_block_prefetch_path(meta, nk, _role_execution_it, _led_w):
             continue
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
@@ -291,7 +291,7 @@ def build_prefetch_attachment(
         nk = _norm_path_key(p)
         if nk in shown:
             continue
-        if _react_it > 0 and should_block_prefetch_path(meta, nk, _react_it, _led_w):
+        if _role_execution_it > 0 and should_block_prefetch_path(meta, nk, _role_execution_it, _led_w):
             continue
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
@@ -307,8 +307,8 @@ def build_prefetch_attachment(
         chunks.append(block)
         used += len(block)
         _prefetch_touch_shown_path(shown, meta, nk, _win)
-        if _react_it > 0:
-            touch_prefetch_path_iteration(meta, nk, _react_it)
+        if _role_execution_it > 0:
+            touch_prefetch_path_iteration(meta, nk, _role_execution_it)
 
     if not chunks:
         return ""

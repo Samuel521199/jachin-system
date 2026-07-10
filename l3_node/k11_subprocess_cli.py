@@ -1,4 +1,4 @@
-﻿"""
+"""
 K11 Playwright 冒烟子进程入口：由同一 ``l3_node`` 可执行文件 / ``python -m l3_node`` 拉起。
 
 PyInstaller onefile 下 ``sys.executable`` 指向 ``l3_node.exe``，不能用于 ``exe script.py`` 解释 .py；

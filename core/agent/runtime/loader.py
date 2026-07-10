@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 def _is_local_load() -> bool:
     """
     是否使用本地路径加载（Super Node 优化）
-    
+
     条件：NODE_MODE == standalone 且 IS_BRAIN_LOCAL
     """
     return (
@@ -45,7 +45,7 @@ def _resolve_skills_repo_path() -> Path:
 def _find_skill_dir_local(skill_id: str) -> Optional[Path]:
     """
     从本地 skills_repo 查找技能目录
-    
+
     查找顺序：_bundled, drivers, apps, 根目录
     """
     repo = _resolve_skills_repo_path()
@@ -65,7 +65,7 @@ def _find_skill_dir_local(skill_id: str) -> Optional[Path]:
 def _fetch_skill_remote(skill_id: str, dest: Path) -> bool:
     """
     从 L2 通过 HTTP 拉取技能资源（Distributed 模式）
-    
+
     Returns:
         bool: 是否成功
     """
@@ -98,15 +98,15 @@ def load_skill_path(
 ) -> Tuple[Optional[Path], bool]:
     """
     智能加载技能路径
-    
+
     根据 NODE_MODE 和 IS_BRAIN_LOCAL 决定：
     - Standalone + Brain 本地：直接返回 skills_repo 中的路径，零拷贝
     - Distributed：从 L2 HTTP 拉取到 dest_cache，返回缓存路径
-    
+
     Args:
         skill_id: 技能 ID，如 com.jachin.files
         dest_cache: Distributed 模式下的本地缓存目录，拉取后存放于此
-    
+
     Returns:
         (path, from_local): path 为技能根目录，from_local 表示是否本地直读（未复制）
     """
@@ -150,7 +150,7 @@ class SkillLoader:
     def get_skill_path(self, skill_id: str) -> Optional[Path]:
         """
         获取技能路径（仅 Standalone 模式返回，否则返回 None）
-        
+
         Distributed 模式需调用 load_skill_path(skill_id, dest_cache) 拉取。
         """
         if not self.use_local_path:

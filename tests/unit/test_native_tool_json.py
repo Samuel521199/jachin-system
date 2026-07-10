@@ -1,4 +1,4 @@
-﻿"""native_tool_json 单元测试。"""
+"""native_tool_json 单元测试。"""
 from __future__ import annotations
 
 import unittest

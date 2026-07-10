@@ -1,4 +1,4 @@
----
+﻿---
 name: pmo-change-alert
 version: "1.0.0"
 description: "PMO 变更预警 v1：飞书多维表变更回调 → Python 三轴分析 → 有问题才推 Lark 精简卡"
@@ -9,7 +9,7 @@ persona: |
   **推送哲学**：存在 🚨 / ⚠️ / 🟡 → 双群推送；全员 ✅ → 静默。
   **文案**：Python 算 fact_pack → **LLM 默认写推送正文**（`PMO_CHANGE_ALERT_LLM_NARRATE=0` 可关，回退规则人话）；`PMO_CHANGE_ALERT_TECHNICAL=1` 仅调试用旧表格。
   **严禁**：生成三表宏观看板；按任务条数排名当过载；负责人缺失时输出人员轴 ✅；字段残缺时静默。
-  Final Answer 首行必须且只能为：`change_alert_result: alert_sent` 或 `change_alert_result: all_clear`
+  User-facing result 首行必须且只能为：`change_alert_result: alert_sent` 或 `change_alert_result: all_clear`
 mcp_tools:
   - mcp:atom_lark_notifier
 native_tools:
@@ -42,7 +42,7 @@ tools:
   → 全 ✅ → 静默（change_alert_result: all_clear）
 ```
 
-**Agent 角色（默认）**：**不启动完整 ReAct Agent**。查数 + 三轴规则 + 决策门由 Python 完成；**推送正文默认由 LLM 读 fact_pack 生成**（`_llm_polish_change_alert_narrative`），无需再开子 Agent。
+**Agent 角色（默认）**：**不启动完整 WorkOrder Agent**。查数 + 三轴规则 + 决策门由 Python 完成；**推送正文默认由 LLM 读 fact_pack 生成**（`_llm_polish_change_alert_narrative`），无需再开子 Agent。
 
 **预取失败**：宿主 Python 按 B-TOOL → B-S1+B-4 重试链补跑（`run_worker_b_host_bootstrap`）；**禁止** Agent 自由 `db_query`。仍失败则 fact_pack 标注 ⚠️ 数据缺口并可选降级推送。
 
@@ -123,7 +123,7 @@ tools:
 | 主推送群 | `PMO_CHANGE_ALERT_CHAT_ID`（兼容 `PMO_BITABLE_WATCH_CHAT_ID`） | .env |
 | 监控群（双群推送时） | `PMO_CHANGE_ALERT_MONITOR_CHAT_ID`（兼容 `PMO_BITABLE_WATCH_MONITOR_CHAT_ID`） | .env 或代码内置监控群 |
 
-**禁止**在推送工具 Action Input 中手写 `oc_…` chat_id；由宿主 / `.env` 注入。
+**禁止**在推送工具 tool input 中手写 `oc_…` chat_id；由宿主 / `.env` 注入。
 
 SSOT 代码：`l3_node/pmo_lark_env.py`；YAML 模板：`config/skills/pmo-copilot/pmo_bitable_watch.yaml`（占位 `${PMO_CHANGE_ALERT_*}`）。
 
@@ -167,7 +167,7 @@ SSOT 代码：`l3_node/pmo_lark_env.py`；YAML 模板：`config/skills/pmo-copil
 - [ ] 字段残缺是否仍可能推送数据质量预警？
 - [ ] 全 ✅ 时是否 **未** 调 notifier？
 - [ ] 有告警时是否双群推送？
-- [ ] Final Answer / 日志是否含 `change_alert_result:`？
+- [ ] User-facing result / 日志是否含 `change_alert_result:`？
 
 ---
 

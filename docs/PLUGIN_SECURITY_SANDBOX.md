@@ -1,7 +1,7 @@
 # 战役五：隔离区与代码沙箱
 
-**状态**: 已实现（Python 沙箱） | 演进方向：混合动力沙箱  
-**定位**: 保卫 Layer 2 绝对安全  
+**状态**: 已实现（Python 沙箱） | 演进方向：混合动力沙箱
+**定位**: 保卫 Layer 2 绝对安全
 **演进**: 详见 [HYBRID_SANDBOX_ARCHITECTURE.md](./HYBRID_SANDBOX_ARCHITECTURE.md)（WASM + UDS 划时代方案）
 
 ---

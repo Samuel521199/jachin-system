@@ -1,7 +1,7 @@
 # 每日 BI 深度分析战报 — Skill 设计文档
 
-**版本**: 1.0  
-**状态**: 设计规范（待实现）  
+**版本**: 1.0
+**状态**: 设计规范（待实现）
 **定位**: 独立业务 Skill，高内聚低耦合，不侵入现有 HR 招聘逻辑
 
 ---
@@ -19,8 +19,8 @@
 
 ## 二、阶段一：通用 MCP 工具
 
-**存放路径**: `l3_node/primitives/mcp/mcp_tools/bi/`  
-**注册前缀**: `mcp:`  
+**存放路径**: `l3_node/primitives/mcp/mcp_tools/bi/`
+**注册前缀**: `mcp:`
 **目录规范**: 详见 [08_BI_MCP_AND_SKILL_LAYOUT.md](./08_BI_MCP_AND_SKILL_LAYOUT.md)
 
 ### 2.1 atom_web_scraper（通用网页抓取器）
@@ -104,8 +104,8 @@
 
 ## 三、阶段二：业务 Skill
 
-**存放路径**: `l3_node/primitives/skills/bi/bi_daily_report/main_skill.py`  
-**定位**: 统筹全局的「技能大脑」，编排 MCP 调用与 LLM 洞察  
+**存放路径**: `l3_node/primitives/skills/bi/bi_daily_report/main_skill.py`
+**定位**: 统筹全局的「技能大脑」，编排 MCP 调用与 LLM 洞察
 **目录规范**: 详见 [08_BI_MCP_AND_SKILL_LAYOUT.md](./08_BI_MCP_AND_SKILL_LAYOUT.md)
 
 ### 3.1 主流程

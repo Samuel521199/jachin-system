@@ -1,4 +1,4 @@
-﻿"""
+"""
 启动时修正 ~/.jachin/mcp_servers.json 中过期的 hr-atomic-tools 路径，避免整条 MCP 握手被无效配置干扰；
 并在用户尚未配置任何官方 server-filesystem 时，自动追加一条默认条目（与 skills_repo 插件同 id，避免双实例）；
 尚未配置 **mcp-server-fetch**（``python -m mcp_server_fetch``）时追加官方 URL 抓取 MCP（工具名多为 ``fetch``）。

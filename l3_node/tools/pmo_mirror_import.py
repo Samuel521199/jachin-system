@@ -191,15 +191,15 @@ def resolve_md_files(
         try:
             from l3_node.paths import get_app_root
 
-            legacy = (
+            archived = (
                 get_app_root()
                 / "docs"
                 / "bi_daily_report"
                 / "bi_project"
                 / "00_SYNC_MANIFEST.json"
             )
-            if legacy.is_file():
-                return resolve_md_files(manifest_path=legacy, pull_dir=pull_dir)
+            if archived.is_file():
+                return resolve_md_files(manifest_path=archived, pull_dir=pull_dir)
         except Exception:
             pass
         raise FileNotFoundError(f"manifest 不存在且未指定 pull_dir: {mp}")

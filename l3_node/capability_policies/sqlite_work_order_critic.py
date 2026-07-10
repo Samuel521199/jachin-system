@@ -1,4 +1,4 @@
-"""SQLite Action Critic pre-execution hook."""
+﻿"""SQLite WorkOrder Critic pre-execution hook."""
 
 from __future__ import annotations
 
@@ -23,9 +23,9 @@ def mark_sqlite_experience_save_gate(ctx: PipelineContext, tool: str) -> None:
 
         if tool_id_is_sqlite_read_or_write(tool):
             try:
-                from l3_node.critic_agent import action_critic_enabled
+                from l3_node.work_order_critic import work_order_critic_enabled
 
-                if not action_critic_enabled():
+                if not work_order_critic_enabled():
                     ctx.metadata["_l4_exp_save_gate"] = True
             except Exception:
                 ctx.metadata["_l4_exp_save_gate"] = True
@@ -33,7 +33,7 @@ def mark_sqlite_experience_save_gate(ctx: PipelineContext, tool: str) -> None:
         pass
 
 
-async def maybe_reject_sqlite_action(
+async def maybe_reject_sqlite_work_order(
     *,
     ctx: PipelineContext,
     tool: str,
@@ -43,18 +43,18 @@ async def maybe_reject_sqlite_action(
     observation_excerpt_fn: Callable[[list[dict[str, Any]] | None], str],
     followup_user_text_fn: Callable[[str, str], str],
 ) -> bool:
-    """Run Action Critic for SQLite tools and inject a corrective Observation on failure."""
+    """Run WorkOrder Critic for SQLite tools and inject a corrective Verification evidence on failure."""
 
     if not tool_entry_looks_like_sqlite_family({"id": tool}):
         return False
     try:
-        from l3_node.critic_agent import (
-            action_critic_enabled,
-            action_critic_max_fails,
-            evaluate_action,
+        from l3_node.work_order_critic import (
+            work_order_critic_enabled,
+            work_order_critic_max_fails,
+            evaluate_work_order,
         )
 
-        if not action_critic_enabled():
+        if not work_order_critic_enabled():
             return False
 
         sem_crit: dict[str, Any] = {}
@@ -64,10 +64,10 @@ async def maybe_reject_sqlite_action(
             if isinstance(sx, dict):
                 sem_crit = sx
 
-        proposed_action = {
+        proposed_work_order = {
             "tool_id": tool,
-            "action_input": (inp or "")[:12000],
-            "assistant_react_excerpt": (response or "")[:8000],
+            "work_order_input": (inp or "")[:12000],
+            "assistant_work_order_excerpt": (response or "")[:8000],
         }
         user_intent = (ctx.intent or "").strip()
         if not user_intent:
@@ -88,11 +88,11 @@ async def maybe_reject_sqlite_action(
                 pass
 
         obs_for_critic = observation_excerpt_fn(messages)
-        ok, critique = await evaluate_action(
+        ok, critique = await evaluate_work_order(
             user_intent,
-            proposed_action,
+            proposed_work_order,
             sem_crit,
-            react_observation_excerpt=obs_for_critic,
+            work_order_observation_excerpt=obs_for_critic,
         )
         if ok:
             if on_step:
@@ -124,11 +124,11 @@ async def maybe_reject_sqlite_action(
             except Exception:
                 pass
 
-        max_fails = action_critic_max_fails()
+        max_fails = work_order_critic_max_fails()
         streak = int(ctx.metadata.get("_l4_critic_reject_streak") or 0) + 1
         ctx.metadata["_l4_critic_reject_streak"] = streak
         logger.info(
-            "[CapabilityHook][sqlite_action_critic] block tool=%s streak=%d/%d critique_preview=%r",
+            "[CapabilityHook][sqlite_work_order_critic] block tool=%s streak=%d/%d critique_preview=%r",
             tool,
             streak,
             max_fails,
@@ -136,7 +136,7 @@ async def maybe_reject_sqlite_action(
         )
         exec_trace(
             logger,
-            "ActionCritic block streak=%s/%s tool=%s",
+            "WorkOrderCritic block streak=%s/%s tool=%s",
             streak,
             max_fails,
             (tool or "")[:80],
@@ -144,23 +144,23 @@ async def maybe_reject_sqlite_action(
         if streak >= max_fails:
             body = (
                 f"[System Critic Error] 已连续 {max_fails} 次未通过逻辑审查！警报！\n"
-                "绝对禁止输出 Final Answer 放弃任务！绝对禁止把任务推给统帅！\n"
-                "现在，你必须立刻、马上输出一个合法的只读 Action（如 mcp:query 配合 SELECT，或 mcp:read_records / read_query / list_tables），"
-                "去获取必要的数据 Observation。只有拿到数据后，再在下一步执行修改！立刻重试！\n"
+                "绝对禁止输出 User-facing result 放弃任务！绝对禁止把任务推给统帅！\n"
+                "现在，你必须立刻、马上生成一个合法的只读 WorkOrder（如 mcp:query 配合 SELECT，或 mcp:read_records / read_query / list_tables），"
+                "去获取必要的数据 Verification evidence。只有拿到数据后，再在下一步执行修改！立刻重试！\n"
                 f"（上一轮审查意见供你修正：{critique}）"
             )
         else:
             body = (
-                f"[System Critic Error] 你的 Action 未通过逻辑审查：{critique} "
+                f"[System Critic Error] 你的 WorkOrder 未通过逻辑审查：{critique} "
                 "请严格按 L4 SOP：<probe> 探查 Schema，<map> 结合业务语义层，<execute> 使用实际工具："
                 "只读可用 mcp:query(SELECT)、mcp:read_records、list_tables；"
-                "写入可用 mcp:update_records、write_query 或 mcp:query(UPDATE)；同一对话内连续执行，勿 Final Answer 中断。"
+                "写入可用 mcp:update_records、write_query 或 mcp:query(UPDATE)；同一对话内连续执行，勿 User-facing result 中断。"
             )
         messages.append({"role": "assistant", "content": response})
         messages.append({"role": "user", "content": followup_user_text_fn(body, str(tool or ""))})
         return True
     except Exception as exc:
-        logger.debug("[CapabilityHook][sqlite_action_critic] skipped: %s", exc)
+        logger.debug("[CapabilityHook][sqlite_work_order_critic] skipped: %s", exc)
         try:
             from l3_node.experience_memory import tool_id_is_sqlite_read_or_write
 

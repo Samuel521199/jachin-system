@@ -1,4 +1,4 @@
-"""
+﻿"""
 PMO 宏观看板（Work 总）：Worker B/C 宿主预取 → GFM 战报 → 飞书 native_table 卡片。
 
 SSOT：PMO skill package; macro dashboard is business capability code, not kernel architecture。
@@ -498,12 +498,12 @@ def run_macro_dashboard_push(
     ensure_pmo_dotenv_loaded()
     from l3_node.channels.lark.turn_chat_context import peek_lark_chat_id_for_tools
     from l3_node.pmo_lark_env import pmo_delivery_targets_debug
-    from l3_node.pmo_lark_push_guard import pmo_reject_legacy_primary_chat_id
+    from l3_node.pmo_lark_push_guard import pmo_reject_archived_primary_chat_id
     from l3_node.pmo_push_audit_log import log_pmo_lark_push, log_pmo_lark_push_plan
 
     session_chat = peek_lark_chat_id_for_tools()
     dbg = pmo_delivery_targets_debug(session_chat)
-    explicit_primary = pmo_reject_legacy_primary_chat_id(chat_id)
+    explicit_primary = pmo_reject_archived_primary_chat_id(chat_id)
     primary = (explicit_primary or pmo_effective_primary_chat_id(session_chat)).strip()
     if not primary:
         return {

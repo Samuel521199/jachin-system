@@ -23,7 +23,7 @@ class Intent:
     requires_device: bool = False  # 是否需要设备
     device_capability: Optional[str] = None  # 设备能力名称
     confidence: float = 0.0  # 置信度
-    
+
     def __post_init__(self):
         if self.parameters is None:
             self.parameters = {}
@@ -31,34 +31,34 @@ class Intent:
 
 class IntentParser:
     """意图解析器"""
-    
+
     def __init__(self, llm_provider: Optional[str] = None):
         """
         初始化意图解析器
-        
+
         Args:
             llm_provider: LLM提供者，默认使用settings中的配置
         """
         self.llm_provider = llm_provider or settings.LLM_PROVIDER
         self.factory = LLMProviderFactory()
-    
+
     async def parse_intent(self, user_input: str) -> Intent:
         """
         解析用户意图
-        
+
         Args:
             user_input: 用户输入文本
-        
+
         Returns:
             Intent: 解析后的意图对象
         """
         try:
             # 使用LLM解析意图
             llm = self.factory.create_provider(self.llm_provider)
-            
+
             # 构建提示词
             prompt = self._build_intent_prompt(user_input)
-            
+
             # 调用LLM
             response = await llm.chat(
                 messages=[
@@ -69,13 +69,13 @@ class IntentParser:
                 temperature=0.3,  # 低温度以获得更确定的结果
                 max_tokens=500,
             )
-            
+
             # 解析LLM响应
             intent = self._parse_llm_response(user_input, response.text)
-            
+
             logger.info(f"Parsed intent: {intent.intent_type} (confidence: {intent.confidence})")
             return intent
-            
+
         except Exception as e:
             logger.error(f"Failed to parse intent: {e}", exc_info=True)
             # 返回默认意图
@@ -83,14 +83,14 @@ class IntentParser:
                 intent_type="unknown",
                 confidence=0.0,
             )
-    
+
     def _build_intent_prompt(self, user_input: str) -> str:
         """
         构建意图解析提示词
-        
+
         Args:
             user_input: 用户输入
-        
+
         Returns:
             str: 提示词
         """
@@ -113,17 +113,17 @@ Return only the JSON object, no additional text."""
     def _parse_llm_response(self, user_input: str, llm_response: str) -> Intent:
         """
         解析LLM响应
-        
+
         Args:
             user_input: 原始用户输入
             llm_response: LLM响应文本
-        
+
         Returns:
             Intent: 意图对象
         """
         import json
         import re
-        
+
         try:
             # 尝试提取JSON
             json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
@@ -133,7 +133,7 @@ Return only the JSON object, no additional text."""
             else:
                 # 如果没有找到JSON，尝试直接解析
                 data = json.loads(llm_response)
-            
+
             # 创建Intent对象
             intent = Intent(
                 intent_type=data.get("intent_type", "unknown"),
@@ -144,26 +144,26 @@ Return only the JSON object, no additional text."""
                 device_capability=data.get("device_capability"),
                 confidence=float(data.get("confidence", 0.0)),
             )
-            
+
             return intent
-            
+
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             logger.warning(f"Failed to parse LLM response as JSON: {e}, using fallback")
             # 使用简单的关键词匹配作为后备方案
             return self._fallback_intent_parsing(user_input)
-    
+
     def _fallback_intent_parsing(self, user_input: str) -> Intent:
         """
         后备意图解析（基于关键词）
-        
+
         Args:
             user_input: 用户输入
-        
+
         Returns:
             Intent: 意图对象
         """
         user_input_lower = user_input.lower()
-        
+
         # 简单的关键词匹配
         if any(word in user_input_lower for word in ["执行", "运行", "调用", "execute", "run", "call"]):
             return Intent(

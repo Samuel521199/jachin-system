@@ -1,8 +1,8 @@
 # Kalaroko Web 性能自动化监控哨兵 — 技术设计文档（TDD）
 
-**版本**：0.1（概念设计）  
-**状态**：草案  
-**适用范围**：Jachin AI OS 上层 Skill 与 Python MCP Server 双层协作  
+**版本**：0.1（概念设计）
+**状态**：草案
+**适用范围**：Jachin AI OS 上层 Skill 与 Python MCP Server 双层协作
 **约束**：概念设计阶段以架构、接口与数据契约为准；实现细节在开发阶段另行落地。
 
 ---

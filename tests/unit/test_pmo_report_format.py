@@ -1,9 +1,9 @@
-﻿"""PMO 战报 📊 表 6 列 SSOT 校验。"""
+"""PMO 战报 📊 表 6 列 SSOT 校验。"""
 from __future__ import annotations
 
 import json
 
-from l3_node.agent_core import (
+from l3_node.pmo_agent_policy import (
     _PMO_MD_SECTION_DEMAND,
     _pmo_branch_a_notifier_markdown_is_complete,
     _pmo_notifier_markdown_missing_sections,

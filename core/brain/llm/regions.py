@@ -59,10 +59,10 @@ REGION_CONFIGS: Dict[Region, RegionConfig] = {
 def get_region_config(region: Region) -> RegionConfig:
     """
     获取地域配置
-    
+
     Args:
         region: 地域枚举值
-        
+
     Returns:
         RegionConfig 配置对象
     """

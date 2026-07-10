@@ -1,4 +1,4 @@
-﻿"""
+"""
 PMO 子进程复用本机常驻 L3 的 MCP（避免第二套 stdio 子进程拖死主 L3）。
 
 适用：``start-layer3.ps1`` 已起 ``python -m l3_node`` + 后台 ``run_pmo_copilot_skill.py``。

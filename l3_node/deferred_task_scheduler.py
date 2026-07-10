@@ -1,4 +1,4 @@
-﻿"""
+"""
 通用定时任务调度器（L3 进程内）
 
 供模型通过 ``util:schedule_task`` 工具将**任意**用户意图注册为一次性未来任务。
@@ -157,16 +157,16 @@ def _build_enriched_intent(intent: str, lark_chat_id: str | None) -> str:
 
     suffix = (
         f"\n\n【回馈渠道｜宿主已绑定 originating_lark_chat_id】`{lark_chat_id}`\n"
-        "请把提醒或可交付结果写在 **Final Answer**（面向用户、简短可读）。\n"
+        "请把提醒或可交付结果写在 **User-facing result**（面向用户、简短可读）。\n"
         "**禁止**调用 util:lark_send_text / util:desktop_message_box（除非你被要求发到**别的**会话）；\n"
-        "本轮结束后 **宿主会自动**把你的 Final Answer 推送到上述会话。\n"
+        "本轮结束后 **宿主会自动**把你的 User-facing result 推送到上述会话。\n"
     )
     return prefix + clean + suffix
 
 
 def _send_deferred_result_to_lark(text: str, chat_id: str) -> None:
     """
-    定时任务完成后由宿主推送 Final Answer，不经 LLM 自行选收件人。
+    定时任务完成后由宿主推送 User-facing result，不经 LLM 自行选收件人。
     直接调用 lark.im.send_text，避免 util:lark_send_text 被 LARK_USER_OPEN_ID 等覆盖。
     """
     if not (chat_id or "").strip():
@@ -182,7 +182,7 @@ def _send_deferred_result_to_lark(text: str, chat_id: str) -> None:
             receive_id_type="chat_id",
         )
         if result.get("status") == "success":
-            logger.info("[deferred-sched] Final Answer 已推送到 Lark chat_id …%s", cid[-16:])
+            logger.info("[deferred-sched] User-facing result 已推送到 Lark chat_id …%s", cid[-16:])
         else:
             logger.warning(
                 "[deferred-sched] Lark 推送失败 chat_id …%s: %s",
@@ -474,7 +474,7 @@ def schedule_task(
             "error": "须提供 fire_at_iso、fire_at_unix_ms、delay_seconds 或 fire_at_natural 之一",
         }
 
-    # 模型漏传时：从当前 ReAct 轮次绑定的 Lark 会话兜底（与接收消息时的 chat_id 一致）
+    # 模型漏传时：从当前 RoleExecutionAgent 轮次绑定的 Lark 会话兜底（与接收消息时的 chat_id 一致）
     _lc = (lark_chat_id or "").strip() or None
     if not _lc:
         try:

@@ -1,4 +1,4 @@
-"""
+﻿"""
 阶段 C：WorkflowSpec — 线性 steps、**depends_on（DAG）** 拓扑执行，以及 **持久化运行时**
 （on_failure、retry、retry_delay、resume）。与 HR `DAGWorkflow` 独立并存，互不替换。
 
@@ -8,7 +8,7 @@
   成功后默认删除状态文件（可用 `keep_completed_state` 保留）。
 
 YAML 步骤扩展字段：
-  on_failure: abort | continue | retry   # 默认 abort；legacy: continue_on_error: true → continue
+  on_failure: abort | continue | retry   # 默认 abort；archived: continue_on_error: true → continue
   max_retries: 3                          # retry 时生效，默认 1
   retry_delay_sec: 60                    # >0 时未到时间则返回 paused_retry，需再次调用 resume
 

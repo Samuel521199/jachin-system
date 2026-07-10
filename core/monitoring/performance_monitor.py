@@ -31,12 +31,12 @@ class PerformanceStats:
     min_time: float = float('inf')
     max_time: float = 0.0
     errors: int = 0
-    
+
     @property
     def avg_time(self) -> float:
         """平均时间"""
         return self.total_time / self.count if self.count > 0 else 0.0
-    
+
     @property
     def error_rate(self) -> float:
         """错误率"""
@@ -45,11 +45,11 @@ class PerformanceStats:
 
 class PerformanceMonitor:
     """性能监控器"""
-    
+
     def __init__(self, max_history: int = 1000):
         """
         初始化性能监控器
-        
+
         Args:
             max_history: 最大历史记录数
         """
@@ -57,7 +57,7 @@ class PerformanceMonitor:
         self.metrics: deque = deque(maxlen=max_history)
         self.stats: Dict[str, PerformanceStats] = defaultdict(PerformanceStats)
         self.recent_errors: deque = deque(maxlen=100)
-    
+
     def record(
         self,
         name: str,
@@ -67,7 +67,7 @@ class PerformanceMonitor:
     ):
         """
         记录性能指标
-        
+
         Args:
             name: 指标名称（如 "plugin.execution", "intent.planning"）
             duration: 持续时间（秒）
@@ -80,14 +80,14 @@ class PerformanceMonitor:
             tags=tags or {}
         )
         self.metrics.append(metric)
-        
+
         # 更新统计
         stats = self.stats[name]
         stats.count += 1
         stats.total_time += duration
         stats.min_time = min(stats.min_time, duration)
         stats.max_time = max(stats.max_time, duration)
-        
+
         if not success:
             stats.errors += 1
             self.recent_errors.append({
@@ -96,21 +96,21 @@ class PerformanceMonitor:
                 "tags": tags or {},
                 "timestamp": datetime.now()
             })
-    
+
     def get_stats(self, name: Optional[str] = None) -> Dict[str, PerformanceStats]:
         """
         获取统计信息
-        
+
         Args:
             name: 指标名称（如果为 None，返回所有统计）
-        
+
         Returns:
             统计信息字典
         """
         if name:
             return {name: self.stats.get(name, PerformanceStats())}
         return dict(self.stats)
-    
+
     def get_recent_metrics(
         self,
         name: Optional[str] = None,
@@ -118,11 +118,11 @@ class PerformanceMonitor:
     ) -> List[PerformanceMetric]:
         """
         获取最近的指标
-        
+
         Args:
             name: 指标名称（如果为 None，返回所有指标）
             minutes: 最近多少分钟
-        
+
         Returns:
             指标列表
         """
@@ -133,14 +133,14 @@ class PerformanceMonitor:
                 if m.name == name and m.timestamp >= cutoff
             ]
         return [m for m in self.metrics if m.timestamp >= cutoff]
-    
+
     def get_recent_errors(self, minutes: int = 5) -> List[Dict[str, Any]]:
         """
         获取最近的错误
-        
+
         Args:
             minutes: 最近多少分钟
-        
+
         Returns:
             错误列表
         """
@@ -149,16 +149,16 @@ class PerformanceMonitor:
             e for e in self.recent_errors
             if e["timestamp"] >= cutoff
         ]
-    
+
     def check_alerts(self) -> List[Dict[str, Any]]:
         """
         检查告警
-        
+
         Returns:
             告警列表
         """
         alerts = []
-        
+
         for name, stats in self.stats.items():
             # 错误率告警
             if stats.error_rate > 0.1:  # 错误率 > 10%
@@ -168,7 +168,7 @@ class PerformanceMonitor:
                     "error_rate": stats.error_rate,
                     "message": f"{name} has high error rate: {stats.error_rate:.2%}"
                 })
-            
+
             # 延迟告警
             if stats.avg_time > 5.0:  # 平均延迟 > 5 秒
                 alerts.append({
@@ -177,9 +177,9 @@ class PerformanceMonitor:
                     "avg_time": stats.avg_time,
                     "message": f"{name} has high latency: {stats.avg_time:.2f}s"
                 })
-        
+
         return alerts
-    
+
     def reset(self):
         """重置所有统计"""
         self.metrics.clear()
@@ -202,7 +202,7 @@ def get_performance_monitor() -> PerformanceMonitor:
 # 上下文管理器：用于自动记录性能指标
 class PerformanceContext:
     """性能上下文管理器"""
-    
+
     def __init__(
         self,
         name: str,
@@ -214,11 +214,11 @@ class PerformanceContext:
         self.tags = tags or {}
         self.start_time: Optional[float] = None
         self.success = True
-    
+
     def __enter__(self):
         self.start_time = time.time()
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         duration = time.time() - self.start_time
         success = exc_type is None
@@ -230,11 +230,11 @@ class PerformanceContext:
 def monitor_performance(name: Optional[str] = None, tags: Optional[Dict[str, str]] = None):
     """
     性能监控装饰器
-    
+
     Args:
         name: 指标名称（如果为 None，使用函数名）
         tags: 标签
-    
+
     Example:
         @monitor_performance("plugin.execution", {"plugin_id": "com.jachin.sys-monitor"})
         async def invoke_plugin(...):
@@ -242,18 +242,18 @@ def monitor_performance(name: Optional[str] = None, tags: Optional[Dict[str, str
     """
     def decorator(func):
         metric_name = name or f"{func.__module__}.{func.__name__}"
-        
+
         async def async_wrapper(*args, **kwargs):
             with PerformanceContext(metric_name, tags=tags):
                 return await func(*args, **kwargs)
-        
+
         def sync_wrapper(*args, **kwargs):
             with PerformanceContext(metric_name, tags=tags):
                 return func(*args, **kwargs)
-        
+
         if asyncio.iscoroutinefunction(func):
             return async_wrapper
         else:
             return sync_wrapper
-    
+
     return decorator

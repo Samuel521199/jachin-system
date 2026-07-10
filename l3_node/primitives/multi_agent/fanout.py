@@ -1,4 +1,4 @@
-﻿"""
+"""
 扇出并行（Fan-out Parallel）多 Agent 编排器。
 
 适用场景：

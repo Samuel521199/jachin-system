@@ -34,7 +34,7 @@ PMO_NATIVE_TOOLS_LIST: list[dict[str, Any]] = [
             "**pmo_raw_records 列**：id, **source_view**, source_file, row_index, raw_text, **fields(JSON)**, synced_at。"
             "**pmo_views_meta 列**：view_id, view_name, record_count, columns_json。"
             "业务字段在 fields JSON 内；**父记录** 为链接数组（几乎 never IS NULL）。"
-            "Action Input：**裸 SELECT SQL**（推荐）；或 JSON {\"sql\":\"...\"}。"
+            "tool input：**裸 SELECT SQL**（推荐）；或 JSON {\"sql\":\"...\"}。"
             "长 SQL 勿用 JSON 包装（内嵌引号易 missing_sql）。可选 max_rows（默认 200）。"
             "返回 status/rows/row_count/truncated；0 行或报错时可能含 hints。"
         ),
@@ -750,7 +750,7 @@ _C2_REQUIREMENT_JSON_RE = re.compile(
 
 
 def pmo_sql_has_product_fields_on_dev_view(sql: str) -> bool:
-    """开发/人员表误用产品视图 JSON 键名（Observation 全 null 或字段找错根因）。"""
+    """开发/人员表误用产品视图 JSON 键名（Verification evidence 全 null 或字段找错根因）。"""
     s = sql or ""
     low = s.lower()
     if not any(v.lower() in low for v in _DEV_SSOT_VIEW_IDS):
@@ -993,9 +993,9 @@ _DB_QUERY_JSON_SQL_RE = re.compile(
 )
 
 
-def parse_db_query_action_input(inp: str) -> dict[str, Any]:
+def parse_db_query_work_order_input(inp: str) -> dict[str, Any]:
     """
-    解析 core:db_query 的 Action Input。
+    解析 core:db_query 的 tool input。
 
     模型常输出 ``{"sql": "SELECT ..."}``；SQL 内未转义 ``"`` 会导致 ``json.loads`` 失败，
     进而 ``params={}`` → missing_sql。本函数在 JSON 失败时从正文回收 SELECT 语句。
@@ -1050,7 +1050,7 @@ def _validate_select_sql(sql: str) -> None:
 
 
 def _db_query_hints(sql: str, *, message: str = "", row_count: int | None = None) -> list[str]:
-    """常见 PMO 查询误区 → 可操作建议（Observation hints）。"""
+    """常见 PMO 查询误区 → 可操作建议（Verification evidence hints）。"""
     hints: list[str] = []
     sl = (sql or "").lower()
     msg = (message or "").lower()
@@ -1619,7 +1619,7 @@ def _apply_write(
 
 
 def _prepend_worker_b_field_align_hints(hints: list[str] | None, sql: str) -> list[str]:
-    """Worker B 相关 source_view：在 Observation 顶部附带字段对齐摘要。"""
+    """Worker B 相关 source_view：在 Verification evidence 顶部附带字段对齐摘要。"""
     try:
         from l3_node.pmo_worker_b_field_align import field_align_hint_for_sql
 
@@ -1647,11 +1647,11 @@ def run_db_query(
             "status": "error",
             "error": "missing_sql",
             "message": (
-                "sql 不能为空。Action Input 请 **直接写 SELECT…; 裸 SQL**，"
+                "sql 不能为空。tool input 请 **直接写 SELECT…; 裸 SQL**，"
                 "禁止 {\"sql\":\"...\"} JSON 包装（SQL 内双引号会使 JSON 解析失败）。"
             ),
             "hints": [
-                "✅ 正确：Action Input 第一行即以 SELECT 开头，直至分号结束。"
+                "✅ 正确：tool input 第一行即以 SELECT 开头，直至分号结束。"
                 "❌ 错误：{\"sql\": \"SELECT ...\"}（易导致 missing_sql）",
             ],
         }

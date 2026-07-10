@@ -17,7 +17,7 @@ def client():
 def test_health_check(client):
     """测试健康检查端点"""
     response = client.get("/health")
-    
+
     assert response.status_code == 200
     data = response.json()
     assert "status" in data
@@ -27,7 +27,7 @@ def test_health_check(client):
 def test_api_docs(client):
     """测试API文档端点"""
     response = client.get("/docs")
-    
+
     # Swagger UI应该返回200
     assert response.status_code == 200
 
@@ -35,7 +35,7 @@ def test_api_docs(client):
 def test_list_skills_endpoint(client):
     """测试列出技能端点"""
     response = client.get("/api/v3/skills")
-    
+
     # 应该返回200（即使没有技能）
     assert response.status_code == 200
     data = response.json()
@@ -45,7 +45,7 @@ def test_list_skills_endpoint(client):
 def test_cluster_stats_endpoint(client):
     """测试集群统计端点"""
     response = client.get("/api/v3/cluster/stats")
-    
+
     # 应该返回200
     assert response.status_code == 200
     data = response.json()

@@ -1,4 +1,4 @@
-﻿"""
+"""
 PMO 人员任务矩阵查询（案例 SSOT：PMO_PERSONNEL_QUERY_CASE_STUDY_0601_SPRINT §5～§11）。
 
 Python 解析 ``pmo_raw_records.fields``：两视图合并、Person 双形态、current_sprint（sd≤today）。

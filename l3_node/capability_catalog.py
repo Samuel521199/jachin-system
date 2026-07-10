@@ -40,7 +40,7 @@ def _inject_tags(anchor: str) -> tuple[str, str]:
 
 _RECRUITMENT_FALLBACK = """【域：招聘】若可用工具中含 atom_post_job_boss、hr_scheduler_send_confirm_prompt、add_automated_recruitment_task、stop_automated_recruitment、atom_greet_recommend_boss、atom_lark_chat、hr_analyze_resume 等，则招聘能力已就绪；请用 MCP 落实意图。飞书极短指令可能已被 lark_workflow_command_interceptor 处理；WebSocket/HTTP 仍应调工具。详细步骤见注入的 SKILL.md（若有）。"""
 
-_OFFICE_PPT_FALLBACK = """【域：PPTX】若可用工具中含 create_presentation、save_presentation 等（id 多为 mcp: 前缀），则本机 PowerPoint MCP 已连接：必须用 ReAct 调用这些工具完成 PPT，禁止谎称无法连接 MCP 或只给替代 Python 脚本。用 presentation_id 串联步骤；save 时使用绝对路径（Windows 勿用未展开的 ~）。"""
+_OFFICE_PPT_FALLBACK = """【域：PPTX】若可用工具中含 create_presentation、save_presentation 等（id 多为 mcp: 前缀），则本机 PowerPoint MCP 已连接：必须用 RoleExecutionAgent 调用这些工具完成 PPT，禁止谎称无法连接 MCP 或只给替代 Python 脚本。用 presentation_id 串联步骤；save 时使用绝对路径（Windows 勿用未展开的 ~）。"""
 
 _A_SHARE_FALLBACK = """【域：A 股 / AKShare】若工具列表中出现 core:akshare_a_share_hist、core:akshare_company_info：分析 A 股走势、K 线、财报摘要时**必须先**依次调用二者（先行情后基本面），用返回的 JSON 事实撰写结论。**禁止**用 mcp:fetch 捏造不存在的文章链接或靠泛化「宏观因素」代替数据。"""
 

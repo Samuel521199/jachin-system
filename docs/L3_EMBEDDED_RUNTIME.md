@@ -1,14 +1,14 @@
 # L3 嵌入式 Python / Node 运行时（MCP stdio）
 
-**版本**: 2026-04  
-**定位**：在**目标机不安装**系统 Python / Node 的前提下，仍能拉起 `python -m mcp_server_*`、`npx -y @scope/mcp` 等 stdio MCP。  
+**版本**: 2026-04
+**定位**：在**目标机不安装**系统 Python / Node 的前提下，仍能拉起 `python -m mcp_server_*`、`npx -y @scope/mcp` 等 stdio MCP。
 **代码 SSOT**：`core/mcp_embedded_runtime.py`（路径解析）、`tools/mcp-runtime/README.txt`（目录约定）。
 
 ---
 
 ## 1. 为什么需要单独说明 Node
 
-多数「官方 MCP」（含 Anthropic 生态常用包）在配置里写作 **`command: npx`**。仅解压 `node.exe` 而**没有同目录的 `npx.cmd`（Windows）** 时，`npx` 无法解析。  
+多数「官方 MCP」（含 Anthropic 生态常用包）在配置里写作 **`command: npx`**。仅解压 `node.exe` 而**没有同目录的 `npx.cmd`（Windows）** 时，`npx` 无法解析。
 本仓库已支持：
 
 - 在 `~/.jachin/runtime/node/`（或 `JACHIN_APP_ROOT/runtime/node/`、**与 L3 Sidecar exe 同目录的 `runtime/node/`**）部署 **官方 Node 便携包完整内容**；
@@ -61,5 +61,5 @@
 ## 6. 相关文档
 
 - [L3_SLIM_DISTRIBUTION_AND_SUBSCRIBED_ARTIFACTS.md](./L3_SLIM_DISTRIBUTION_AND_SUBSCRIBED_ARTIFACTS.md) — slim L3 and subscribed artifact boundary
-- [SKILL_MCP_UPLOAD_SPEC.md](./SKILL_MCP_UPLOAD_SPEC.md) — `stdio_server` 与占位符  
+- [SKILL_MCP_UPLOAD_SPEC.md](./SKILL_MCP_UPLOAD_SPEC.md) — `stdio_server` 与占位符
 - [architecture/CURRENT_SYSTEM_ARCHITECTURE.md](./architecture/CURRENT_SYSTEM_ARCHITECTURE.md) — MCP 小节

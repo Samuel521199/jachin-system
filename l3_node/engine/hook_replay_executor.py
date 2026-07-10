@@ -1,4 +1,4 @@
-"""
+﻿"""
 Hook 回放执行器（路线图 §3.2.4 · P2）
 
 在 `hook_events.sqlite3`（`JACHIN_PERSIST_HOOKS=1`）基础上：
@@ -25,7 +25,7 @@ from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
-ReplayAction = Literal[
+ReplayWorkOrder = Literal[
     "none",
     "dag_resume",
     "retry_with_strategy",
@@ -138,7 +138,7 @@ class HookReplayResult:
     run_id: str
     event_count: int
     timeline: list[HookReplayTimelineItem]
-    recommended_action: ReplayAction
+    recommended_action: ReplayWorkOrder
     resume_intent: str
     strategies_tried: list[str]
     retry_reasons: list[str]
@@ -213,7 +213,7 @@ def _analyze_timeline(events: list[dict[str, Any]]) -> HookReplayResult:
             had_brief = True
             brief_reason = str(meta.get("_execution_brief_reason") or "")[:200]
 
-    action: ReplayAction = "inspect_timeline"
+    action: ReplayWorkOrder = "inspect_timeline"
     resume_parts: list[str] = []
 
     dag_probe: dict[str, Any] = {}

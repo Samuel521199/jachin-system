@@ -10,13 +10,13 @@ from l3_node.pmo_lark_env import DEFAULT_PMO_WAR_REPORT_MONITOR_CHAT_ID, pmo_mon
 PMO_WAR_REPORT_MONITOR_CHAT_ID = DEFAULT_PMO_WAR_REPORT_MONITOR_CHAT_ID
 
 # 历史 dev 主群：禁止作为推送目标（SKILL 示例 / 旧 sidecar 硬编码残留）
-PMO_LEGACY_BLOCKED_PUSH_CHAT_IDS = frozenset({
+PMO_ARCHIVED_BLOCKED_PUSH_CHAT_IDS = frozenset({
     "oc_437c98d11106295fb10751a5481ee465",
 })
 
 
-def pmo_is_legacy_blocked_chat_id(chat_id: str) -> bool:
-    return (chat_id or "").strip() in PMO_LEGACY_BLOCKED_PUSH_CHAT_IDS
+def pmo_is_archived_blocked_chat_id(chat_id: str) -> bool:
+    return (chat_id or "").strip() in PMO_ARCHIVED_BLOCKED_PUSH_CHAT_IDS
 
 
 def pmo_war_report_allowed_chat_ids(session_chat_id: str = "") -> frozenset[str]:
@@ -55,10 +55,10 @@ def pmo_guard_blocked_push_chat_payload(
 
     monitor_hint = pmo_monitor_chat_id()
 
-    if pmo_is_legacy_blocked_chat_id(cid):
+    if pmo_is_archived_blocked_chat_id(cid):
         return {
             "status": "error",
-            "error": "pmo_legacy_dev_chat_blocked",
+            "error": "pmo_archived_dev_chat_blocked",
             "blocked_chat_id": cid,
             "msg": (
                 f"【宿主拦截 · 推送守卫】禁止向历史 dev 群 `{cid}` 推送战报。"
@@ -93,9 +93,9 @@ def pmo_guard_observation_json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def pmo_reject_legacy_primary_chat_id(chat_id: str | None) -> str | None:
+def pmo_reject_archived_primary_chat_id(chat_id: str | None) -> str | None:
     """工具层：若显式主群为 dev 遗留 ID，视为未指定，回退 env/会话。"""
     cid = (chat_id or "").strip()
-    if cid and pmo_is_legacy_blocked_chat_id(cid):
+    if cid and pmo_is_archived_blocked_chat_id(cid):
         return None
     return cid or None

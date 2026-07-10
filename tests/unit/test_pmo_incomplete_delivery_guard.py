@@ -1,10 +1,10 @@
-﻿"""PMO：未完成读表/推送时禁止 Final Answer（含 JSON 笔记早停）。"""
+﻿"""PMO：未完成读表/推送时禁止 User-facing result（含 JSON 笔记早停）。"""
 from __future__ import annotations
 
 import json
 from unittest.mock import patch
 
-from l3_node.agent_core import (
+from l3_node.pmo_agent_policy import (
     PMO_BRANCH_A_REQUIRED_VIEW_IDS,
     _pmo_delivery_read_checklist_met,
     _pmo_init_required_views_from_bi,
@@ -60,7 +60,7 @@ def test_rejects_pmo_table_notes_json_final_answer() -> None:
     ans = json.dumps({"pmo_table_notes_refresh": True, "tables_read_count": 3})
     with patch("l3_node.agent_core._pmo_branch_a_requires_bi_pull", lambda c: True):
         blocked = _reject_pmo_branch_a_incomplete_delivery_guard(
-            ctx, messages, f"Final Answer: {ans}", ans, via="test"
+            ctx, messages, f"User-facing result: {ans}", ans, via="test"
         )
     assert blocked is True
     assert len(messages) == 2
@@ -72,7 +72,7 @@ def test_allows_after_notify_ok() -> None:
     messages: list = []
     with patch("l3_node.agent_core._pmo_branch_a_requires_bi_pull", lambda c: True):
         blocked = _reject_pmo_branch_a_incomplete_delivery_guard(
-            ctx, messages, "Final Answer: 已推送。", "已推送。", via="test"
+            ctx, messages, "User-facing result: 已推送。", "已推送。", via="test"
         )
     assert blocked is False
 

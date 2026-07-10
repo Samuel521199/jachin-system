@@ -88,7 +88,7 @@ class TTSProvider(str, Enum):
 
 class BaseTTSProvider(ABC):
     """语音合成提供者基类"""
-    
+
     @abstractmethod
     async def synthesize(
         self,
@@ -101,7 +101,7 @@ class BaseTTSProvider(ABC):
     ) -> bytes:
         """
         将文本合成为语音
-        
+
         Args:
             text: 要合成的文本
             voice: 语音名称/ID
@@ -109,12 +109,12 @@ class BaseTTSProvider(ABC):
             speed: 语速（0.5-2.0）
             pitch: 音调（0.5-2.0）
             **kwargs: 其他参数
-            
+
         Returns:
             音频数据（bytes）
         """
         pass
-    
+
     @abstractmethod
     async def synthesize_stream(
         self,
@@ -127,7 +127,7 @@ class BaseTTSProvider(ABC):
     ) -> AsyncIterator[bytes]:
         """
         流式合成语音
-        
+
         Args:
             text: 要合成的文本
             voice: 语音名称/ID
@@ -135,12 +135,12 @@ class BaseTTSProvider(ABC):
             speed: 语速
             pitch: 音调
             **kwargs: 其他参数
-            
+
         Yields:
             音频数据块（bytes）
         """
         pass
-    
+
     @abstractmethod
     def list_voices(self, language: Optional[str] = None) -> list:
         """列出可用的语音列表"""
@@ -261,7 +261,7 @@ class AliyunTTSProvider(BaseTTSProvider):
         except Exception as e:
             logger.error("AliyunTTSProvider.synthesize error: %s", e)
             raise
-    
+
     async def synthesize_stream(
         self,
         text: str,
@@ -275,7 +275,7 @@ class AliyunTTSProvider(BaseTTSProvider):
         # 对于不支持流式的服务，返回完整音频
         audio_data = await self.synthesize(text, voice, language, speed, pitch, **kwargs)
         yield audio_data
-    
+
     def list_voices(self, language: Optional[str] = None) -> list:
         """列出可用的语音列表（cosyvoice / sambert）"""
         voices = [
@@ -396,7 +396,7 @@ class EdgeTTSProvider(BaseTTSProvider):
 
         logger.error("Edge TTS 已用尽允许次数（主音色 + 最多 %d 次 fallback），静默放弃语音", EDGE_TTS_MAX_FALLBACK_COUNT)
         return b""
-    
+
     async def synthesize_stream(
         self,
         text: str,
@@ -431,12 +431,12 @@ class EdgeTTSProvider(BaseTTSProvider):
                     yield chunk["data"]
         except Exception as e:
             logger.error("Edge TTS synthesize_stream 失败: %s", e)
-    
+
     async def list_voices(self, language: Optional[str] = None) -> list:
         """列出可用的语音列表"""
         if not self.available:
             return []
-        
+
         try:
             voices = await self.edge_tts.list_voices()
             if language:
@@ -449,25 +449,25 @@ class EdgeTTSProvider(BaseTTSProvider):
 
 class TextToSpeech:
     """语音合成管理器"""
-    
+
     def __init__(self, provider: TTSProvider = TTSProvider.EDGE_TTS, **kwargs):
         """
         初始化语音合成管理器
-        
+
         Args:
             provider: 语音合成服务提供商
             **kwargs: 提供者特定参数
         """
         self.provider_type = provider
         self.provider: Optional[BaseTTSProvider] = None
-        
+
         if provider == TTSProvider.ALIYUN:
             self.provider = AliyunTTSProvider(**kwargs)
         elif provider == TTSProvider.EDGE_TTS:
             self.provider = EdgeTTSProvider(**kwargs)
         else:
             raise ValueError(f"Unsupported TTS provider: {provider}")
-    
+
     async def synthesize(
         self,
         text: str,
@@ -479,7 +479,7 @@ class TextToSpeech:
     ) -> bytes:
         """
         将文本合成为语音
-        
+
         Args:
             text: 要合成的文本
             voice: 语音名称/ID
@@ -487,7 +487,7 @@ class TextToSpeech:
             speed: 语速
             pitch: 音调
             **kwargs: 其他参数
-            
+
         Returns:
             音频数据（bytes）
         """
@@ -510,7 +510,7 @@ class TextToSpeech:
         except Exception as e:
             logger.error("TTS synthesize 失败: %s", e)
             return b""
-    
+
     async def synthesize_stream(
         self,
         text: str,
@@ -522,7 +522,7 @@ class TextToSpeech:
     ) -> AsyncIterator[bytes]:
         """
         流式合成语音
-        
+
         Args:
             text: 要合成的文本
             voice: 语音名称/ID
@@ -530,7 +530,7 @@ class TextToSpeech:
             speed: 语速
             pitch: 音调
             **kwargs: 其他参数
-            
+
         Yields:
             音频数据块（bytes）
         """
@@ -544,7 +544,7 @@ class TextToSpeech:
                 yield chunk
         except Exception as e:
             logger.error("TTS synthesize_stream 失败: %s", e)
-    
+
     async def list_voices(self, language: Optional[str] = None) -> list:
         """列出可用的语音列表"""
         if not self.provider:

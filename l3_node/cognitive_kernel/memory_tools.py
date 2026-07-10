@@ -1,4 +1,4 @@
-"""Memory tool compatibility helpers for the Cognitive Kernel."""
+"""Memory tool helpers for the Cognitive Kernel."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 
 
 async def recall_memory_search(query: str) -> str:
-    """Search Memory Nexus for the legacy ``recall_memory`` pseudo-action."""
+    """Search Memory Nexus for the ``recall_memory`` WorkOrder alias."""
 
     from l3_node.tool_call_cache import store_if_cacheable, try_get_cached
 

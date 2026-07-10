@@ -1,6 +1,6 @@
-﻿"""PMO：Final Answer 谎称已发飞书 的拦截正则（agent_core._pmo_final_answer_falsely_claims_lark_sent）。"""
+﻿"""PMO：User-facing result 谎称已发飞书 的拦截正则（agent_core._pmo_final_answer_falsely_claims_lark_sent）。"""
 
-from l3_node.agent_core import _pmo_final_answer_falsely_claims_lark_sent
+from l3_node.pmo_agent_policy import _pmo_final_answer_falsely_claims_lark_sent
 
 
 def test_claims_lark_push_to_primary_and_monitor():

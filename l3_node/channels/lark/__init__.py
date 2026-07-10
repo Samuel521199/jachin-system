@@ -1,4 +1,4 @@
-﻿"""
+"""
 Lark/飞书 通道
 """
 from __future__ import annotations

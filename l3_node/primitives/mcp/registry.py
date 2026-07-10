@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin Nexus V2 - L3 MCP 工具桥接器
 
 合并本机 stdio MCP、l3_mcp_cache 动态包与 L3 内置工具，维护 known_mcp_tools；
@@ -50,7 +50,7 @@ def infer_tool_id_from_openapi_fname(api_name: str) -> str | None:
     """
     将 OpenAI function.name（不含冒号）逆推为 Jachin tool id，与 openapi_safe_function_name 成对。
     用于 openapi_fname_to_tool_id 漏项、或工具池未握手时仍能把 ``mcp_get_transcript`` 解析为 ``mcp:get_transcript``，
-    避免 ReAct 出现 parsed=None、工具从未调度。
+    避免 RoleExecutionAgent 出现 parsed=None、工具从未调度。
     仅处理常见前缀 mcp:/core:/util:/sys:；无法推断时返回 None（调用方保留原名）。
     """
     s = (api_name or "").strip()
@@ -64,7 +64,7 @@ def infer_tool_id_from_openapi_fname(api_name: str) -> str | None:
     return None
 
 
-# 官方 mcp-server-fetch 等要求 arguments 含 url；模型 ReAct 输出损坏时 JSON 解析会得到 {} 或 {"url":""} 而无可用 url
+# 官方 mcp-server-fetch 等要求 arguments 含 url；模型 RoleExecutionAgent 输出损坏时 JSON 解析会得到 {} 或 {"url":""} 而无可用 url
 _FETCH_URL_IN_JSON = re.compile(r'"url"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', re.I)
 _URL_FROM_POS = re.compile(
     r"https?://[a-zA-Z0-9][-a-zA-Z0-9.]{0,253}[a-zA-Z0-9](?::\d+)?(?:/[^\s\"'`{}>]*)?",
@@ -79,21 +79,21 @@ _SQLITE_MCP_RAW_WITH_SQL = frozenset({"query", "read_query", "write_query"})
 _SQLITE_MCP_RAW_READISH = frozenset({"read_records", "list_tables", "get_table_schema", "db_info"})
 
 
-def _log_sqlite_mcp_diagnostic_sql(tool_id: str, action_input: str, inv_trace: str) -> None:
-    """将 MCP SQLite 相关工具的最终 SQL 或入参 JSON 打到 INFO，供运维对照 Observation 排查。"""
+def _log_sqlite_mcp_diagnostic_sql(tool_id: str, work_order_input: str, inv_trace: str) -> None:
+    """将 MCP SQLite 相关工具的最终 SQL 或入参 JSON 打到 INFO，供运维对照 Verification evidence 排查。"""
     s = (tool_id or "").strip().lower()
     raw = s[4:].strip() if s.startswith("mcp:") else s
     if raw not in _SQLITE_MCP_RAW_WITH_SQL and raw not in _SQLITE_MCP_RAW_READISH:
         return
     try:
-        d = json.loads(action_input or "{}")
+        d = json.loads(work_order_input or "{}")
     except json.JSONDecodeError:
         logger.info(
             "[MCP Registry][SQLite·入参] trace=%s tool_id=%s parse=json_fail preview=%r%s",
             inv_trace,
             tool_id,
-            (action_input or "")[:500],
-            "…(truncated)" if len(action_input or "") > 500 else "",
+            (work_order_input or "")[:500],
+            "…(truncated)" if len(work_order_input or "") > 500 else "",
         )
         return
     if not isinstance(d, dict):
@@ -156,14 +156,14 @@ def _l3_mcp_l2_delegate_forbidden() -> bool:
 def _log_mcp_invoke_diagnostic(
     tool_id: str,
     raw_name: str,
-    action_input: str,
+    work_order_input: str,
     parsed: dict[str, Any],
     normalized: dict[str, Any],
 ) -> None:
-    """stdio / 编程排障：原始 Action Input、解析结果、规范化后的摘要（长串截断）。"""
-    ai = action_input or ""
+    """stdio / 编程排障：原始 tool input、解析结果、规范化后的摘要（长串截断）。"""
+    ai = work_order_input or ""
     logger.info(
-        "[MCP Registry][invoke 排障] tool_id=%s raw_name=%s action_input_len=%s",
+        "[MCP Registry][invoke 排障] tool_id=%s raw_name=%s work_order_input_len=%s",
         tool_id,
         raw_name,
         len(ai),
@@ -172,7 +172,7 @@ def _log_mcp_invoke_diagnostic(
         prev = ai.strip()[:480]
         suf = "…(truncated)" if len(ai.strip()) > 480 else ""
         logger.info(
-            "[MCP Registry][invoke 排障] tool_id=%s action_input_preview=%r%s",
+            "[MCP Registry][invoke 排障] tool_id=%s work_order_input_preview=%r%s",
             tool_id,
             prev,
             suf,
@@ -213,7 +213,7 @@ def _log_mcp_invoke_diagnostic(
 
 
 def extract_http_url_from_corrupted_text(s: str) -> str:
-    """从重复/粘连的 ReAct 输出中提取首个可用 http(s) URL。"""
+    """从重复/粘连的 RoleExecutionAgent 输出中提取首个可用 http(s) URL。"""
     if not (s or "").strip():
         return ""
     s = s.strip()
@@ -242,7 +242,7 @@ def normalize_mcp_fetch_arguments(
     fallback_text: str = "",
 ) -> dict[str, Any]:
     """
-    补全 fetch 的 url。优先从原始 Action Input 整段文本恢复（解析结果常为 {} 或残缺 JSON）。
+    补全 fetch 的 url。优先从原始 tool input 整段文本恢复（解析结果常为 {} 或残缺 JSON）。
     """
     out = dict(arguments) if isinstance(arguments, dict) else {}
     u = (out.get("url") or "").strip()
@@ -1471,12 +1471,12 @@ def _invoke_atom_email_sender_local(
         return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
 
 
-# 供 agent_core 在 Final Answer 后处理 Markdown 表：与最近一次成功注册任务的份数对齐
+# 供 agent_core 在 User-facing result 后处理 Markdown 表：与最近一次成功注册任务的份数对齐
 last_add_automated_recruitment_task_payload: dict[str, Any] | None = None
 
 
 def clear_last_add_automated_recruitment_task_payload() -> None:
-    """每轮 ReAct 开始时清空，避免沿用上一次的收网份数。"""
+    """每轮 RoleExecutionAgent 开始时清空，避免沿用上一次的收网份数。"""
     global last_add_automated_recruitment_task_payload
     last_add_automated_recruitment_task_payload = None
 
@@ -1961,7 +1961,7 @@ def _invoke_read_file_local(path_raw: str) -> str:
     if not path_obj or not path_obj.exists():
         disp = path_raw.strip()
         if len(disp) > 500:
-            disp = disp[:500] + "…(路径过长已截断显示；完整路径见 Action Input)"
+            disp = disp[:500] + "…(路径过长已截断显示；完整路径见 tool input)"
         return (
             "[read_file] 文件不存在或不在允许读取目录内: "
             f"{disp}"
@@ -2422,14 +2422,14 @@ class MCPToolRegistry:
         """
         return list(self._tools_cache)
 
-    def _parse_action_input(self, action_input: str) -> dict[str, Any]:
-        """解析 action_input 为 arguments 字典。支持提取内嵌 JSON、去除前后噪音。"""
+    def _parse_work_order_input(self, work_order_input: str) -> dict[str, Any]:
+        """解析 work_order_input 为 arguments 字典。支持提取内嵌 JSON、去除前后噪音。"""
         arguments: dict[str, Any] = {}
-        inp = (action_input or "").strip()
+        inp = (work_order_input or "").strip()
         if not inp:
             return arguments
         # 去除常见前缀（LLM 可能附带）
-        for prefix in ("Action Input:", "Action Input：", "input:", "参数:"):
+        for prefix in ("tool input:", "tool input：", "input:", "参数:"):
             if inp.lower().startswith(prefix.lower()):
                 inp = inp[len(prefix):].strip()
         if inp.strip().startswith("{") and "}" in inp:
@@ -2467,7 +2467,7 @@ class MCPToolRegistry:
     async def invoke(
         self,
         tool_id: str,
-        action_input: str,
+        work_order_input: str,
         *,
         timeout: float = 30.0,
         allowed_skills: list[str] | None = None,
@@ -2488,20 +2488,20 @@ class MCPToolRegistry:
 
         _inv_trace = f"mcp-inv-{time.time_ns():x}"
         logger.info(
-            "[MCP Registry] invoke trace=%s tool_id=%s action_input_len=%s",
+            "[MCP Registry] invoke trace=%s tool_id=%s work_order_input_len=%s",
             _inv_trace,
             tool_id,
-            len(action_input or ""),
+            len(work_order_input or ""),
         )
-        _log_sqlite_mcp_diagnostic_sql(tool_id, action_input or "", _inv_trace)
+        _log_sqlite_mcp_diagnostic_sql(tool_id, work_order_input or "", _inv_trace)
         exec_trace(
             logger,
             "MCP invoke 开始 trace=%s tool_id=%s inp_len=%d",
             _inv_trace,
             (tool_id or "")[:160],
-            len(action_input or ""),
+            len(work_order_input or ""),
         )
-        _cached = try_get_cached(tool_id, action_input)
+        _cached = try_get_cached(tool_id, work_order_input)
         if _cached is not None:
             exec_trace(
                 logger,
@@ -2514,7 +2514,7 @@ class MCPToolRegistry:
 
         try:
             out = await self._invoke_impl(
-                tool_id, action_input, timeout=timeout, allow_l2_delegate=allow_l2_delegate
+                tool_id, work_order_input, timeout=timeout, allow_l2_delegate=allow_l2_delegate
             )
         except Exception as e:
             import traceback
@@ -2540,7 +2540,7 @@ class MCPToolRegistry:
                 },
                 ensure_ascii=False,
             )
-        out = store_if_cacheable(tool_id, action_input, out)
+        out = store_if_cacheable(tool_id, work_order_input, out)
         exec_trace(
             logger,
             "MCP invoke 结束 trace=%s tool_id=%s out_len=%d",
@@ -2551,7 +2551,7 @@ class MCPToolRegistry:
         return out
 
     async def _bridge_atomic_file_mcp_to_native(
-        self, tool_id: str, action_input: str
+        self, tool_id: str, work_order_input: str
     ) -> str | None:
         """
         将 MCP 原子文件工具落到 L3 Native（core:fs_write / core:fs_read），不经过 L2。
@@ -2562,17 +2562,17 @@ class MCPToolRegistry:
             return None
         from core.mcp_client import normalize_mcp_schema_aliases
 
-        parsed = self._parse_action_input(action_input)
+        parsed = self._parse_work_order_input(work_order_input)
         args = normalize_mcp_schema_aliases(raw, parsed)
         path = args.get("path")
         if path is None or not str(path).strip():
             logger.warning(
-                "[MCP Registry][原生桥·缺 path] tool_id=%s raw=%s parsed_keys=%s action_input_preview=%r%s",
+                "[MCP Registry][原生桥·缺 path] tool_id=%s raw=%s parsed_keys=%s work_order_input_preview=%r%s",
                 tool_id,
                 raw,
                 sorted(args.keys()),
-                (action_input or "")[:400],
-                "…(truncated)" if len(action_input or "") > 400 else "",
+                (work_order_input or "")[:400],
+                "…(truncated)" if len(work_order_input or "") > 400 else "",
             )
             return json.dumps(
                 {
@@ -2674,22 +2674,22 @@ class MCPToolRegistry:
     async def _invoke_impl(
         self,
         tool_id: str,
-        action_input: str,
+        work_order_input: str,
         *,
         timeout: float = 30.0,
         allow_l2_delegate: bool = True,
     ) -> str:
         """MCP 实际执行（不含权限与 P1 缓存包装）。"""
         logger.info(
-            "[MCP Registry] _invoke_impl begin tool_id=%s action_input_len=%s in_local_invoke_set=%s in_pool_set=%s",
+            "[MCP Registry] _invoke_impl begin tool_id=%s work_order_input_len=%s in_local_invoke_set=%s in_pool_set=%s",
             tool_id,
-            len(action_input or ""),
+            len(work_order_input or ""),
             tool_id in self._local_mcp_invoke_tools,
             tool_id in self._local_mcp_tools,
         )
         if tool_id in self._local_mcp_invoke_tools:
             raw_name = self._raw_name(tool_id)
-            arguments = self._parse_action_input(action_input)
+            arguments = self._parse_work_order_input(work_order_input)
 
             if raw_name == "read_file":
                 path_val = arguments.get("path", arguments.get("input", ""))
@@ -2884,7 +2884,7 @@ class MCPToolRegistry:
                 arguments = dict(arguments)
                 _u = (str(arguments.get("url") or "")).strip()
                 if not _u:
-                    _u = extract_http_url_from_corrupted_text(action_input or "")
+                    _u = extract_http_url_from_corrupted_text(work_order_input or "")
                     if _u:
                         arguments["url"] = _u
                 cfg = arguments.get("config") or {}
@@ -2973,7 +2973,7 @@ class MCPToolRegistry:
                     interval=iv,
                 )
 
-            # Holographic Screen：OmniParser + PyAutoGUI（ReAct 眼-脑-手闭环）
+            # Holographic Screen：OmniParser + PyAutoGUI（RoleExecutionAgent 眼-脑-手闭环）
             if raw_name == "get_holographic_screen":
                 from l3_client.local_mcps.holographic_screen_mcp.session_service import (
                     get_holographic_screen_service,
@@ -3630,7 +3630,7 @@ class MCPToolRegistry:
 
                     _gq_skill_append(
                         "[Registry tool_execute_action] 即将 await GameQAService.execute_action | "
-                        f"element_name={en!r} | action_input_len={len(action_input or '')} | "
+                        f"element_name={en!r} | work_order_input_len={len(work_order_input or '')} | "
                         "提示: Agent 侧对此工具常 use_timeout=False（long_running）。"
                     )
                 except Exception:
@@ -3679,7 +3679,7 @@ class MCPToolRegistry:
             if cache_dir and module_path and func_name:
                 return await asyncio.to_thread(
                     _invoke_cached_mcp_tool,
-                    cache_dir, module_path, func_name, self._parse_action_input(action_input),
+                    cache_dir, module_path, func_name, self._parse_work_order_input(work_order_input),
                 )
 
         # write_file/create_file：必须先于 stdio/L2。若本机已挂载同名 MCP，否则会先走子进程校验并返回 -32602（path undefined）。
@@ -3689,7 +3689,7 @@ class MCPToolRegistry:
                 "[MCP Registry] %s 走 L3 Native 桥接（跳过 stdio 与 L2 filesystem MCP）",
                 _rn_pre,
             )
-            return await self._bridge_atomic_file_mcp_to_native(tool_id, action_input)
+            return await self._bridge_atomic_file_mcp_to_native(tool_id, work_order_input)
 
         try:
             from core.mcp_client import get_mcp_manager, MCPToolNotFoundError as _McpNotFound, normalize_mcp_schema_aliases
@@ -3707,7 +3707,7 @@ class MCPToolRegistry:
                     and should_delegate_mcp_to_local_l3()
                     and await local_l3_http_reachable()
                 ):
-                    _parsed_delegate = self._parse_action_input(action_input)
+                    _parsed_delegate = self._parse_work_order_input(work_order_input)
                     _args_delegate = normalize_mcp_schema_aliases(_rn, _parsed_delegate)
                     if _rn == "apply_professional_design":
                         _args_delegate = _normalize_apply_professional_design_args(dict(_args_delegate))
@@ -3733,7 +3733,7 @@ class MCPToolRegistry:
                     tool_id,
                 )
             if _rn and _mgr.can_invoke_stdio_tool(_rn):
-                _parsed_stdio = self._parse_action_input(action_input)
+                _parsed_stdio = self._parse_work_order_input(work_order_input)
                 _args = normalize_mcp_schema_aliases(_rn, _parsed_stdio)
                 if _rn == "apply_professional_design":
                     _args = _normalize_apply_professional_design_args(dict(_args))
@@ -3762,14 +3762,14 @@ class MCPToolRegistry:
                     _args = strip_write_ack_for_mcp(_args)
                 except Exception as _sg_e:
                     logger.debug("[MCP Registry] sqlite_write_guard 跳过: %s", _sg_e)
-                _log_mcp_invoke_diagnostic(tool_id, _rn, action_input, _parsed_stdio, _args)
+                _log_mcp_invoke_diagnostic(tool_id, _rn, work_order_input, _parsed_stdio, _args)
                 if _rn in _MCP_STDIO_WRITE_RAW:
                     _pv = _args.get("path")
                     _path_ok = _pv is not None and str(_pv).strip() != ""
                     if not _path_ok:
                         logger.warning(
                             "[MCP Registry][invoke 排障] 已拦截 stdio 调用：%s 缺少非空 path（别名 file_path→path 已尝试仍无效）。"
-                            "请让模型输出 Action Input: {\"path\":\"...\",\"content\":\"...\"}",
+                            "请让模型输出 tool input: {\"path\":\"...\",\"content\":\"...\"}",
                             _rn,
                         )
                         return json.dumps(
@@ -3780,18 +3780,18 @@ class MCPToolRegistry:
                                 "message": (
                                     f"{_rn} 需要字符串字段 path；当前规范化后的键为 "
                                     f"{sorted(_args.keys())}。"
-                                    "ReAct 请使用 path，不要用 file_path；且必须与 content 同条 JSON 一并给出。"
+                                    "RoleExecutionAgent 请使用 path，不要用 file_path；且必须与 content 同条 JSON 一并给出。"
                                 ),
                                 "parsed_keys": list(_args.keys()),
                             },
                             ensure_ascii=False,
                         )
                 if _rn == "fetch":
-                    _args = normalize_mcp_fetch_arguments(_args, fallback_text=action_input or "")
+                    _args = normalize_mcp_fetch_arguments(_args, fallback_text=work_order_input or "")
                     _args = enrich_mcp_fetch_invoke_args(_args)
                     if not (str(_args.get("url") or "").strip()):
                         return (
-                            "[MCP] fetch 缺少 url：请让 Action Input 为合法 JSON，例如 "
+                            "[MCP] fetch 缺少 url：请让 tool input 为合法 JSON，例如 "
                             '{"url":"https://www.python.org"}'
                         )
                 # fetch：单页 HTTP 抓取，境外网络易被 WAF/超时拖死；单独收紧 wait_for（默认 18s，可用 JACHIN_MCP_FETCH_INVOKE_SEC 覆盖）
@@ -3820,7 +3820,7 @@ class MCPToolRegistry:
             logger.warning("[MCP Registry] L3 stdio invoke 失败 tool=%s err=%s", tool_id, e)
             return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
 
-        _bridged = await self._bridge_atomic_file_mcp_to_native(tool_id, action_input)
+        _bridged = await self._bridge_atomic_file_mcp_to_native(tool_id, work_order_input)
         if _bridged is not None:
             return _bridged
 
@@ -3849,12 +3849,12 @@ class MCPToolRegistry:
                 ensure_ascii=False,
             )
         logger.info("[MCP Registry] 工具 %s 不在 L3 本地，转发 L2", tool_id)
-        return await self.invoke_via_l2(tool_id, action_input, timeout=timeout)
+        return await self.invoke_via_l2(tool_id, work_order_input, timeout=timeout)
 
     async def invoke_via_l2(
         self,
         tool_id: str,
-        action_input: str,
+        work_order_input: str,
         *,
         timeout: float = 30.0,
     ) -> str:
@@ -3881,9 +3881,9 @@ class MCPToolRegistry:
                 ensure_ascii=False,
             )
 
-        # 解析 action_input 为 arguments
+        # 解析 work_order_input 为 arguments
         arguments: dict[str, Any] = {}
-        inp = (action_input or "").strip()
+        inp = (work_order_input or "").strip()
         if inp:
             if inp.strip().startswith("{") and "}" in inp:
                 try:
@@ -3933,20 +3933,20 @@ class MCPToolRegistry:
             logger.debug("[MCP Registry] sqlite_write_guard(L2) 跳过: %s", _sg2_e)
 
         _log_mcp_invoke_diagnostic(
-            tool_id, raw_name, action_input, _parsed_before_alias, arguments
+            tool_id, raw_name, work_order_input, _parsed_before_alias, arguments
         )
         try:
             from core.mcp_client import format_mcp_tool_args_for_log
 
             logger.info(
-                "[MCP Registry][L2 invoke 排障] raw_name=%s action_input_len=%s %s",
+                "[MCP Registry][L2 invoke 排障] raw_name=%s work_order_input_len=%s %s",
                 raw_name,
                 len(inp),
                 format_mcp_tool_args_for_log(raw_name, arguments),
             )
             if inp.strip():
                 logger.info(
-                    "[MCP Registry][L2 invoke 排障] raw_name=%s action_input_preview=%r%s",
+                    "[MCP Registry][L2 invoke 排障] raw_name=%s work_order_input_preview=%r%s",
                     raw_name,
                     inp.strip()[:480],
                     "…(truncated)" if len(inp.strip()) > 480 else "",
@@ -3969,7 +3969,7 @@ class MCPToolRegistry:
                         "tool": raw_name,
                         "message": (
                             f"{raw_name} 需要非空字符串 path。当前参数键：{sorted(arguments.keys())}。"
-                            "请在 Action Input 中提供 {{\"path\":\"相对工作区路径\",\"content\":\"...\"}}；"
+                            "请在 tool input 中提供 {{\"path\":\"相对工作区路径\",\"content\":\"...\"}}；"
                             "或使用 core:fs_write。"
                         ),
                         "parsed_keys": list(arguments.keys()),

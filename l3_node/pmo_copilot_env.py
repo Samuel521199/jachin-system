@@ -1,4 +1,4 @@
-﻿"""
+"""
 PMO Copilot 侧车/CLI 启动时的控制台减压默认值。
 
 PMO 详细轨迹写入 ``JACHIN_PMO_COPILOT_DEBUG_LOG`` 指定文件；

@@ -11,7 +11,7 @@ _PMO_TAIL = [
     {"role": "user", "content": "对 PMO 项目做深度交叉分析"},
     {
         "role": "assistant",
-        "content": "Action: core:pmo_macro_dashboard_preview\nObservation: Executive Summary 当前 Sprint 2026/06/01-Sprint 人员任务矩阵",
+        "content": "WorkOrder: core:pmo_macro_dashboard_preview\nVerification evidence: Executive Summary 当前 Sprint 2026/06/01-Sprint 人员任务矩阵",
     },
 ]
 

@@ -1,4 +1,4 @@
-﻿"""Tests for im_channels lark credential resolution."""
+"""Tests for im_channels lark credential resolution."""
 from __future__ import annotations
 
 from unittest.mock import patch

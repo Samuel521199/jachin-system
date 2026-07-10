@@ -109,7 +109,7 @@ def _strip_control(s: str) -> str:
     return "".join(c for c in s if ord(c) >= 32 or c in "\n\t\r")
 
 
-def _build_legacy_merged_body(*, max_chars: int) -> str:
+def _build_archived_merged_body(*, max_chars: int) -> str:
     parts: list[str] = []
     gp = global_lock_path()
     wp = workspace_lock_path()
@@ -138,7 +138,7 @@ def _build_legacy_merged_body(*, max_chars: int) -> str:
 def get_safety_lock_snippet(*, user_text: str = "") -> str:
     """
     供 system prompt 注入。
-    - 默认：**按需域** + 可选 pin + 极短 legacy 全局头（避免上下文坍塌）。
+    - 默认：**按需域** + 可选 pin + 极短 archived 全局头（避免上下文坍塌）。
     - full_inject / JACHIN_SAFETY_LOCK_FULL_INJECT：合并全局+工作区，仍受 max_total 硬帽（默认 ≤32k 字符级预算）。
     """
     sec = _nexus_safety_lock_section()
@@ -153,14 +153,14 @@ def get_safety_lock_snippet(*, user_text: str = "") -> str:
         per_dom = 4096
     per_dom = max(256, min(per_dom, max_total))
     try:
-        legacy_head = int(sec.get("legacy_global_head_chars", 2048))
+        archived_head = int(sec.get("archived_global_head_chars", 2048))
     except (TypeError, ValueError):
-        legacy_head = 2048
-    legacy_head = max(0, min(legacy_head, max_total))
+        archived_head = 2048
+    archived_head = max(0, min(archived_head, max_total))
 
     if inject_full_lock_allowed():
         cap = min(max_total, 32_000)
-        body = _build_legacy_merged_body(max_chars=cap)
+        body = _build_archived_merged_body(max_chars=cap)
         if not body.strip():
             return ""
         return (
@@ -204,11 +204,11 @@ def get_safety_lock_snippet(*, user_text: str = "") -> str:
         except OSError as ex:
             logger.debug("[safety_lock] domain %s: %s", d, ex)
 
-    if not domains and legacy_head > 0:
+    if not domains and archived_head > 0:
         gp = global_lock_path()
         try:
             if gp.is_file():
-                head = gp.read_text(encoding="utf-8", errors="replace")[:legacy_head]
+                head = gp.read_text(encoding="utf-8", errors="replace")[:archived_head]
                 if head.strip():
                     parts.append(
                         "【安全锁·全局头段（未命中 db/shell 域；仅摘要。完整条目请拆至 safety_lock/db_safety_lock.md 等）】\n"
@@ -321,7 +321,7 @@ def append_verified_fact(
     **TOFU（同类二次免批）**：若提供 `category`（如 backend_framework），且正式 MD 中已存在
     同 category 的已批准条目，则跳过 pending，直接覆盖该 category 下旧块并写入新块。
     """
-    _ = token  # 兼容旧客户端；忽略，防止「把密钥塞进 Action Input」的伪安全
+    _ = token  # 兼容旧客户端；忽略，防止「把密钥塞进 tool input」的伪安全
     if not learn_enabled():
         return {
             "ok": False,

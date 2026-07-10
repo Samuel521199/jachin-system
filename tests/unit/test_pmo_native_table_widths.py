@@ -1,4 +1,4 @@
-﻿"""飞书 PMO native_table 列宽 SSOT。"""
+"""飞书 PMO native_table 列宽 SSOT。"""
 from __future__ import annotations
 
 from l3_node.channels.lark.md_native_table_card import _table_element

@@ -1,12 +1,12 @@
 """
-ReAct 中途 TaskDAG 重规划（路线图 §3 · TaskDAG P2）
+RoleExecutionAgent 中途 TaskDAG 重规划（路线图 §3 · TaskDAG P2）
 
-在 run_agent ReAct 循环内，根据进度与用户热并入触发 LLM 更新 active.json（保留已完成节点状态）。
+在 run_agent RoleExecutionAgent 循环内，根据进度与用户热并入触发 LLM 更新 active.json（保留已完成节点状态）。
 
 环境变量
 --------
 JACHIN_DAG_REPLAN_MID_RUN=1           开启中途重规划（默认关）
-JACHIN_DAG_REPLAN_EVERY_N_ITER=3      每 N 轮 ReAct 迭代至少评估一次（默认 3）
+JACHIN_DAG_REPLAN_EVERY_N_ITER=3      每 N 轮 RoleExecutionAgent 迭代至少评估一次（默认 3）
 JACHIN_DAG_REPLAN_MAX_PER_RUN=3       单次 run 最多重规划次数（默认 3）
 JACHIN_DAG_REPLAN_MIN_ITER_GAP=2      两次重规划之间最少间隔迭代数（默认 2）
 JACHIN_DAG_REPLAN_MODEL=              覆盖规划 LLM（默认同 JACHIN_DAG_PLAN_MODEL）
@@ -73,7 +73,7 @@ def _build_replan_intent(
     parts.append(
         "请输出更新后的 TaskDAG JSON：保留 node_id 与已完成（done/completed）节点；"
         "可调整 pending 节点顺序、标题与依赖；可追加必要步骤；节点数 2~12。"
-        f"（ReAct 迭代={iteration + 1}）"
+        f"（RoleExecutionAgent 迭代={iteration + 1}）"
     )
     return "\n".join(parts)
 
@@ -95,7 +95,7 @@ def refresh_task_dag_block_in_system_prompt(system_prompt: str) -> str:
     return (system_prompt or "") + block
 
 
-async def maybe_replan_during_react(
+async def maybe_replan_during_role_execution(
     ctx: Any,
     iteration: int,
     *,
@@ -103,7 +103,7 @@ async def maybe_replan_during_react(
     hot_user_lines: list[str] | None = None,
 ) -> bool:
     """
-    ReAct 迭代内调用。返回是否成功写回 active.json 并刷新了 ctx.system_prompt。
+    RoleExecutionAgent 迭代内调用。返回是否成功写回 active.json 并刷新了 ctx.system_prompt。
     """
     if not mid_replan_enabled():
         return False
@@ -152,9 +152,9 @@ async def maybe_replan_during_react(
         ctx.system_prompt = refresh_task_dag_block_in_system_prompt(
             getattr(ctx, "system_prompt", "") or ""
         )
-        full = ctx.metadata.get("_react_system_prompt_full")
+        full = ctx.metadata.get("_role_execution_system_prompt_full")
         if isinstance(full, str):
-            ctx.metadata["_react_system_prompt_full"] = refresh_task_dag_block_in_system_prompt(full)
+            ctx.metadata["_role_execution_system_prompt_full"] = refresh_task_dag_block_in_system_prompt(full)
     except Exception:
         pass
 

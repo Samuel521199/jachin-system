@@ -1,4 +1,4 @@
-﻿"""Verify Worker B B-SUP SQL runs against live PMO DB."""
+"""Verify Worker B B-SUP SQL runs against live PMO DB."""
 from __future__ import annotations
 
 import re

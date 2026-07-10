@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin Nexus V2 - L3 本地解密与直连 LLM
 
 内存级解密：从 L2 拉取密文 Key，用 L3 私钥解密，仅存于 SecurityContext。
@@ -50,7 +50,7 @@ def _effective_max_tokens_for_model(model: str, requested: int) -> int:
     """
     DashScope 对部分模型限制 max_tokens 上界；qwen-max / vl-max 等分支的上限由环境变量
     JACHIN_QWEN_MAX_MAX_TOKENS 给出（默认 8192），仅保证 >=1，不再在代码里锁死 API 未来可能放大的输出上限。
-    agent_core ReAct 常传较大 max_tokens，须在调用 litellm 前按该上限钳制，避免 400。
+    RoleExecution transport may pass large max_tokens，须在调用 litellm 前按该上限钳制，避免 400。
     """
     try:
         n = int(requested)
@@ -254,23 +254,22 @@ def _extract_tool_call_name_args(tc: Any) -> tuple[str, str]:
     return str(n or ""), str(a or "")
 
 
-def _extract_thought_from_assistant_content(content: str) -> str:
-    """从 function calling 同轮 assistant content 提取 Thought 或首句意图。"""
+def _extract_rationale_from_assistant_content(content: str) -> str:
+    """Extract a short rationale from assistant content without old work-order tags."""
     s = (content or "").strip()
     if not s:
         return ""
-    m = re.search(r"(?im)^Thought:\s*(.+?)(?=^Action:|^Final Answer:|^Answer:|\Z)", s, re.DOTALL)
+    m = re.search(r"(?im)^(?:Reasoning note|Rationale):\s*(.+?)(?=^WorkOrder|^User-facing result:|^Answer:|\Z)", s, re.DOTALL)
     if m:
         t = m.group(1).strip()
-        if t and t not in ("（API function calling）", "API function calling"):
+        if t and t not in ("API function calling",):
             return t
     first = s.splitlines()[0].strip() if s.splitlines() else s
     if first and not first.startswith("{") and len(first) >= 6:
-        if first.lower().startswith("thought:"):
+        if first.lower().startswith(("reasoning note:", "rationale:")):
             first = first.split(":", 1)[-1].strip()
         return first[:400]
     return ""
-
 
 def _infer_thought_from_tool_call(tool_id: str, args_raw: str) -> str:
     try:
@@ -281,25 +280,21 @@ def _infer_thought_from_tool_call(tool_id: str, args_raw: str) -> str:
         return ""
 
 
-def tool_calls_to_react_text(
+def tool_calls_to_work_order_draft_text(
     tool_calls: list[Any] | None,
     *,
     openapi_fname_to_tool_id: Optional[dict[str, str]] = None,
     use_first_only: bool = True,
     assistant_content: str = "",
 ) -> str:
-    """
-    将 API 返回的 function/tool 调用转写为 Thought/Action/Action Input，供 agent_core._parse_action。
-    *openapi_fname_to_tool_id*：清洗后的 function.name → 真实 tool id（如 mcp_query → mcp:query）。
-    *assistant_content*：同轮模型文本 content（可含 Thought: 或一句意图）。
-    """
+    """Convert API tool/function calls into structured WorkOrder suggestions."""
     openapi_fname_to_tool_id = openapi_fname_to_tool_id or {}
-    shared_thought = _extract_thought_from_assistant_content(assistant_content)
+    shared_rationale = _extract_rationale_from_assistant_content(assistant_content)
     if not tool_calls:
         return ""
     calls = list(tool_calls)
     if use_first_only and len(calls) > 1:
-        logger.info("[L3 LLM] API 返回 %d 个 tool_calls，ReAct 单步仅取第一个", len(calls))
+        logger.info("[L3 LLM] API returned %d tool_calls; WorkOrder bridge takes the first call", len(calls))
         calls = calls[:1]
     blocks: list[str] = []
     for tc in calls:
@@ -318,12 +313,32 @@ def tool_calls_to_react_text(
             args_str = str(args_raw or "").strip()
         if not args_str:
             args_str = "{}"
-        thought = shared_thought or _infer_thought_from_tool_call(tid, args_str)
-        if not thought:
-            thought = f"调用工具 {tid}"
-        blocks.append(f"Thought: {thought}\nAction: {tid}\nAction Input: {args_str}")
-    return "\n\n".join(blocks)
+        try:
+            work_order_input: Any = json.loads(args_str)
+        except Exception:
+            work_order_input = args_str
+        rationale = shared_rationale or _infer_thought_from_tool_call(tid, args_str) or f"Call tool {tid}"
+        try:
+            from l3_node.cognitive_kernel.capability_hook_bridge import build_work_order_suggestion
 
+            blocks.append(
+                build_work_order_suggestion(
+                    tool=tid,
+                    work_order_input=work_order_input,
+                    reason=rationale,
+                    visible_message=f"已生成结构化 WorkOrder 建议：{tid}",
+                )
+            )
+        except Exception:
+            payload = {
+                "type": "work_order_suggestion",
+                "tool": tid,
+                "work_order_input": work_order_input,
+                "reason": rationale,
+                "role_agent": "",
+            }
+            blocks.append("WorkOrderDraft: " + json.dumps(payload, ensure_ascii=False))
+    return "\n\n".join(blocks)
 
 def _accumulate_stream_tool_call_delta(tc_list: Any, acc: dict[int, dict[str, str]]) -> None:
     """合并流式 chunk 中的 tool_calls 片段（按 index）。"""
@@ -831,7 +846,7 @@ class LiteLLMEngine:
                         ):
                             logger.warning(
                                 "[L3 LLM] DashScope VL + 多模态：本轮不传 OpenAI tools[]（避免 image_url 被忽略），"
-                                "仍以 system 内 ReAct 工具说明为准"
+                                "仍以 Cognitive Kernel WorkOrder 工具说明为准"
                             )
                             effective_tools = None
                     except Exception as _e:
@@ -918,7 +933,7 @@ class LiteLLMEngine:
                 if hasattr(msg, "tool_calls") and msg.tool_calls:
                     tclist = list(msg.tool_calls)
                     rest = (getattr(msg, "content", None) or "").strip()
-                    synth = tool_calls_to_react_text(
+                    synth = tool_calls_to_work_order_draft_text(
                         tclist,
                         openapi_fname_to_tool_id=openapi_fname_to_tool_id,
                         assistant_content=rest,
@@ -927,7 +942,7 @@ class LiteLLMEngine:
                     if rest and rest not in synth:
                         out = (synth + "\n\n" + rest).strip()
                     logger.info(
-                        "[L3 LLM][调度] purpose=%s result=ok model_used=%s outcome=tool_calls->react n=%d chars=%d",
+                        "[L3 LLM][调度] purpose=%s result=ok model_used=%s outcome=tool_calls->work_order_draft n=%d chars=%d",
                         purpose,
                         model,
                         len(tclist),
@@ -954,7 +969,7 @@ class LiteLLMEngine:
                             tools=effective_tools,
                             response_text=out,
                             response_dict_summary=(
-                                f"stream_tool_calls_synthesized_to_react n={len(tclist)} names={_names}"
+                                f"stream_tool_calls_synthesized_to_work_order_draft n={len(tclist)} names={_names}"
                             ),
                         )
                     except Exception:
@@ -1083,9 +1098,9 @@ class LiteLLMEngine:
         _inject_env_keys_into_ctx(self.ctx)
         has_keys = self.ctx.has_any_key()
         _rn = (
-            "react_note=已传 tools[]（流式 function calling 将转写为 ReAct Action）"
+            "role_execution_note=已传 tools[]（流式 function calling 将转写为 WorkOrder suggestion）"
             if tools
-            else "react_note=未传 tools[]（仅靠 system 内工具说明；须输出 Action:/Action Input:）"
+            else "role_execution_note=未传 tools[]（仅靠 system 内工具说明；须输出 WorkOrder suggestion）"
         )
         logger.info(
             "[L3 LLM][调度] purpose=%s action=chat_completion_stream has_key=%s %s %s",
@@ -1178,7 +1193,7 @@ class LiteLLMEngine:
                         ):
                             logger.warning(
                                 "[L3 LLM][stream] DashScope VL + 多模态：本轮不传 OpenAI tools[]（避免 image_url 被忽略），"
-                                "仍以 system 内 ReAct 工具说明为准"
+                                "仍以 Cognitive Kernel WorkOrder 工具说明为准"
                             )
                             effective_tools = None
                     except Exception as _e:
@@ -1304,7 +1319,7 @@ class LiteLLMEngine:
                 text_out = "".join(pieces).strip()
                 merged_calls = _merged_tool_calls_from_stream_acc(_tcall_acc)
                 if merged_calls:
-                    synth = tool_calls_to_react_text(
+                    synth = tool_calls_to_work_order_draft_text(
                         merged_calls,
                         openapi_fname_to_tool_id=openapi_fname_to_tool_id,
                         assistant_content=text_out,

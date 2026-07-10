@@ -1,4 +1,4 @@
-﻿"""飞书/Lark 开放平台 Bitable HTTP 辅助（脚本与 BI 共用，无 PMO 业务耦合）。"""
+"""飞书/Lark 开放平台 Bitable HTTP 辅助（脚本与 BI 共用，无 PMO 业务耦合）。"""
 from __future__ import annotations
 
 import logging

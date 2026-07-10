@@ -1,4 +1,4 @@
-﻿"""
+"""
 IM 通道层 — Lark/Telegram 等同维度
 
 L3 启动时按 ~/.jachin/config/im_channels.yaml 加载配置，

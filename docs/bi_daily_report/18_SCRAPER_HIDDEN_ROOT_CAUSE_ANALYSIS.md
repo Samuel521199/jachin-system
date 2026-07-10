@@ -84,10 +84,10 @@ page.wait_for_timeout(2000)
 
 `docs/bi_daily_report/16_BI_SCRAPER_V0.8.45_COMPARISON.md` 中明确写道：
 
-> v0.8.45 在同事电脑（侧栏默认展开）可正常运行，但若本地 BI 侧栏**默认折叠**，`wait_visible` 会因 `locator resolved to hidden` 超时失败。  
-> 已加回最小改动以兼容两种环境：  
-> - `expand_sidebar_if_collapsed`：检测折叠时点击展开或注入 CSS 强制显示菜单  
-> - `wait_attached`：在展开前仅等待元素挂载，不要求可见  
+> v0.8.45 在同事电脑（侧栏默认展开）可正常运行，但若本地 BI 侧栏**默认折叠**，`wait_visible` 会因 `locator resolved to hidden` 超时失败。
+> 已加回最小改动以兼容两种环境：
+> - `expand_sidebar_if_collapsed`：检测折叠时点击展开或注入 CSS 强制显示菜单
+> - `wait_attached`：在展开前仅等待元素挂载，不要求可见
 
 但**当前代码库中并未实现**这两种能力，侧栏折叠场景下的兼容逻辑缺失。
 
@@ -118,13 +118,13 @@ run_bi_scraper_spa.py
 
 ## 四、为何会出现「34 × hidden」
 
-1. **多个 `.el-menu`**  
+1. **多个 `.el-menu`**
    页面可能存在多个菜单（侧栏、顶部导航、下拉菜单等），`.el-menu` 会匹配到多处，其中部分可能被隐藏。
 
-2. **侧栏折叠**  
+2. **侧栏折叠**
    折叠后仅显示图标，文本常被隐藏（如 `overflow:hidden`），DOM 里仍有 30+ 个「平台数据」相关节点，但都不可见。
 
-3. **父级「BI平台管理」未展开**  
+3. **父级「BI平台管理」未展开**
    菜单层级类似：
    ```
    BI平台管理（顶层 sub-menu）

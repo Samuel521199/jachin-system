@@ -1,4 +1,4 @@
-﻿"""
+"""
 PMO staging JSON 宽容解析：LLM 输出的 JSON 常有漏逗号、未闭合等问题。
 优先 strict json.loads → json_repair → 逐对象 brace 提取（能救多少救多少）。
 """

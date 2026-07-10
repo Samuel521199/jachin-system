@@ -141,7 +141,7 @@ def clear_clarification_queue() -> None:
 
 def get_p1_prompt_injections() -> tuple[str, str]:
     """
-    返回 (用户偏好块, 待澄清块)，供 _build_system_prompt 拼接。
+    返回 (用户偏好块, 待澄清块)，供 kernel prompt composer 拼接。
     无内容时返回空串。
     """
     cfg = get_intel_p1_config()

@@ -1,4 +1,4 @@
-"""Role Agent registry and permission matrix for the Cognitive Kernel."""
+﻿"""Role Agent registry and permission matrix for the Cognitive Kernel."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ class RoleAgentRegistry:
     def list_roles(self) -> list[RoleAgentSpec]:
         return sorted(self._roles.values(), key=lambda r: (r.priority, r.role_id))
 
-    def select_for_tool(self, tool: str, *, action_input: str = "", risk: RiskLevel | None = None) -> RoleAgentSpec:
+    def select_for_tool(self, tool: str, *, work_order_input: str = "", risk: RiskLevel | None = None) -> RoleAgentSpec:
         risk = risk or RiskLevel.LOW
         if not str(tool or "").strip():
             fallback = self.get("ToolExecutionAgent")

@@ -1,8 +1,8 @@
 """
 StructuredResultMerger — 多 Agent 结果结构化合并器（§2.5）
 
-将多个 SubAgent 的输出合并为有来源标注的结构化 Observation，
-供主 Agent ReAct 消费。支持并行模式（列表式）和讨论模式（轮次演化）。
+将多个 SubAgent 的输出合并为有来源标注的结构化 Verification evidence，
+供主 Agent RoleExecutionAgent 消费。支持并行模式（列表式）和讨论模式（轮次演化）。
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ class SubAgentResult:
 
 
 class StructuredResultMerger:
-    """将多个 SubAgent 结果合并为结构化 Observation 字符串。"""
+    """将多个 SubAgent 结果合并为结构化 Verification evidence 字符串。"""
 
     def merge_parallel(
         self,

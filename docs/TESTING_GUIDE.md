@@ -103,7 +103,7 @@ async def test_natural_language_to_plugin_execution():
     """测试自然语言到插件执行的完整流程"""
     plan = await intent_planner.plan("查看系统状态")
     assert plan.plugin_id == "com.jachin.sys-monitor"
-    
+
     result = await plugin_executor.invoke_plugin(...)
     assert result["status_code"] == 200
 ```
@@ -246,10 +246,10 @@ def test_function_name():
     """测试描述"""
     # Arrange: 准备测试数据
     input_data = "test"
-    
+
     # Act: 执行被测试的函数
     result = function_to_test(input_data)
-    
+
     # Assert: 验证结果
     assert result == expected_value
 ```
@@ -272,10 +272,10 @@ async def test_integration(plugin_executor, temp_plugin_dirs):
     """集成测试"""
     # 1. 准备测试数据
     plugin_id = "com.test.plugin"
-    
+
     # 2. 执行操作
     result = await plugin_executor.invoke_plugin(...)
-    
+
     # 3. 验证结果
     assert result["status_code"] == 200
 ```
@@ -335,7 +335,7 @@ pytest tests/ --cov=core --cov-report=html --cov-report=term
 
 **错误**: `性能测试超时`
 
-**解决**: 
+**解决**:
 - 检查系统资源
 - 增加超时时间
 - 检查 Layer 2 守护进程

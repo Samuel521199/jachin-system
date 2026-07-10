@@ -120,14 +120,8 @@ async def _run_pmo_skill_coro(
     以 pmo_copilot_cli 信道完整执行 PMO Skill 任务。
     复刻 scripts/run_pmo_copilot_skill.py 的逻辑，但复用已有 engine。
     """
-    from l3_node.agent_core import _build_system_prompt, run_agent
+    from l3_node.agent_core import run_agent
     from l3_node.intent_gateway.bundle import build_gateway_bundle
-    from l3_node.primitives.tools.tool_pool import (
-        assemble_tool_pool,
-        expand_allowed_skills_with_implicit_sqlite_read,
-        expand_allowed_skills_with_local_mcp,
-    )
-    from l3_node.routing.output_format_signals import analyze_output_format_signals
 
     skill_path = _get_pmo_skill_path()
     if skill_path is None:
@@ -191,43 +185,15 @@ async def _run_pmo_skill_coro(
         except Exception as e:
             logger.debug("[PMO Trigger] gateway ingress pipeline 跳过: %s", e)
 
-        expanded = expand_allowed_skills_with_implicit_sqlite_read(list(base_allow))
-        expanded = expand_allowed_skills_with_local_mcp(expanded)
-        tools = await assemble_tool_pool(
-            allowed_skills=expanded,
-            gateway_bundle=bundle,
-            bg_channel="pmo_copilot_cli",
-        )
-
         gateway_block = _build_gateway_skill_inject(skill_path, meta, skill_body)
-
-        fmt_sig = analyze_output_format_signals(pmo_user_msg)
-        prompt_style = "slim_user_led" if fmt_sig.slim_system_prompt() else "full"
-
-        full_system = await _build_system_prompt(
-            tools=tools,
-            allow_delegate=True,
-            prompt_cycle=None,
-            recruitment_longform=False,
-            hr_domain_prompt_active=False,
-            prompt_style=prompt_style,
-            pure_json_contract=False,
-            gateway_inject=gateway_block,
-            safety_lock_user_text=pmo_user_msg,
-            chief_advisor_mode=False,
-            environment_report_block="",
-            semantic_layer=None,
-            experience_few_shots="",
-            realtime_web_grounding_block="",
-            domain_experts=None,
-        )
+        bundle.extra["skill_prompt_inject"] = gateway_block
+        bundle.extra["skill_metadata"] = dict(meta)
 
         answer = await run_agent(
             pmo_user_msg,
             engine,
             max_iterations=32,
             _session_messages=list(session_msgs),
-            _system_prompt_override=full_system,
             _allowed_skills_override=base_allow if base_allow else None,
             gateway_context_bundle=bundle,
             implicit_attribution=implicit,
@@ -247,7 +213,7 @@ async def _run_pmo_skill_coro(
 def _shorten_pmo_lark_dispatcher_reply(answer: str) -> str:
     """
     PMO 战报应经 atom_lark_notifier / macro_dashboard_push 以卡片送达。
-    若模型仍把三表 Markdown 写进 Final Answer，勿再当纯文本发回会话。
+    若模型仍把三表 Markdown 写进 User-facing result，勿再当纯文本发回会话。
     """
     a = (answer or "").strip()
     if not a:

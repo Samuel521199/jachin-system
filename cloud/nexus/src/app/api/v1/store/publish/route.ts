@@ -50,6 +50,7 @@ interface PluginJson {
   runtime_tier?: "L3_LOCAL" | "L2_GATEWAY" | "L1_CLOUD";
   required_mcps?: string[];
   required_models?: string[];
+  recovery_playbook?: unknown;
 }
 
 function normalizePluginItemType(raw: string): "SKILL" | "MCP" | "TOOL" | "MODEL" {
@@ -171,12 +172,138 @@ function parseAndValidateZip(zipBuffer: Buffer): {
     runtime_tier: runtimeTierNorm,
     required_mcps: requiredMcps,
     required_models: requiredModels,
+    recovery_playbook: p.recovery_playbook,
   };
+
+  validateRecoveryPlaybook(p);
 
   // 076: 若包内含 config/ 则必须含 manifest.yaml
   validateConfigInZip(zip);
 
   return { pluginJson, raw };
+}
+
+function validateRecoveryPlaybook(manifest: Record<string, unknown>): void {
+  const playbook = manifest.recovery_playbook;
+  if (playbook === undefined || playbook === null) return;
+  const errors: string[] = [];
+  if (!isRecord(playbook)) {
+    throwInvalidRecoveryPlaybook(["recovery_playbook must be an object"]);
+  }
+  const targets = playbook.targets;
+  if (!Array.isArray(targets) || targets.length === 0) {
+    throwInvalidRecoveryPlaybook(["recovery_playbook.targets must be a non-empty array"]);
+  }
+
+  targets.forEach((target, targetIndex) => {
+    const prefix = `recovery_playbook.targets[${targetIndex}]`;
+    if (!isRecord(target)) {
+      errors.push(`${prefix} must be an object`);
+      return;
+    }
+    const roleAgent = target.role_agent ?? target.role;
+    if (!nonEmptyString(roleAgent)) {
+      errors.push(`${prefix}.role_agent must be a non-empty string`);
+    }
+    const tools = target.tools ?? target.tool_patterns;
+    if (tools !== undefined) {
+      validateStringArray(tools, `${prefix}.tools`, true, errors);
+    }
+    if (target.max_attempts !== undefined && !intInRange(target.max_attempts, 1, 8)) {
+      errors.push(`${prefix}.max_attempts must be an integer from 1 to 8`);
+    }
+    const steps = target.steps;
+    if (!Array.isArray(steps) || steps.length === 0) {
+      errors.push(`${prefix}.steps must be a non-empty array`);
+      return;
+    }
+    steps.forEach((step, stepIndex) => validateRecoveryStep(step, `${prefix}.steps[${stepIndex}]`, errors));
+  });
+
+  if (errors.length > 0) {
+    throwInvalidRecoveryPlaybook(errors);
+  }
+}
+
+function validateRecoveryStep(value: unknown, prefix: string, errors: string[]): void {
+  if (!isRecord(value)) {
+    errors.push(`${prefix} must be an object`);
+    return;
+  }
+  if (!nonEmptyString(value.strategy)) {
+    errors.push(`${prefix}.strategy must be a non-empty string`);
+  }
+  if (!nonEmptyString(value.tool)) {
+    errors.push(`${prefix}.tool must be a non-empty string, use '$same' to retry the same tool`);
+  }
+  if (value.priority !== undefined && !intInRange(value.priority, 0, 1000)) {
+    errors.push(`${prefix}.priority must be an integer from 0 to 1000`);
+  }
+  if (value.rationale !== undefined && typeof value.rationale !== "string") {
+    errors.push(`${prefix}.rationale must be a string when provided`);
+  }
+  if (value.action_patch !== undefined && value.action_template !== undefined) {
+    errors.push(`${prefix} cannot define both action_patch and action_template`);
+  }
+  for (const key of ["action_patch", "action_template"] as const) {
+    if (value[key] !== undefined && !isRecord(value[key])) {
+      errors.push(`${prefix}.${key} must be an object when provided`);
+    }
+  }
+  if (value.when !== undefined) {
+    validateRecoveryWhen(value.when, `${prefix}.when`, errors);
+  }
+}
+
+function validateRecoveryWhen(value: unknown, prefix: string, errors: string[]): void {
+  if (!isRecord(value)) {
+    errors.push(`${prefix} must be an object when provided`);
+    return;
+  }
+  for (const key of ["failure_any", "failure_all", "tool_not_contains"] as const) {
+    if (value[key] !== undefined) {
+      validateStringArray(value[key], `${prefix}.${key}`, false, errors);
+    }
+  }
+  if (value.after_attempt !== undefined && !intInRange(value.after_attempt, 1, 8)) {
+    errors.push(`${prefix}.after_attempt must be an integer from 1 to 8`);
+  }
+}
+
+function validateStringArray(value: unknown, pathName: string, requireNonEmpty: boolean, errors: string[]): void {
+  if (!Array.isArray(value)) {
+    errors.push(`${pathName} must be a string array`);
+    return;
+  }
+  if (requireNonEmpty && value.length === 0) {
+    errors.push(`${pathName} must be a non-empty string array`);
+    return;
+  }
+  value.forEach((item, index) => {
+    if (!nonEmptyString(item)) {
+      errors.push(`${pathName}[${index}] must be a non-empty string`);
+    }
+  });
+}
+
+function throwInvalidRecoveryPlaybook(errors: string[]): never {
+  throw new PublishError(
+    400,
+    "INVALID_RECOVERY_PLAYBOOK",
+    `recovery_playbook 格式错误：${errors.slice(0, 8).join("；")}`
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function intInRange(value: unknown, min: number, max: number): boolean {
+  return Number.isInteger(value) && typeof value === "number" && value >= min && value <= max;
 }
 
 /**

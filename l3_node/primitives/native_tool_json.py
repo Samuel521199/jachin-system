@@ -1,5 +1,5 @@
-﻿"""
-Native 工具 Action Input 解析：模型/API function calling 常输出 JSON，
+"""
+Native 工具 tool input 解析：模型/API function calling 常输出 JSON，
 json.loads 失败时须 regex 回退，避免整段 JSON 被当作 file_path 拼进 workspace。
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ def _unescape_json_string(s: str) -> str:
 
 
 def coerce_file_path_from_tool_input(inp: str) -> str:
-    """从 Action Input 提取 file_path；失败时返回去引号的原文（非 JSON 裸路径）。"""
+    """从 tool input 提取 file_path；失败时返回去引号的原文（非 JSON 裸路径）。"""
     raw = (inp or "").strip()
     if not raw:
         return ""
@@ -48,7 +48,7 @@ def coerce_file_path_from_tool_input(inp: str) -> str:
 
 
 def parse_fs_write_tool_input(inp: str) -> dict[str, str]:
-    """解析 fs_write Action Input → file_path + content。"""
+    """解析 fs_write tool input → file_path + content。"""
     raw = (inp or "").strip()
     out: dict[str, str] = {"file_path": "", "content": ""}
     if not raw:

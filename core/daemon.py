@@ -42,8 +42,8 @@ console = Console(
 )
 
 
-def _react_step_printer(step_type: str, content: str, run_id: str = "") -> None:
-    """赛博朋克风格打印 ReAct 每一步。v8.0 全链路追踪：run_id 染色前缀"""
+def _kernel_step_printer(step_type: str, content: str, run_id: str = "") -> None:
+    """赛博朋克风格打印 CognitiveKernel 每一步。v8.0 全链路追踪：run_id 染色前缀"""
     content = (content or "").strip()
     if not content:
         return
@@ -52,13 +52,13 @@ def _react_step_printer(step_type: str, content: str, run_id: str = "") -> None:
         content = content[:197] + "..."
     prefix = f"[RunID:{run_id[:8]}] " if run_id else ""
     if step_type == "thought":
-        console.print(f"  {prefix}[magenta][Thought][/magenta] {content}")
+        console.print(f"  {prefix}[magenta][Reasoning][/magenta] {content}")
     elif step_type == "action":
-        console.print(f"  {prefix}[purple]🟣 [Action][/purple] 正在执行: {content}")
+        console.print(f"  {prefix}[purple]🟣 [WorkOrder][/purple] 正在执行: {content}")
     elif step_type == "observation":
-        console.print(f"  {prefix}[cyan][Observation][/cyan] {content}")
+        console.print(f"  {prefix}[cyan][Verification evidence][/cyan] {content}")
     elif step_type == "answer":
-        console.print(f"  {prefix}[green][Final Answer][/green] {content}")
+        console.print(f"  {prefix}[green][User-facing result][/green] {content}")
 
 
 def load_config() -> dict:
@@ -325,7 +325,7 @@ async def dream_scheduler_loop() -> None:
 
 
 # -----------------------------------------------------------------------------
-# Agent Loop 驱动：蓝图作为岗位说明书，ReAct 自主执行
+# Agent Loop 驱动：蓝图作为岗位说明书，CognitiveKernel 自主执行
 # -----------------------------------------------------------------------------
 
 
@@ -338,12 +338,12 @@ async def execute_blueprint(
     layer1_url: str = "",
 ) -> None:
     """
-    将蓝图与任务指令喂给 AgentLoop，由 ReAct 代理自主决定执行策略。
+    将蓝图与任务指令喂给 AgentLoop，由 CognitiveKernel 代理自主决定执行策略。
 
-    不再机械执行 Trigger->Processor->Action，而是：
+    不再机械执行 Trigger->Processor->WorkOrder，而是：
     - 蓝图 = 岗位说明书（人设 + Wasm 技能武器）
     - 任务/聊天消息 = User Input
-    - Agent 通过 Thought -> Action -> Observation 循环自主完成
+    - Agent 通过 DecisionContract -> WorkOrder -> Verification 循环自主完成
     - 若有 pending_message_ids，执行完成后调用 Layer 1 的 result API 回传用户（TG/飞书）
     """
     from core.agent_loop import run as agent_run
@@ -355,7 +355,7 @@ async def execute_blueprint(
     # 默认任务：新蓝图已加载，请自主待命
     task = user_input or "新蓝图已下发，请基于当前技能自主待命。若有待办任务请执行，否则保持就绪。"
     run_id = uuid.uuid4().hex
-    console.print(f"[RunID:{run_id[:8]}] [cyan]🧠 [Agent] 收到任务，启动 ReAct 代理循环...[/cyan]")
+    console.print(f"[RunID:{run_id[:8]}] [cyan]🧠 [Agent] 收到任务，启动 CognitiveKernel 代理循环...[/cyan]")
     console.print(f"[RunID:{run_id[:8]}] [dim]  输入: {task[:80]}{'...' if len(task) > 80 else ''}[/dim]")
 
     try:
@@ -363,7 +363,7 @@ async def execute_blueprint(
             task,
             ast_json=ast_json,
             run_id=run_id,
-            on_step=_react_step_printer,
+            on_step=_kernel_step_printer,
         )
         console.print(f"[RunID:{run_id[:8]}] [green]  ✅ Agent 完成[/green]")
 
@@ -450,7 +450,7 @@ def start_daemon() -> None:
         subscribe_omni_output("swarm_broadcast", _broadcast_to_ui)
         from core.event_bus import set_omni_step_callback
 
-        set_omni_step_callback(_react_step_printer)
+        set_omni_step_callback(_kernel_step_printer)
         start_omni_consumer()
 
         # Layer 3 视觉投射：启动本地 WS Server

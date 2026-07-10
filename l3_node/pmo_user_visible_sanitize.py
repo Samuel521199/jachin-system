@@ -1,4 +1,4 @@
-﻿"""
+"""
 PMO 对用户可见文案脱敏：内部双推用的「监控群」、``oc_*`` chat_id 不得出现在任何对话回复中。
 """
 from __future__ import annotations

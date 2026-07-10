@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin 配置根 — 遵循 075-config-root-and-cloud-sync 规范
 
 配置必须写入 ~/.jachin/config/，支持 JACHIN_HOME 环境变量覆盖。

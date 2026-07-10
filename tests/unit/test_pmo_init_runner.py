@@ -1,4 +1,4 @@
-﻿"""PMO INIT 确定性路径单元测试。"""
+"""PMO INIT 确定性路径单元测试。"""
 from __future__ import annotations
 
 from unittest.mock import MagicMock

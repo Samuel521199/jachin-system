@@ -194,7 +194,7 @@ class AnomalyAlert:
 
 
 @dataclass
-class AutonomousAction:
+class AutonomousWorkOrder:
     action_type: str         # "fire_intent" | "resource_warn" | "daily_summary" | "anomaly"
     payload: dict[str, Any] = field(default_factory=dict)
 
@@ -273,9 +273,9 @@ class AutonomousAwarenessLoop:
     def stop(self) -> None:
         self._running = False
 
-    async def scan_once(self) -> list[AutonomousAction]:
+    async def scan_once(self) -> list[AutonomousWorkOrder]:
         """执行一次完整的意识扫描，返回需要执行的自主动作列表。"""
-        actions: list[AutonomousAction] = []
+        actions: list[AutonomousWorkOrder] = []
         now = time.time()
         today_str = _date_str(now)
 
@@ -285,14 +285,14 @@ class AutonomousAwarenessLoop:
 
         # 2. 资源检查（rh 已在上方计算，直接用）
         if rh.disk_warn:
-            actions.append(AutonomousAction(
+            actions.append(AutonomousWorkOrder(
                 action_type="resource_warn",
                 payload={"type": "disk", "free_gb": rh.disk_free_gb,
                          "message": f"磁盘剩余空间不足 2GB（当前 {rh.disk_free_gb:.1f}GB），建议清理。"},
             ))
         if rh.token_warn and not self._token_day_warn_disabled():
             pct = int(rh.token_used_today / rh.token_budget * 100)
-            actions.append(AutonomousAction(
+            actions.append(AutonomousWorkOrder(
                 action_type="resource_warn",
                 payload={"type": "token", "used": rh.token_used_today, "budget": rh.token_budget,
                          "message": f"Token 今日用量已达 {pct}%（{rh.token_used_today}/{rh.token_budget}）。"},
@@ -301,7 +301,7 @@ class AutonomousAwarenessLoop:
         # 3. 异常检测（连续失败的 Intent）
         anomalies = self._identify_anomalies()
         for anomaly in anomalies:
-            actions.append(AutonomousAction(
+            actions.append(AutonomousWorkOrder(
                 action_type="anomaly",
                 payload={"intent_id": anomaly.intent_id,
                          "action": anomaly.action,       # AY: skill_name 提取需要 action 字段
@@ -313,7 +313,7 @@ class AutonomousAwarenessLoop:
         if today_str != self._last_daily_summary_date:
             hour_min = _hour_min(now)
             if hour_min >= "23:55":
-                actions.append(AutonomousAction(action_type="daily_summary", payload={"date": today_str}))
+                actions.append(AutonomousWorkOrder(action_type="daily_summary", payload={"date": today_str}))
                 self._last_daily_summary_date = today_str
 
         return actions
@@ -322,13 +322,13 @@ class AutonomousAwarenessLoop:
         self,
         now: float,
         resource: "ResourceHealthReport | None" = None,
-    ) -> list[AutonomousAction]:
+    ) -> list[AutonomousWorkOrder]:
         """检查 interval / condition 类型的 PersistedIntent 是否应触发。
 
         AJ：condition 类型意图内置条件评估（需 JACHIN_CONDITION_INTENT_ENABLE=1）。
         AK：status=failed 的意图若超过 JACHIN_INTENT_AUTORESET_HOURS 则自动重置。
         """
-        actions: list[AutonomousAction] = []
+        actions: list[AutonomousWorkOrder] = []
         autoreset_h = self._autoreset_hours()
         condition_enabled = self._condition_intent_enabled()
         try:
@@ -347,7 +347,7 @@ class AutonomousAwarenessLoop:
                                 "[AwarenessLoop][AK] intent %s auto-reset after %.1fh failure window",
                                 intent.intent_id, hours_since,
                             )
-                            actions.append(AutonomousAction(
+                            actions.append(AutonomousWorkOrder(
                                 action_type="intent_autoreset",
                                 payload={
                                     "intent_id": intent.intent_id,
@@ -366,7 +366,7 @@ class AutonomousAwarenessLoop:
                 if intent.trigger.type == "interval" and intent.trigger.interval_sec:
                     last = intent.last_executed_at or intent.created_at
                     if now - last >= intent.trigger.interval_sec:
-                        actions.append(AutonomousAction(
+                        actions.append(AutonomousWorkOrder(
                             action_type="fire_intent",
                             payload={"intent_id": intent.intent_id,
                                      "action": intent.action,
@@ -387,7 +387,7 @@ class AutonomousAwarenessLoop:
                                 "[AwarenessLoop][AJ] condition intent %s satisfied: %r",
                                 intent.intent_id, cond_expr,
                             )
-                            actions.append(AutonomousAction(
+                            actions.append(AutonomousWorkOrder(
                                 action_type="fire_intent",
                                 payload={"intent_id": intent.intent_id,
                                          "action": intent.action,
@@ -449,14 +449,14 @@ class AutonomousAwarenessLoop:
             logger.debug("[AwarenessLoop] _identify_anomalies error: %s", e)
         return alerts
 
-    async def _dispatch_actions(self, actions: list[AutonomousAction]) -> None:
+    async def _dispatch_actions(self, actions: list[AutonomousWorkOrder]) -> None:
         for action in actions:
             try:
                 await self._execute_action(action)
             except Exception as e:
                 logger.warning("[AwarenessLoop] dispatch action %s failed: %s", action.action_type, e)
 
-    async def _execute_action(self, action: AutonomousAction) -> None:
+    async def _execute_action(self, action: AutonomousWorkOrder) -> None:
         if action.action_type == "fire_intent":
             intent_id = action.payload.get("intent_id", "")
             task_desc = action.payload.get("action", "")

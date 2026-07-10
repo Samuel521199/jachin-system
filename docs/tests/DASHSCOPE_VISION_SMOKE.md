@@ -45,4 +45,4 @@ python scripts/test_dashscope_vision_smoke.py --image path/to/screenshot.png
 
 ## 与 L3 的关系
 
-本脚本**不**经过 `agent_core` / ReAct；仅验证 **LiteLLM + DashScope + data URL 图片** 的最小链路。L3 侧若仍异常，请对比本脚本输出与 `JACHIN_DASHSCOPE_VL_KEEPS_TOOLS`、fallback 链等配置。
+本脚本**不**经过 `agent_core` / WorkOrder；仅验证 **LiteLLM + DashScope + data URL 图片** 的最小链路。L3 侧若仍异常，请对比本脚本输出与 `JACHIN_DASHSCOPE_VL_KEEPS_TOOLS`、fallback 链等配置。

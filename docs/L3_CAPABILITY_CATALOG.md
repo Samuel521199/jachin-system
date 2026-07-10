@@ -1,6 +1,6 @@
 # L3 能力总目录（Jachin 执行节点）
 
-**定位**：与具体业务域**解耦**的元层文档——说明系统身份、软/硬路由分工、**如何注册新 MCP/Skill 域**，供人工与 Agent 查阅。  
+**定位**：与具体业务域**解耦**的元层文档——说明系统身份、软/硬路由分工、**如何注册新 MCP/Skill 域**，供人工与 Agent 查阅。
 **各域细节**（工具映射、飞书硬指令、注入正文）放在 **`docs/capability_domains/*.md`**，由 `l3_node/capability_catalog.py` 按当前「可用工具」自动拼接。
 
 **打包 L3（PyInstaller Sidecar）**：`scripts/build_l3_sidecar.py` 会将本文件与 `capability_domains/` 一并打入 `sys._MEIPASS/docs/`，与源码仓库路径一致；任意机器上的 frozen L3 均可读取，大模型仍能注入「是谁、会什么」。详见 Cursor 规则 **079-l3-capability-catalog.mdc**。
@@ -18,7 +18,7 @@
 
 | 项 | 说明 |
 |----|------|
-| **角色** | Layer 3 执行节点：ReAct Agent + 本地/订阅 MCP + Wasm 技能 + Memory Nexus（SQLite + FastEmbed）+（可选）L2 协同等控制面 |
+| **角色** | Layer 3 执行节点：Cognitive Kernel + WorkOrder Dispatcher + RoleExecutor + 本地/订阅 MCP + Wasm 技能 + Memory Nexus（SQLite + FastEmbed）+（可选）L2 协同等控制面 |
 | **典型通道** | 飞书 IM、WebSocket 控制台、HTTP `agent/run` |
 | **边界** | 不臆测外部系统已登录/已连接；以工具返回值与配置为准 |
 
@@ -44,7 +44,7 @@
 1. **新建** `docs/capability_domains/<domain_id>.md`：写工具 id 片段映射、硬路径说明、并用 HTML 注释包一层 **`PROMPT_INJECT_<DOMAIN>_START` / `END`**（与 `capability_catalog.py` 中常量一致）。
 2. **在** `l3_node/capability_catalog.py` 的 **`DOMAIN_REGISTRY`** 追加一条：`(domain_id, tool_markers_tuple, 相对 docs 的 md 路径, inject 锚点名前缀)`。
 3. **（可选）** 为该域维护 `SKILL.md` / `plugin.json`，与 [SKILL_MD_SPEC.md](./SKILL_MD_SPEC.md) 一致。
-4. **（可选）** 若该域需要独立 SOP 注入（如招聘），在 `agent_core._build_system_prompt` 中**仅按域 id 或 markers** 挂载 SKILL 正文，**勿**把域逻辑写进本文件。
+4. **（可选）** 若该域需要独立 SOP 注入（如招聘），在 `agent_core.kernel prompt composer` 中**仅按域 id 或 markers** 挂载 SKILL 正文，**勿**把域逻辑写进本文件。
 
 ---
 

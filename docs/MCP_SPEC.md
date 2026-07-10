@@ -1,6 +1,6 @@
-﻿# MCP 接入规范 (Model Context Protocol)
+# MCP 接入规范 (Model Context Protocol)
 
-**版本**: V2（2026-03），与 [MCP_EXECUTION_MODEL.md](./MCP_EXECUTION_MODEL.md) v2.2 一致  
+**版本**: V2（2026-03），与 [MCP_EXECUTION_MODEL.md](./MCP_EXECUTION_MODEL.md) v2.2 一致
 **定位**: **四大原语**中的 **MCP**（外部协议进程、`mcp:*`；高信任本机托管）
 
 **四大原语**：本文所述 MCP 在 Jachin 中归类为 **MCP 原语**（外部协议进程、`mcp:*`），与 **Tools**（`core:*`/`jpp:*`）、**Skills**（声明式 SOP）、**Agent Tasks**（delegate/后台/coordinate）并列定义见 **[Jachin 视角的「四大原语」终极架构规范.md](./Jachin%20视角的「四大原语」终极架构规范.md)**。
@@ -33,7 +33,7 @@
 
 - **实现**: `core/mcp_client.py`（`MCPManager`）
 - **L3 启动**: `l3_node/mcp_stdio_bootstrap.py`（与 inventory 扫描配合）
-- **职责**: 连接 MCP 服务器、发现工具、执行工具调用、将结果返回 ReAct 循环
+- **职责**: 连接 MCP 服务器、发现工具、执行工具调用，并将结果返回 WorkOrder / RoleExecutor 链路
 - **协议**: [Model Context Protocol](https://modelcontextprotocol.io/) 标准
 
 ### 3.2 工具发现与注册
@@ -41,12 +41,12 @@
 1. 启动时读取配置 `~/.jachin/mcp_servers.json`，列出要连接的 MCP 服务器
 2. 通过 stdio/SSE 连接各 MCP 服务器
 3. 调用 `tools/list` 获取可用工具列表
-4. 将工具名、描述、参数 Schema 注册到 Agent 的可用 Action 集合
+4. 将工具名、描述、参数 Schema 注册到 Capability Registry，供 WorkOrder Adapter 选择
 
-### 3.3 ReAct 集成
+### 3.3 WorkOrder 集成
 
-- Agent 在 `[Action]` 阶段可选择调用 MCP 工具或 Wasm 插件
-- 路由规则：若 `action_name` 在 MCP 工具列表中，则走 `core/mcp_client.py`；否则走 `core/wasm_runner.py`
+- ReviewBoard / Arbiter 生成 `DecisionContract` 后，由 Dispatcher 创建 `WorkOrder`。
+- 路由规则：若 `tool_id` 在 MCP 工具列表中，则走 `core/mcp_client.py`；否则交给对应 RoleExecutor / capability adapter。
 
 ### 3.4 配置示例
 

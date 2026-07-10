@@ -1,7 +1,7 @@
 # 域：Holographic UI（OmniParser）
 
-**L3 进程内工具**: `mcp:get_holographic_screen`、`mcp:physical_click`  
-**实现**: `l3_client/local_mcps/holographic_screen_mcp/`  
+**L3 进程内工具**: `mcp:get_holographic_screen`、`mcp:physical_click`
+**实现**: `l3_client/local_mcps/holographic_screen_mcp/`
 **推理环境**: 默认 `.venv-omniparser`（见 `scripts/setup_omniparser_venv.ps1`）
 
 ## 何时使用

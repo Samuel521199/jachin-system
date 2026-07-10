@@ -1,4 +1,4 @@
-﻿"""PMO 人类可读调试日志格式（v8 统一格式）。"""
+"""PMO 人类可读调试日志格式（v8 统一格式）。"""
 from __future__ import annotations
 
 import json
@@ -39,8 +39,8 @@ class TestPmoCopilotDebugFile(unittest.TestCase):
         self.assertIn("PMO-Copilot 运行日志（人类可读 · v8 统一格式）", text)
         self.assertIn("运行模式: 全流程 · 单 Agent", text)
         self.assertIn("pmo_mirror_import", text)
-        self.assertIn("ReAct 上限: 28 轮（本运行主循环）", text)
-        self.assertIn("【阶段一 · 全流程 ReAct】开始", text)
+        self.assertIn("RoleExecutionAgent 上限: 28 轮（本运行主循环）", text)
+        self.assertIn("【阶段一 · 全流程 RoleExecutionAgent】开始", text)
         self.assertIn("▶ Agent 启动: 主编排 Agent", text)
 
     def test_format_bi_round_lists_tables_and_output_dir(self) -> None:
@@ -82,7 +82,7 @@ class TestPmoCopilotDebugFile(unittest.TestCase):
             run_id="run1",
         )
         text = log.read_text(encoding="utf-8")
-        self.assertIn("【阶段一 · 主编排 Agent · 全流程 ReAct · 第 1 / 26 轮】INIT · 拉表", text)
+        self.assertIn("【阶段一 · 主编排 Agent · 全流程 RoleExecutionAgent · 第 1 / 26 轮】INIT · 拉表", text)
         self.assertIn("🤖 当前 Agent: 主编排 Agent", text)
         self.assertIn("📌 这一步在做什么", text)
         self.assertIn("💭 Agent 想法", text)

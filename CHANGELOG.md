@@ -6,9 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### Added / Changed
 
-- 都测试可以：主循环、语音桥接、云端/本地 STT、ws_server 与 chat 链路经回归验证。
-- 完善主循环后的热词：热词注入与 STT 服务仍有待完善（已知遗留项）。
-- **Version**: Desktop **0.9.108**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+- **云端主架构**：整合 `f05f846b` — hard migrate cognitive kernel architecture（认知内核硬迁移、terminology 统一、capability publish 等）。
+- **本地保留**：语音模块（`voice_server` / `voiceCore` / STT 热词）与桌面 UI（`clients/desktop/src`）维持本地版本。
+- 本地提交：都测试可以，除了完善主循环后的热词。
+- **Version**: Desktop **0.9.108**。
 
 ---
 

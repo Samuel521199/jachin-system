@@ -22,58 +22,58 @@ def test_certificate_generation():
     """测试证书生成"""
     cert_dir = Path("data/certs/test")
     cert_dir.mkdir(parents=True, exist_ok=True)
-    
+
     logger.info("=" * 60)
     logger.info("测试 1: 生成 CA 证书")
     logger.info("=" * 60)
-    
+
     mtls_manager = MTLSManager(cert_dir=cert_dir)
-    
+
     # 生成 CA
     ca_cert, ca_key = mtls_manager.generate_ca()
     logger.info(f"✓ CA 证书已生成: {mtls_manager.ca_cert_path}")
     logger.info(f"  Subject: {ca_cert.subject}")
     logger.info(f"  Issuer: {ca_cert.issuer}")
-    
+
     # 生成服务器证书
     logger.info("\n" + "=" * 60)
     logger.info("测试 2: 生成服务器证书")
     logger.info("=" * 60)
-    
+
     server_cert, server_key = mtls_manager.generate_server_certificate()
     logger.info(f"✓ 服务器证书已生成: {mtls_manager.server_cert_path}")
     logger.info(f"  Subject: {server_cert.subject}")
     logger.info(f"  Issuer: {server_cert.issuer}")
-    
+
     # 验证服务器证书
     logger.info("\n" + "=" * 60)
     logger.info("测试 3: 验证服务器证书")
     logger.info("=" * 60)
-    
+
     verified, _ = mtls_manager.verify_server_certificate(server_cert)
     if verified:
         logger.info("✓ 服务器证书验证通过")
     else:
         logger.error("✗ 服务器证书验证失败")
-    
+
     # 生成客户端 CSR
     logger.info("\n" + "=" * 60)
     logger.info("测试 4: 生成客户端 CSR 并签发证书")
     logger.info("=" * 60)
-    
+
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import rsa
     from cryptography.hazmat.backends import default_backend
     from cryptography.x509.oid import NameOID
-    
+
     # 生成客户端密钥对
     client_key = rsa.generate_private_key(
         public_exponent=65537,
         key_size=2048,
         backend=default_backend()
     )
-    
+
     # 创建 CSR
     csr = x509.CertificateSigningRequestBuilder().subject_name(
         x509.Name([
@@ -84,21 +84,21 @@ def test_certificate_generation():
             x509.NameAttribute(NameOID.COMMON_NAME, "test-device-001"),
         ])
     ).sign(client_key, hashes.SHA256(), default_backend())
-    
+
     logger.info("✓ 客户端 CSR 已生成")
-    
+
     # 签发客户端证书
     device_id = "test-device-001"
     client_cert, client_cert_pem = mtls_manager.sign_client_csr(csr, device_id)
     logger.info(f"✓ 客户端证书已签发: {mtls_manager.client_certs_dir / f'{device_id}.crt'}")
     logger.info(f"  Subject: {client_cert.subject}")
     logger.info(f"  Issuer: {client_cert.issuer}")
-    
+
     # 验证客户端证书
     logger.info("\n" + "=" * 60)
     logger.info("测试 5: 验证客户端证书")
     logger.info("=" * 60)
-    
+
     # verify_client_certificate 接受 x509.Certificate 对象，不是 PEM 字符串
     # 如果传入的是 PEM 字符串，需要先解析
     if isinstance(client_cert_pem, bytes):
@@ -107,7 +107,7 @@ def test_certificate_generation():
         client_cert_obj = x509.load_pem_x509_certificate(client_cert_pem, default_backend())
     else:
         client_cert_obj = client_cert_pem
-    
+
     verified, extracted_device_id = mtls_manager.verify_client_certificate(client_cert_obj)
     if verified:
         logger.info(f"✓ 客户端证书验证通过")
@@ -118,12 +118,12 @@ def test_certificate_generation():
             logger.error(f"✗ 设备 ID 不匹配: 期望 {device_id}, 实际 {extracted_device_id}")
     else:
         logger.error("✗ 客户端证书验证失败")
-    
+
     # 测试 SSL Context
     logger.info("\n" + "=" * 60)
     logger.info("测试 6: 生成服务器 SSL Context")
     logger.info("=" * 60)
-    
+
     import ssl
     ssl_context = mtls_manager.get_server_ssl_context()
     if ssl_context:
@@ -132,7 +132,7 @@ def test_certificate_generation():
         logger.info(f"  需要客户端证书: {ssl_context.verify_mode == ssl.CERT_REQUIRED}")
     else:
         logger.error("✗ 服务器 SSL Context 生成失败")
-    
+
     logger.info("\n" + "=" * 60)
     logger.info("所有测试完成！")
     logger.info("=" * 60)

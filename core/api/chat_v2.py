@@ -29,13 +29,13 @@ router = APIRouter(prefix="/api/v2/chat", tags=["chat-v2"])
 async def list_personalities():
     """
     列出所有可用的AI助手人格
-    
+
     Returns:
         人格列表，包含ID、名称、描述等信息
     """
     personality_manager = get_personality_manager()
     personalities = personality_manager.list_personalities()
-    
+
     return {
         "personalities": personalities,
         "default": personality_manager.default_personality,
@@ -206,7 +206,7 @@ async def _resolve_provider():
 async def chat_text(request: TextChatRequest):
     """
     文本聊天接口
-    
+
     支持同步和流式输出
     """
     provider = await _resolve_provider()
@@ -215,24 +215,24 @@ async def chat_text(request: TextChatRequest):
             status_code=503,
             detail="LLM provider is not available. Please check configuration."
         )
-    
+
     try:
         # 获取人格管理器
         personality_manager = get_personality_manager()
-        
+
         # 转换消息格式
         messages = [
             {"role": msg.role, "content": msg.content}
             for msg in request.messages
         ]
-        
+
         # 检查是否已有system消息，如果没有则添加人格的系统提示词
         has_system_message = any(msg.get("role") == "system" for msg in messages)
         if not has_system_message and request.personality_id:
             system_prompt = personality_manager.get_system_message(request.personality_id)
             if system_prompt:
                 messages.insert(0, {"role": "system", "content": system_prompt})
-        
+
         # 准备参数（优先使用人格配置，然后使用请求参数）
         kwargs = {}
         if request.personality_id:
@@ -244,7 +244,7 @@ async def chat_text(request: TextChatRequest):
                 kwargs["temperature"] = request.temperature
             if request.max_tokens is not None:
                 kwargs["max_tokens"] = request.max_tokens
-        
+
         # 调用LLM
         if request.stream:
             # 流式响应
@@ -252,7 +252,7 @@ async def chat_text(request: TextChatRequest):
                 async for chunk in provider.stream_chat(messages, **kwargs):
                     yield f"data: {chunk}\n\n"
                 yield "data: [DONE]\n\n"
-            
+
             return StreamingResponse(
                 generate(),
                 media_type="text/event-stream; charset=utf-8",
@@ -276,7 +276,7 @@ async def chat_text(request: TextChatRequest):
                 model=model_info.get("model", request.model or settings.LLM_MODEL),
                 usage=None,
             )
-    
+
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -291,7 +291,7 @@ async def chat_image(
 ):
     """
     图像聊天接口
-    
+
     支持通过URL或文件上传图像
     """
     provider = await _resolve_provider()
@@ -300,54 +300,54 @@ async def chat_image(
             status_code=503,
             detail="LLM provider is not available. Please check configuration."
         )
-    
+
     if not provider.supports_call_type(CallType.IMAGE):
         raise HTTPException(
             status_code=400,
             detail=f"Model {provider.model} does not support image input"
         )
-    
+
     try:
         # 准备图像输入
         images = []
-        
+
         # 从URL添加图像
         if request.image_urls:
             for url in request.image_urls:
                 images.append(ImageInput(image_url=url))
-        
+
         # 从上传文件添加图像
         if image_files:
             for file in image_files:
                 image_bytes = await file.read()
                 images.append(ImageInput(image_bytes=image_bytes))
-        
+
         if not images:
             raise HTTPException(
                 status_code=400,
                 detail="At least one image (URL or file) is required"
             )
-        
+
         # 转换消息格式
         messages = [
             {"role": msg.role, "content": msg.content}
             for msg in request.messages
         ]
-        
+
         # 准备参数
         kwargs = {}
         if request.temperature is not None:
             kwargs["temperature"] = request.temperature
         if request.max_tokens is not None:
             kwargs["max_tokens"] = request.max_tokens
-        
+
         # 调用LLM
         if request.stream:
             async def generate():
                 async for chunk in provider.stream_chat_with_image(messages, images, **kwargs):
                     yield f"data: {chunk}\n\n"
                 yield "data: [DONE]\n\n"
-            
+
             return StreamingResponse(
                 generate(),
                 media_type="text/event-stream; charset=utf-8",
@@ -368,7 +368,7 @@ async def chat_image(
                 content=response_text,
                 model=model_info.get("model", request.model or settings.LLM_MODEL),
             )
-    
+
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -387,33 +387,33 @@ async def chat_web_search(request: WebSearchChatRequest):
             status_code=503,
             detail="LLM provider is not available. Please check configuration."
         )
-    
+
     if not provider.supports_call_type(CallType.WEB_SEARCH):
         raise HTTPException(
             status_code=400,
             detail=f"Model {provider.model} does not support web search"
         )
-    
+
     try:
         # 转换消息格式
         messages = [
             {"role": msg.role, "content": msg.content}
             for msg in request.messages
         ]
-        
+
         # 配置联网搜索
         web_search_config = WebSearchConfig(
             enabled=request.enable_search,
             max_results=request.max_results
         )
-        
+
         # 准备参数
         kwargs = {}
         if request.temperature is not None:
             kwargs["temperature"] = request.temperature
         if request.max_tokens is not None:
             kwargs["max_tokens"] = request.max_tokens
-        
+
         # 调用LLM
         response_text = await provider.chat_with_web_search(
             messages, web_search_config, **kwargs
@@ -431,7 +431,7 @@ async def chat_web_search(request: WebSearchChatRequest):
             content=response_text,
             model=model_info.get("model", request.model or settings.LLM_MODEL),
         )
-    
+
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -450,20 +450,20 @@ async def chat_tools(request: ToolCallRequest):
             status_code=503,
             detail="LLM provider is not available. Please check configuration."
         )
-    
+
     if not provider.supports_call_type(CallType.TOOL_CALL):
         raise HTTPException(
             status_code=400,
             detail=f"Model {provider.model} does not support tool calling"
         )
-    
+
     try:
         # 转换消息格式
         messages = [
             {"role": msg.role, "content": msg.content}
             for msg in request.messages
         ]
-        
+
         # 转换工具定义
         tools = [
             ToolCall(
@@ -473,14 +473,14 @@ async def chat_tools(request: ToolCallRequest):
             )
             for tool in request.tools
         ]
-        
+
         # 准备参数
         kwargs = {}
         if request.temperature is not None:
             kwargs["temperature"] = request.temperature
         if request.max_tokens is not None:
             kwargs["max_tokens"] = request.max_tokens
-        
+
         # 调用LLM
         result = await provider.chat_with_tools(messages, tools, **kwargs)
         model_info = provider.get_model_info()
@@ -498,7 +498,7 @@ async def chat_tools(request: ToolCallRequest):
             model=model_info.get("model", request.model or settings.LLM_MODEL),
             tool_calls=result.get("tool_calls"),
         )
-    
+
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -517,10 +517,10 @@ async def get_capabilities():
             status_code=503,
             detail="LLM provider is not available. Please check configuration."
         )
-    
+
     model_info = provider.get_model_info()
     capabilities = model_info.get("capabilities", {})
-    
+
     return {
         "model": model_info.get("model"),
         "provider": model_info.get("provider"),

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Voice 仿生器官 — 听觉与喉咙 (Animus Protocol v8.0)
 
 唤醒词 (pvporcupine) -> STT (SpeechRecognition + Whisper) -> OmniSensoryBus -> TTS (edge-tts + pygame)
@@ -152,7 +152,7 @@ def _listen_for_wake_word() -> bool:
 
 
 async def speak_text(text: str, voice: str = DEFAULT_TTS_VOICE) -> None:
-    """Speak through local JVS Kokoro so legacy voice output matches the desktop baseline."""
+    """Speak through local JVS Kokoro so archived voice output matches the desktop baseline."""
     if not text or not text.strip():
         return
 

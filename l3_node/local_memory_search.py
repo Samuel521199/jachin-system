@@ -90,7 +90,7 @@ def _search_local_memories_sync(
         "meta": {
             "backend": "memory_nexus_deep_search",
             "limit": lim,
-            "legacy_compat": {
+            "archived_compat": {
                 "mmr_lambda": mmr_lambda,
                 "half_life_days": half_life_days,
                 "include_memory_md": include_memory_md,
@@ -170,9 +170,9 @@ def search_local_memories(
     )
 
 
-def parse_core_local_memory_search_action_input(action_input: str) -> dict[str, Any]:
-    """从 ReAct Action Input 解析 ``core:local_memory_search`` 参数（与 native_tools 行为对齐）。"""
-    inp = (action_input or "").strip()
+def parse_core_local_memory_search_work_order_input(work_order_input: str) -> dict[str, Any]:
+    """从 RoleExecutionAgent tool input 解析 ``core:local_memory_search`` 参数（与 native_tools 行为对齐）。"""
+    inp = (work_order_input or "").strip()
     q = ""
     top_k = 8
     mmr_l = 0.55

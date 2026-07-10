@@ -1,4 +1,4 @@
-﻿"""run_tool 对 core:db_query / core:db_write 的路由测试。"""
+"""run_tool 对 core:db_query / core:db_write 的路由测试。"""
 from __future__ import annotations
 
 import os

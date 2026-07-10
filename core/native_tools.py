@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin Nexus v8.0 - Native Core 内置标准库
 
 写路径白名单见 l3_node.primitives.native_write_allowlist（workspace、HR 数据卷、Desktop/Downloads/Documents 等）。

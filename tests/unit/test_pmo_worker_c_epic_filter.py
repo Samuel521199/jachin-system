@@ -1,4 +1,4 @@
-﻿"""Worker C C-2 大需求 WHERE 拦截（禁止 Sprint IN 全表冒充 Epic）。"""
+"""Worker C C-2 大需求 WHERE 拦截（禁止 Sprint IN 全表冒充 Epic）。"""
 from __future__ import annotations
 
 from l3_node.tools.pmo_db_tools import (

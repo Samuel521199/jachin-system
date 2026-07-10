@@ -163,7 +163,7 @@ class OmniSensoryBus:
                     logger.exception("[OmniSensoryBus] 输出处理器异常 %s: %s", etype, e)
 
     def set_step_callback(self, cb: Callable[[str, str, str], None] | None) -> None:
-        """设置 ReAct 步骤打印回调"""
+        """设置 CognitiveKernel 步骤打印回调"""
         self._step_callback = cb
 
     def start_brain_worker(self) -> None:
@@ -350,7 +350,7 @@ def get_bus() -> OmniSensoryBus:
 
 
 # -----------------------------------------------------------------------------
-# 兼容层：OmniInputEvent / OmniOutputEvent（daemon 等仍使用）
+# 适配层：OmniInputEvent / OmniOutputEvent（daemon 等仍使用）
 # -----------------------------------------------------------------------------
 
 @dataclass
@@ -375,7 +375,7 @@ class OmniOutputEvent:
 # -----------------------------------------------------------------------------
 
 def set_omni_step_callback(cb: Callable[[str, str, str], None] | None) -> None:
-    """设置 ReAct 步骤打印回调"""
+    """设置 CognitiveKernel 步骤打印回调"""
     get_bus().set_step_callback(cb)
 
 
@@ -406,8 +406,8 @@ def emit_omni_input(source: str, intent: str, payload: dict[str, Any] | None = N
 def subscribe_omni_output(source: str, handler: Callable[..., Coroutine[Any, Any, None]]) -> None:
     """订阅输出：handler 接收 OmniOutputEvent（兼容旧签名）"""
     async def _adapter(ev: SensoryOutputEvent) -> None:
-        legacy = OmniOutputEvent(source=ev.source_ref, result=ev.content, payload=ev.metadata)
-        await handler(legacy)
+        archived = OmniOutputEvent(source=ev.source_ref, result=ev.content, payload=ev.metadata)
+        await handler(archived)
     get_bus().subscribe(f"output.{source}", _adapter)
 
 

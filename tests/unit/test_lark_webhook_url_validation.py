@@ -1,9 +1,9 @@
-﻿"""Lark Webhook URL 校验与 PMO notifier 入参纠偏。"""
+"""Lark Webhook URL 校验与 PMO notifier 入参纠偏。"""
 from __future__ import annotations
 
 import json
 
-from l3_node.agent_core import _pmo_fixup_atom_lark_notifier_inp
+from l3_node.pmo_agent_policy import _pmo_fixup_atom_lark_notifier_inp
 from l3_node.channels.lark.webhook_url import (
     is_valid_lark_incoming_webhook_url,
     looks_like_lark_chat_id,

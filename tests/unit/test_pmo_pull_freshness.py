@@ -1,4 +1,4 @@
-﻿"""PMO 拉表 freshness：今日已入库则跳过阶段零。"""
+"""PMO 拉表 freshness：今日已入库则跳过阶段零。"""
 from __future__ import annotations
 
 from datetime import date

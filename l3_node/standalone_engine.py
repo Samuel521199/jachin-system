@@ -1,4 +1,4 @@
-﻿"""
+"""
 独立 LiteLLM 引擎工厂（不启动 WebSocket / 不占 L3 单实例锁）。
 
 供 PMO Copilot、BI 脚本、deferred_task 等一次性任务使用；

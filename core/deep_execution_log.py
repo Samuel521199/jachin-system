@@ -29,7 +29,7 @@ def deep_log_enabled() -> bool:
 
 def deep_log_full_payload_enabled() -> bool:
     """
-    为真时：log_llm_completion 打印完整 messages（截断上限仍生效）、ReAct 原始输出大上限等，与旧版一致。
+    为真时：log_llm_completion 打印完整 messages（截断上限仍生效）、RoleExecutionAgent 原始输出大上限等，与旧版一致。
     为假（默认）：仅打印条数、各 role 长度、tools 数量与摘要 hash，避免巨型日志阻塞。
     兼容旧环境变量名 JACHIN_L3_DEEP_LOG_FULL_REQUEST。
     """
@@ -263,7 +263,7 @@ def log_tool_execution(
     trace: str,
     run_id: str,
     tool: str,
-    action_input: str,
+    work_order_input: str,
     output: str,
     elapsed_ms: float,
     mcp: bool,
@@ -280,8 +280,8 @@ def log_tool_execution(
             f"tool={tool}",
             f"mcp={mcp}",
             f"elapsed_ms={elapsed_ms:.1f}",
-            f"action_input_len={len(action_input or '')}",
-            "[ACTION_INPUT]\n" + _format_tool_payload_for_deep_log(action_input, outer_cap=ai_cap),
+            f"work_order_input_len={len(work_order_input or '')}",
+            "[ACTION_INPUT]\n" + _format_tool_payload_for_deep_log(work_order_input, outer_cap=ai_cap),
             f"output_len={len(output or '')}",
             "[OUTPUT]\n" + _format_tool_payload_for_deep_log(output, outer_cap=out_cap),
         ]
@@ -289,7 +289,7 @@ def log_tool_execution(
     emit_block(f"TOOL {tool}", body)
 
 
-def log_react_iteration_context(
+def log_role_execution_iteration_context(
     *,
     trace: str,
     iteration: int,
@@ -313,10 +313,10 @@ def log_react_iteration_context(
             f"llm_purpose={llm_purpose}",
         ]
     )
-    emit_block("ReAct iteration (pre-LLM)", body)
+    emit_block("RoleExecutionAgent iteration (pre-LLM)", body)
 
 
-def log_react_llm_result(
+def log_role_execution_llm_result(
     *,
     trace: str,
     iteration: int,
@@ -335,10 +335,10 @@ def log_react_llm_result(
             "[RAW_MODEL_OUTPUT]\n" + _truncate(redact_secrets(response_full or ""), cap),
         ]
     )
-    emit_block("ReAct LLM raw output", body)
+    emit_block("RoleExecutionAgent LLM raw output", body)
 
 
-def log_react_parse_result(
+def log_role_execution_parse_result(
     *,
     trace: str,
     iteration: int,
@@ -347,7 +347,7 @@ def log_react_parse_result(
     if not deep_log_enabled():
         return
     emit_block(
-        "ReAct parse",
+        "RoleExecutionAgent parse",
         f"trace={trace}\niteration={iteration}\n{redact_secrets(parsed_summary)}",
     )
 

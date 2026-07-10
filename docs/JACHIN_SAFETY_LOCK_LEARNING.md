@@ -1,6 +1,6 @@
 # 安全锁「学习」逻辑说明（架构与流程）
 
-本文描述 **Jachin 安全锁** 的受控学习机制：如何把「经确认的事实」写入独立 Markdown，并在后续对话的 **system prompt** 中高优先级生效。  
+本文描述 **Jachin 安全锁** 的受控学习机制：如何把「经确认的事实」写入独立 Markdown，并在后续对话的 **system prompt** 中高优先级生效。
 **不是**无监督从聊天自动抽取知识；**是**在明确开关下，通过工具（默认 **pending**）或人工编辑落盘。
 
 **关联文档**：[JACHIN_SAFETY_LOCK.md](./JACHIN_SAFETY_LOCK.md)（路径、开关、工具列表）· [JACHIN_SAFETY_LOCK_REMEDIATION.md](./JACHIN_SAFETY_LOCK_REMEDIATION.md)（四项风险与治理）。
@@ -29,8 +29,8 @@ flowchart LR
   end
 
   subgraph L3["L3 Agent 运行时"]
-    AC["agent_core._build_system_prompt"]
-    RT["run_tool / ReAct"]
+    AC["agent_core.kernel prompt composer"]
+    RT["run_tool / WorkOrder"]
     NT["core/native_tools.dispatch"]
     SLM["jachin_safety_lock 模块"]
     DOM["output_format_signals\nheuristic_safety_lock_domains"]
@@ -49,7 +49,7 @@ flowchart LR
   LLM["大模型"]
 
   H1 --> RT
-  RT -->|"Action: core:safety_lock_append"| NT
+  RT -->|"Tool call: core:safety_lock_append"| NT
   NT --> SLM
   SLM -->|"读 ENV + NX"| ENV
   SLM -->|"读 NX"| NX
@@ -101,7 +101,7 @@ flowchart TD
 ```mermaid
 sequenceDiagram
   participant U as 用户
-  participant L3 as L3 ReAct
+  participant L3 as L3 WorkOrder
   participant T as core:safety_lock_append
   participant Q as pending/*.json
   participant F as JACHIN_SAFETY_LOCK.md
@@ -109,7 +109,7 @@ sequenceDiagram
 
   U->>L3: 任务执行 / 纠错说明
   Note over L3: 本轮 prompt 尚不含「刚审批」的条目
-  L3->>T: Action + JSON body/source/tags
+  L3->>T: WorkOrder + JSON body/source/tags
   alt 默认 pending
     T->>Q: 写入待审批
     T-->>L3: pending_id、CLI 说明
@@ -121,7 +121,7 @@ sequenceDiagram
   end
   Note over F,Q: 运维 approve 后
   Q->>F: CLI 合并入正式 MD
-  L3-->>U: Final Answer
+  L3-->>U: User-facing result
   Note over P: 下一次用户发消息
   F->>P: get_safety_lock_snippet 读盘注入（按需域+预算）
   P->>L3: 高优先级后缀（eviction_rank=98）
@@ -143,7 +143,7 @@ flowchart LR
   SL["jachin_safety_lock\n98"]
   TP["task_plan_disk\n95"]
   DOTS["… 其它 mid/low 块 …"]
-  FT["react_footer\n100"]
+  FT["work_order_footer\n100"]
   GW --> LM --> JR --> SL --> TP --> DOTS --> FT
 ```
 
@@ -178,7 +178,7 @@ flowchart LR
 | `safety_lock.direct_append_to_md` | 开发直连写 MD |
 | `JACHIN_SAFETY_LOCK_ADMIN_TOKEN` | **仅本机**，CLI `approve` / `reject` |
 | `JACHIN_SAFETY_LOCK_FULL_INJECT` / `full_inject` | 全量合并注入（仍截断） |
-| `inject_max_total_chars` / `legacy_global_head_chars` | 注入预算与头段 |
+| `inject_max_total_chars` / `archived_global_head_chars` | 注入预算与头段 |
 
 ---
 
@@ -189,10 +189,10 @@ flowchart LR
 | `l3_node/jachin_safety_lock.py` | learn、pending、approve、remove、maintenance、`get_safety_lock_snippet` |
 | `l3_node/jachin_safety_lock_admin.py` | CLI list / approve / reject / maintenance |
 | `l3_node/routing/output_format_signals.py` | `heuristic_safety_lock_domains` |
-| `l3_node/agent_core.py` | `_build_system_prompt`、传入 `safety_lock_user_text` |
+| `l3_node/agent_core.py` | `kernel prompt composer`、传入 `safety_lock_user_text` |
 | `l3_node/prompt_compose.py` | 后缀预算与按 rank 驱逐 |
 | `core/native_tools.py` | append / list_pending / remove |
-| `l3_node/primitives/tools/loader.py` | 工具描述与 Action Input 解析 |
+| `l3_node/primitives/tools/loader.py` | 工具描述与 tool input 解析 |
 
 ---
 

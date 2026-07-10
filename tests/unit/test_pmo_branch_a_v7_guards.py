@@ -1,14 +1,14 @@
-﻿"""PMO 分支 A v7 守卫：单次推送、防 INIT 漂移、大颗粒度探针、DB 就绪跳过拉表。"""
+"""PMO 分支 A v7 守卫：单次推送、防 INIT 漂移、大颗粒度探针、DB 就绪跳过拉表。"""
 from __future__ import annotations
 
 import json
 import os
 
-from l3_node.agent_core import (
+from l3_node.pmo_agent_policy import (
     PipelineContext,
     PMO_BRANCH_A_PERSONNEL_SSOT_VIEW,
     _pmo_append_draft_gfm_hint_after_db_query,
-    _pmo_append_react_budget_warning,
+    _pmo_append_role_execution_budget_warning,
     _pmo_branch_a_blocked_force_assembly_round,
     _pmo_branch_a_blocked_init_tools_during_analysis,
     _pmo_blocked_analysis_tools_during_init,
@@ -42,7 +42,7 @@ from unittest.mock import patch
 
 _DEV_PRIMARY = "oc_868fc82317a60ce89744ae51bb7bce91"
 _DEV_MONITOR = "oc_0e321f92d758ecb44aea5b499c90510b"
-_DEV_LEGACY = "oc_437c98d11106295fb10751a5481ee465"
+_DEV_ARCHIVED = "oc_437c98d11106295fb10751a5481ee465"
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -388,13 +388,13 @@ def test_macro_dashboard_push_marks_dual_delivery() -> None:
         assert _pmo_branch_a_delivery_complete(ctx) is True
 
 
-def test_legacy_dev_chat_blocked_for_notifier() -> None:
+def test_archived_dev_chat_blocked_for_notifier() -> None:
     ctx = _ctx(**_probes_complete_meta())
     inp = json.dumps(
         {
             "title": "t",
             "markdown_content": _full_mc(),
-            "chat_id": _DEV_LEGACY,
+            "chat_id": _DEV_ARCHIVED,
         },
         ensure_ascii=False,
     )
@@ -402,18 +402,18 @@ def test_legacy_dev_chat_blocked_for_notifier() -> None:
         obs = _pmo_blocked_invalid_war_report_chat_observation("mcp:atom_lark_notifier", inp, ctx)
     assert obs is not None
     d = json.loads(obs)
-    assert d.get("error") == "pmo_legacy_dev_chat_blocked"
-    assert _DEV_LEGACY in d.get("msg", "")
+    assert d.get("error") == "pmo_archived_dev_chat_blocked"
+    assert _DEV_ARCHIVED in d.get("msg", "")
 
 
-def test_legacy_dev_chat_blocked_for_macro_dashboard_push() -> None:
+def test_archived_dev_chat_blocked_for_macro_dashboard_push() -> None:
     ctx = _ctx(pmo_multi_agent_complete=True)
-    inp = json.dumps({"chat_id": _DEV_LEGACY}, ensure_ascii=False)
+    inp = json.dumps({"chat_id": _DEV_ARCHIVED}, ensure_ascii=False)
     with _isolated_dual_pmo_env():
         obs = _pmo_blocked_invalid_war_report_chat_observation(
             "core:pmo_macro_dashboard_push", inp, ctx
         )
-    assert json.loads(obs or "{}").get("error") == "pmo_legacy_dev_chat_blocked"
+    assert json.loads(obs or "{}").get("error") == "pmo_archived_dev_chat_blocked"
 
 
 def test_macro_dashboard_push_single_chat_b_machine() -> None:
@@ -563,7 +563,7 @@ def test_reject_analysis_premature_delivery_final_answer() -> None:
     )
     assert _pmo_final_answer_falsely_claims_lark_sent(ans) is True
     blocked = _reject_pmo_branch_a_analysis_incomplete_delivery_guard(
-        ctx, messages, f"Final Answer: {ans}", ans, via="test"
+        ctx, messages, f"User-facing result: {ans}", ans, via="test"
     )
     assert blocked is True
     assert len(messages) == 2
@@ -623,7 +623,7 @@ def test_premature_block_includes_format_examples_and_no_rerun_hint() -> None:
     assert d.get("reason") == "markdown_incomplete"
     msg = d.get("msg") or ""
     assert "❌ **禁止重跑 Step 1–7" in msg
-    assert "markdown_content" in msg and "Thought" in msg
+    assert "markdown_content" in msg and "Reasoning trace" in msg
     assert ctx.metadata.get("_pmo_markdown_fix_phase") == "supplemental"
     assert d.get("markdown_fix_phase") == "supplemental"
     examples = _pmo_notifier_markdown_section_format_examples(d.get("missing_sections") or [])
@@ -678,7 +678,7 @@ def test_force_assembly_round_blocks_notifier_before_thought_preview() -> None:
     obs = _pmo_branch_a_blocked_force_assembly_round(
         "mcp:atom_lark_notifier",
         ctx,
-        "Thought: 只有摘要\nAction: atom_lark_notifier",
+        "Reasoning note: 只有摘要\nWorkOrder: atom_lark_notifier",
     )
     d = json.loads(obs or "{}")
     assert d.get("error") == "pmo_assembly_round_notifier_blocked"
@@ -688,7 +688,7 @@ def test_force_assembly_round_marks_ready_when_thought_has_three_tables() -> Non
     ctx = _ctx(**_probes_complete_meta())
     ctx.metadata["_pmo_assembly_phase"] = "writing"
     thought = (
-        "Thought:\n"
+        "Reasoning note:\n"
         "**📊 需求进度全览**\n| Epic | 状态 |\n| --- | --- |\n| A | 🔵 |\n"
         "**👥 人员任务矩阵**\n| p | t |\n| --- | --- |\n| Ethan | task |\n"
         "**📦 版本发布需求映射**\n| v | n |\n| --- | --- |\n| vew8 | 0 |"
@@ -717,7 +717,7 @@ def test_markdown_incomplete_system_nudge_text() -> None:
     nudge = _pmo_markdown_incomplete_system_nudge(ctx, obs, "mcp:atom_lark_notifier")
     assert "系统校验" in nudge
     assert "不会" in nudge and "自动" in nudge
-    assert "Thought 历史" in nudge
+    assert "Reasoning trace 历史" in nudge
 
 
 def test_budget_warning_when_remaining_rounds_low() -> None:
@@ -726,9 +726,9 @@ def test_budget_warning_when_remaining_rounds_low() -> None:
     meta["_pmo_analysis_probes"] = dict(meta["_pmo_analysis_probes"])
     meta["_pmo_analysis_probes"]["epic"] = False
     ctx = _ctx(**meta)
-    out = _pmo_append_react_budget_warning(
+    out = _pmo_append_role_execution_budget_warning(
         ctx,
-        "Observation ok",
+        "Verification evidence ok",
         iteration=28,
         max_iterations=32,
     )
@@ -814,8 +814,8 @@ def test_draft_gfm_hint_when_thought_missing_table() -> None:
     ctx = _ctx(pmo_db_ready=True, pmo_analysis_only=True)
     obs = _pmo_append_draft_gfm_hint_after_db_query(
         ctx,
-        "Thought: Step3 完成，人员分布正常。",
-        "Observation ok",
+        "Reasoning note: Step3 完成，人员分布正常。",
+        "Verification evidence ok",
     )
     assert "草稿提醒" in obs
     assert "GFM" in obs
@@ -825,21 +825,21 @@ def test_draft_gfm_hint_skipped_when_table_present() -> None:
     ctx = _ctx(pmo_db_ready=True, pmo_analysis_only=True)
     obs = _pmo_append_draft_gfm_hint_after_db_query(
         ctx,
-        "Thought: Step3\n| 姓名 | 任务 |\n| --- | --- |\n| Ethan | task |",
-        "Observation ok",
+        "Reasoning note: Step3\n| 姓名 | 任务 |\n| --- | --- |\n| Ethan | task |",
+        "Verification evidence ok",
     )
-    assert obs == "Observation ok"
+    assert obs == "Verification evidence ok"
 
 
 def test_budget_warning_skipped_when_prerequisites_met() -> None:
     ctx = _ctx(**_probes_complete_meta())
-    out = _pmo_append_react_budget_warning(
+    out = _pmo_append_role_execution_budget_warning(
         ctx,
-        "Observation ok",
+        "Verification evidence ok",
         iteration=28,
         max_iterations=32,
     )
-    assert out == "Observation ok"
+    assert out == "Verification evidence ok"
 
 
 def test_personnel_kanban_requires_json_each_on_vewCz1FFJi() -> None:
@@ -918,9 +918,9 @@ def test_invalid_field_sql_blocked_on_vewpI8lyYw() -> None:
 
 def test_draft_duplicate_hint_when_gfm_unchanged() -> None:
     ctx = _ctx(pmo_db_ready=True, pmo_analysis_only=True)
-    gfm = "Thought: Step3\n| alvintan | task | sprint |\n| --- | --- | --- |"
+    gfm = "Reasoning note: Step3\n| alvintan | task | sprint |\n| --- | --- | --- |"
     ctx.metadata["_pmo_last_gfm_draft_fingerprint"] = _pmo_extract_gfm_draft_fingerprint(gfm)
-    obs = _pmo_append_draft_gfm_hint_after_db_query(ctx, gfm, "Observation ok")
+    obs = _pmo_append_draft_gfm_hint_after_db_query(ctx, gfm, "Verification evidence ok")
     assert "草稿重复" in obs
 
 
@@ -932,7 +932,7 @@ def test_force_push_exit_guard_blocks_data_quality_early_exit() -> None:
         "因数据质量问题（多数关键字段为 null），无法形成有效业务洞察。建议修复数据源后重试。"
     )
     blocked = _reject_pmo_branch_a_force_push_exit_guard(
-        ctx, messages, f"Final Answer: {ans}", ans, via="test"
+        ctx, messages, f"User-facing result: {ans}", ans, via="test"
     )
     assert blocked is True
     assert len(messages) == 2
