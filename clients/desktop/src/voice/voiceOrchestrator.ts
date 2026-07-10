@@ -9,6 +9,7 @@ import { notifyCompanionVoicePhase } from "./voiceNativeBridge";
 import { synthesizeSpeechL2Only } from "../lib/api";
 import { DEFAULT_KOKORO_TTS_VOICE } from "./voiceDefaults";
 import { loadCompanionCueAudio } from "./voiceCueAudioCache";
+import { stripAssistantUiProtocol } from "../components/Chat/pendingConfirmationProtocol";
 
 type ChunkConsumer = (text: string) => void;
 
@@ -135,6 +136,7 @@ export class VoiceOrchestrator {
   }
 
   onL3Chunk(chunk: string, onSentence?: ChunkConsumer): Promise<void> {
+    chunk = stripAssistantUiProtocol(chunk);
     if (!chunk.trim()) return Promise.resolve();
     if (this.maxSpeakSentences <= 0) return Promise.resolve();
     if (chunk === this.lastChunkIn) {

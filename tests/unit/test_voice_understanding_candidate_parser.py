@@ -27,11 +27,11 @@ def entity_names(result: dict) -> set[str]:
     return {str(item.get("canonical")) for item in result["understanding"]["entity_candidates"]}
 
 
-def test_voice_understanding_corrects_lark_without_routing() -> None:
+def test_voice_understanding_keeps_lark_alias_as_plain_stt() -> None:
     result = VoiceUnderstandingCorrector().correct("\u6253\u5f00LUCK")
 
-    assert result["corrected_text"] == "\u6253\u5f00Lark"
-    assert "Lark" in entity_names(result)
+    assert result["corrected_text"] == "\u6253\u5f00LUCK"
+    assert entity_names(result) == set()
     assert_stt_only(result)
 
 
@@ -44,35 +44,35 @@ def test_voice_understanding_keeps_chat_statement_as_plain_stt() -> None:
     assert_stt_only(result)
 
 
-def test_voice_understanding_corrects_contact_and_app_but_does_not_ask_slots() -> None:
+def test_voice_understanding_keeps_contact_and_app_text_plain() -> None:
     result = VoiceUnderstandingCorrector().correct("\u5728LARK \u7ed9Neil\u53d1\u6d88\u606f")
 
-    assert result["corrected_text"] == "\u5728Lark\u7ed9Neil\u53d1\u6d88\u606f"
-    assert {"Lark", "Neil"}.issubset(entity_names(result))
+    assert result["corrected_text"] == "\u5728LARK \u7ed9Neil\u53d1\u6d88\u606f"
+    assert entity_names(result) == set()
     assert_stt_only(result)
 
 
-def test_voice_understanding_maps_recorded_hotword_aliases_without_reply_plan() -> None:
+def test_voice_understanding_keeps_recorded_hotword_aliases_plain() -> None:
     result = VoiceUnderstandingCorrector().correct("\u5728\u80cc\u4e66\u7ed9\u4e00\u5206\u53d1\u6d88\u606f\u5185\u5bb9\u662f\u4eca\u5929\u51e0\u70b9\u5f00\u4f1a")
 
-    assert result["corrected_text"] == "\u5728Lark\u7ed9Ethan\u53d1\u6d88\u606f\u5185\u5bb9\u662f\u4eca\u5929\u51e0\u70b9\u5f00\u4f1a"
-    assert {"Lark", "Ethan"}.issubset(entity_names(result))
+    assert result["corrected_text"] == "\u5728\u80cc\u4e66\u7ed9\u4e00\u5206\u53d1\u6d88\u606f\u5185\u5bb9\u662f\u4eca\u5929\u51e0\u70b9\u5f00\u4f1a"
+    assert entity_names(result) == set()
     assert_stt_only(result)
 
 
-def test_voice_understanding_maps_neil_alias_without_taking_control() -> None:
+def test_voice_understanding_keeps_neil_alias_plain() -> None:
     result = VoiceUnderstandingCorrector().correct("\u518dLUCK \u7ed9\u4f60\u7528\u6cd5\u6d88\u606f\u5185\u5bb9\u662f\u540c\u6b65\u4e00\u4e0b")
 
-    assert result["corrected_text"] == "\u518dLark\u7ed9Neil\u6d88\u606f\u5185\u5bb9\u662f\u540c\u6b65\u4e00\u4e0b"
-    assert {"Lark", "Neil"}.issubset(entity_names(result))
+    assert result["corrected_text"] == "\u518dLUCK \u7ed9\u4f60\u7528\u6cd5\u6d88\u606f\u5185\u5bb9\u662f\u540c\u6b65\u4e00\u4e0b"
+    assert entity_names(result) == set()
     assert_stt_only(result)
 
 
-def test_voice_understanding_maps_project_alias_without_task_selection() -> None:
+def test_voice_understanding_keeps_project_alias_plain() -> None:
     result = VoiceUnderstandingCorrector().correct("\u5e2e\u6211\u770b\u4e00\u4e0bCHARGE")
 
-    assert result["corrected_text"] == "\u5e2e\u6211\u770b\u4e00\u4e0bJachin"
-    assert "Jachin" in entity_names(result)
+    assert result["corrected_text"] == "\u5e2e\u6211\u770b\u4e00\u4e0bCHARGE"
+    assert entity_names(result) == set()
     assert_stt_only(result)
 
 

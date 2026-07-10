@@ -43,6 +43,11 @@ export interface VoiceTranscriptionResult {
   hotwordDominated?: boolean;
 }
 
+export interface VoiceTranscriptionOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
 function sanitizeSttText(text: string): string {
   const cleaned = (text || "")
     .replace(/<\|.*?\|>/g, "")
@@ -129,7 +134,11 @@ export async function ensureJvsReady(): Promise<void> {
   }
 }
 
-export async function transcribeBlobDetailed(audioBlob: Blob, profile: VoiceUxProfile = "chat_ptt"): Promise<VoiceTranscriptionResult> {
+export async function transcribeBlobDetailed(
+  audioBlob: Blob,
+  profile: VoiceUxProfile = "chat_ptt",
+  options: VoiceTranscriptionOptions = {},
+): Promise<VoiceTranscriptionResult> {
   const wavBytes = audioBlob.size;
   const pipelineStartedAt = Date.now();
   voiceChatTraceIfActive("stt.prepare", { profile, wavBytes, blobType: audioBlob.type });
@@ -154,44 +163,14 @@ export async function transcribeBlobDetailed(audioBlob: Blob, profile: VoiceUxPr
       wavBytes: wavBlob.size,
     });
     const sttStarted = Date.now();
-    const stt = await transcribeByJvs(wavBlob);
+    const stt = await transcribeByJvs(wavBlob, {
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+    });
     const correctedText = (stt.text || "").trim();
     const rawText = (stt.raw_text || stt.text || "").trim();
-    const selected = stt.understanding?.selected;
-    const userMessage = (stt.user_message || selected?.question || "").trim();
-    const replyPlan = (stt.reply_plan || (stt.understanding as any)?.reply_plan || {}) as Record<string, unknown>;
-    if (selected?.type === "clarification_required" && userMessage) {
-      voiceChatTraceIfActive("stt.jvs_clarification_required", {
-        profile,
-        question: userMessage,
-        intent: selected.intent,
-        slots: selected.slots,
-        missingSlots: selected.missing_slots,
-        rawText,
-        correctedText: selected?.corrected_text || correctedText,
-        confidence: stt.confidence,
-        latencyMs: Date.now() - sttStarted,
-        pipelineMs: Date.now() - pipelineStartedAt,
-      });
-      throw new VoiceServiceError(userMessage, "clarification", {
-        rawText,
-        correctedText: selected?.corrected_text || correctedText,
-        userMessage,
-        userMessageSource: stt.user_message_source || "",
-        replyPlan,
-        understanding: stt.understanding,
-        confidence: stt.confidence,
-        durationMs: stt.duration_ms,
-        language: stt.language,
-        backend: stt.backend,
-        source: "jvs_http_transcribe",
-        finalized: true,
-        provisional: false,
-        hotwordCount: stt.hotword_count,
-        hotwordStatus: stt.hotword_status,
-        hotwordSources: stt.hotword_sources,
-      });
-    }
+    const userMessage = "";
+    const replyPlan = {} as Record<string, unknown>;
     const text = sanitizeSttText(correctedText);
     voiceChatTraceIfActive("stt.jvs_transcribe_ok", {
       profile,
@@ -199,13 +178,13 @@ export async function transcribeBlobDetailed(audioBlob: Blob, profile: VoiceUxPr
       rawText,
       correctedText,
       userMessage,
-      userMessageSource: stt.user_message_source,
+      userMessageSource: "",
       replyPlan,
       confidence: stt.confidence,
       durationMs: stt.duration_ms,
       language: stt.language,
       backend: stt.backend,
-      understanding: stt.understanding,
+      understanding: {},
       hotwordCount: stt.hotword_count,
       hotwordStatus: stt.hotword_status,
       hotwordSources: stt.hotword_sources,
@@ -219,13 +198,13 @@ export async function transcribeBlobDetailed(audioBlob: Blob, profile: VoiceUxPr
     return {
       text,
       rawText,
-      correctedText: selected?.corrected_text || correctedText,
+      correctedText,
       userMessage,
       confidence: stt.confidence,
       durationMs: stt.duration_ms,
       language: stt.language,
       backend: stt.backend,
-      understanding: stt.understanding,
+      understanding: {},
       source: "jvs_http_transcribe",
       finalized: true,
       provisional: false,
@@ -244,6 +223,27 @@ export async function transcribeBlobDetailed(audioBlob: Blob, profile: VoiceUxPr
       throw e;
     }
     const msg = e instanceof Error ? e.message : String(e);
+    if (msg.startsWith("JVS_STT_TIMEOUT:")) {
+      const timeoutMs = Number(msg.split(":")[1] || 0);
+      voiceChatTraceIfActive("stt.jvs_transcribe_timeout", {
+        profile,
+        timeoutMs,
+        pipelineMs: Date.now() - pipelineStartedAt,
+      });
+      throw new VoiceServiceError("语音识别服务响应超时，已经中止这轮识别。请再说一次。", "stt", {
+        reason: "jvs_stt_timeout",
+        timeoutMs,
+      });
+    }
+    if (msg === "JVS_STT_ABORTED") {
+      voiceChatTraceIfActive("stt.jvs_transcribe_aborted", {
+        profile,
+        pipelineMs: Date.now() - pipelineStartedAt,
+      });
+      throw new VoiceServiceError("这轮语音识别已被新的语音输入取消。", "stt", {
+        reason: "jvs_stt_aborted",
+      });
+    }
     voiceChatTraceIfActive("stt.fail", {
       profile,
       code: "unknown",
@@ -260,8 +260,12 @@ export async function transcribeBlob(audioBlob: Blob, profile: VoiceUxProfile = 
   return (await transcribeBlobDetailed(audioBlob, profile)).text;
 }
 
-export async function transcribeWavBase64Detailed(wavBase64: string, profile: VoiceUxProfile = "chat_vad"): Promise<VoiceTranscriptionResult> {
-  return transcribeBlobDetailed(wavBase64ToBlob(wavBase64), profile);
+export async function transcribeWavBase64Detailed(
+  wavBase64: string,
+  profile: VoiceUxProfile = "chat_vad",
+  options: VoiceTranscriptionOptions = {},
+): Promise<VoiceTranscriptionResult> {
+  return transcribeBlobDetailed(wavBase64ToBlob(wavBase64), profile, options);
 }
 
 export async function transcribeWavBase64(wavBase64: string, profile: VoiceUxProfile = "chat_vad"): Promise<string> {
@@ -274,5 +278,3 @@ export function formatVoiceUserMessage(text: string, profile: VoiceUxProfile): s
   if (profile === "wake") return t;
   return `🎤 ${t}`;
 }
-
-

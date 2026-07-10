@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.107] - 2026-07-10
+
+### Added / Changed
+
+- 可实现：任务确认与执行链路可落地；桌面 chat / HUD 与 pending confirmation 协议补强。
+- 加语音：voice bridge / orchestrator / companion 管线增强；云端 STT 服务与热词词典更新；`voice_server` WebSocket 与理解层扩展。
+- **Version**: Desktop **0.9.107**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
 ## [v0.9.105] - 2026-07-09
 
 ### Added / Changed

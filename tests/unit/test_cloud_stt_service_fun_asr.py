@@ -32,11 +32,6 @@ class _FakeHotwords:
         )
 
 
-class _FakeUnderstanding:
-    def correct(self, text: str) -> dict:
-        return {"corrected_text": text, "understanding": {"selected_task": {"intent": "open_app"}}}
-
-
 def test_fun_asr_passes_native_vocabulary_id_and_context_hotwords(monkeypatch) -> None:
     seen: dict = {}
 
@@ -69,7 +64,6 @@ def test_fun_asr_passes_native_vocabulary_id_and_context_hotwords(monkeypatch) -
         language="zh",
     )
     svc._hotwords = _FakeHotwords()
-    svc._understanding = _FakeUnderstanding()
     monkeypatch.setattr(svc, "_configure_dashscope_sdk", lambda: None)
     monkeypatch.setattr(svc, "_recognition_class", lambda: FakeRecognition)
     monkeypatch.setattr(svc, "_recognition_callback_class", lambda: FakeCallback)
@@ -136,7 +130,6 @@ def test_fun_asr_auto_syncs_existing_hotwords_to_dashscope_vocabulary(monkeypatc
         auto_sync_vocabulary=True,
     )
     svc._hotwords = _FakeHotwords()
-    svc._understanding = _FakeUnderstanding()
     monkeypatch.setattr(svc, "_configure_dashscope_sdk", lambda: None)
     monkeypatch.setattr(svc, "_recognition_class", lambda: FakeRecognition)
     monkeypatch.setattr(svc, "_recognition_callback_class", lambda: FakeCallback)

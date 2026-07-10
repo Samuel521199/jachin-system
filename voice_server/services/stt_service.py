@@ -14,7 +14,6 @@ from typing import Any
 import numpy as np
 
 from services.stt_hotwords import HotwordSnapshot, SttHotwordProvider
-from services.voice_understanding import VoiceUnderstandingCorrector
 
 logger = logging.getLogger("jachin.voice_server.stt")
 _MEANINGFUL_CHAR_RE = re.compile(r"[\u4e00-\u9fffA-Za-z0-9]")
@@ -47,7 +46,11 @@ class SttResult:
 
 
 class SttService:
-    """Sherpa-ONNX Zipformer Transducer local STT with domain understanding."""
+    """Sherpa-ONNX Zipformer Transducer local STT.
+
+    The voice layer is STT-only: native hotwords may bias decoding, but this
+    service does not rewrite entities, select intents, or create reply plans.
+    """
 
     model_name = "sherpa-onnx-zipformer-zh-en-2023-11-22"
 
@@ -60,7 +63,6 @@ class SttService:
         self._hotwords = SttHotwordProvider()
         self._hotword_file: Path | None = None
         self._hotword_signature: tuple[tuple[str, int], ...] = ()
-        self._understanding = VoiceUnderstandingCorrector()
 
     @property
     def ready(self) -> bool:
@@ -153,32 +155,30 @@ class SttService:
         audio = self._resample_to_16k(audio, sample_rate)
         raw_text = ""
         text = ""
-        correction: dict[str, Any] = {}
         try:
             stream = engine.create_stream()
             stream.accept_waveform(16000, audio.astype(np.float32))
             engine.decode_stream(stream)
             raw_text = self._sanitize_transcript_text(stream.result.text)
-            correction = self._understanding.correct(raw_text) if raw_text else {}
-            text = str(correction.get("corrected_text") or raw_text).strip()
+            text = raw_text
         except Exception as e:
             logger.exception("Sherpa-ONNX transcribe failed")
             text = f"【STT错误】{e}"
 
-        confidence = self._result_confidence(text, correction)
+        confidence = self._result_confidence(text)
         return SttResult(
             text=text,
             raw_text=raw_text,
-            user_message=str(correction.get("user_message") or "").strip(),
-            user_message_source=str(correction.get("user_message_source") or "").strip(),
-            reply_plan=correction.get("reply_plan", {}) if isinstance(correction.get("reply_plan"), dict) else {},
+            user_message="",
+            user_message_source="",
+            reply_plan={},
             confidence=confidence,
             duration_ms=duration_ms,
             language="zh",
             hotword_count=hotword_snapshot.count,
             hotword_status="applied" if hotword_snapshot.words else "not_configured",
             hotword_sources=tuple(hotword_snapshot.sources),
-            understanding=correction.get("understanding", {}),
+            understanding={},
         )
 
     def _prepare_hotword_file(self, snapshot: HotwordSnapshot) -> Path | None:
@@ -205,11 +205,9 @@ class SttService:
         return str(max(1, min(100, int(weight or 1))))
 
     @staticmethod
-    def _result_confidence(text: str, correction: dict[str, Any]) -> float:
+    def _result_confidence(text: str) -> float:
         if not text or text.startswith("【STT错误】"):
             return 0.0
-        if correction:
-            return round(max(0.01, min(0.99, float(correction.get("confidence") or 0.0))), 3)
         return 0.9
 
     @staticmethod

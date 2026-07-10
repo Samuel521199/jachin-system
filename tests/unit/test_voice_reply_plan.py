@@ -42,9 +42,11 @@ def test_voice_understanding_does_not_expose_reply_plan_from_stt_layer() -> None
     selected = result["understanding"]["selected"]
     reply_plan = result["reply_plan"]
 
-    assert result["corrected_text"] == "\u5728 Lark\u7ed9Neil\u53d1\u6d88\u606f"
+    assert result["corrected_text"] == "\u5728 LARK \u7ed9Neil\u53d1\u6d88\u606f"
     assert result["understanding"]["voice_layer_scope"] == "stt_only"
     assert selected == {}
+    assert result["understanding"]["entity_candidates"] == []
+    assert result["understanding"]["task_candidates"] == []
     assert reply_plan == {}
     assert result["user_message"] == ""
     assert result["user_message_source"] == ""

@@ -53,6 +53,7 @@ import {
   summarizeForSentryNotify,
   type SentryNotifyVariant,
 } from "./lib/jachinSentryNotify";
+import { stripAssistantUiProtocol } from "./components/Chat/pendingConfirmationProtocol";
 import { desktopDiagLog } from "./lib/desktopDiagLog";
 import { mergeStreamChunk } from "./utils/streamChunkMerge";
 import {
@@ -145,29 +146,6 @@ function stripDefaultSadEmojiSuffix(text: string): string {
   if (!t) return t;
   const cleaned = t.replace(/(?:\s*[😔😢😭☹️🙁😞])+$/u, "").trim();
   return cleaned || t;
-}
-
-function detectVoiceHotwordDomination(trace: Partial<VoiceTranscriptionResult>): { dominated: boolean; reasons: string[] } {
-  const text = stripDefaultSadEmojiSuffix(String(trace.text || trace.correctedText || "").trim());
-  const streamText = stripDefaultSadEmojiSuffix(String(trace.streamText || "").trim());
-  const compact = text.replace(/[\s🎤，。！？、,.!?;:：；"'`~*_#()（）\[\]{}<>《》-]+/g, "").toLowerCase();
-  const durationMs = Number(trace.durationMs || 0);
-  const hotwordCount = Number(trace.hotwordCount || 0);
-  const reasons: string[] = [];
-  if (!compact) return { dominated: false, reasons };
-
-  const hasHotwordEntity = /(chrome|lark|vivian|neil|ethan|vscode|vs code|cursor|飞书|拉克|谷歌|浏览器)/i.test(text);
-  const hasTaskVerb = /(打开|启动|找到|找|切到|进入|给|发|发送|消息|open|find|send)/i.test(text);
-  const hasMathEvidence = /(计算器|计算|算一下|多少|加|减|乘|除|[0-9]+|[零一二三四五六七八九十百千万]+\s*(乘|加|减|除))/i.test(text);
-  const streamConflict = Boolean(streamText && streamText !== text);
-  const shortHotwordTask = hasHotwordEntity && hasTaskVerb && compact.length <= 14;
-
-  if (durationMs >= 4500 && shortHotwordTask) reasons.push("short_hotword_task_from_long_audio");
-  if (hotwordCount >= 80 && shortHotwordTask && !hasMathEvidence) reasons.push("large_hotword_set_short_task");
-  if (streamConflict && shortHotwordTask && streamText.length > text.length + 4) reasons.push("stream_final_conflict_hotword_task");
-  if (trace.source === "jvs_stream_ws" || trace.provisional || trace.finalized === false) reasons.push("non_final_stt_source");
-
-  return { dominated: reasons.length > 0, reasons };
 }
 
 function resolveCompanionJvsVoice(_voice: string): string {
@@ -391,6 +369,8 @@ function ChatApp() {
    * 在竞态下同一段音频可能被提交两次，这里做一次轻量指纹去重。
    */
   const lastVoiceSubmitRef = useRef<{ fp: string; at: number } | null>(null);
+  const activeSttAbortRef = useRef<AbortController | null>(null);
+  const voiceSttRequestSeqRef = useRef(0);
   isRecordingRef.current = isRecording;
   isVadActiveRef.current = isVadActive;
   /** 当前轮 L3 WS run_id，用于超时后仍接收 answer 时丢弃陈旧回复 */
@@ -1104,6 +1084,7 @@ function ChatApp() {
      * L3 Sensory：hook 内已 merge，此处仅收到 delta，merge 后与 prev 拼接仍正确。
      */
     let streamMergeAcc = "";
+    let companionVisibleStreamAcc = "";
     let lastCompanionTtsDelta = "";
     let lastCompanionHudDelta = "";
     let reasoningPulseTimer: ReturnType<typeof setInterval> | null = null;
@@ -1228,6 +1209,11 @@ function ChatApp() {
       const { next, delta } = mergeStreamChunk(streamMergeAcc, chunk);
       streamMergeAcc = next;
       if (!delta) return;
+      const companionVisibleAcc = stripAssistantUiProtocol(streamMergeAcc);
+      const companionDelta = companionVisibleAcc.startsWith(companionVisibleStreamAcc)
+        ? companionVisibleAcc.slice(companionVisibleStreamAcc.length)
+        : companionVisibleAcc;
+      companionVisibleStreamAcc = companionVisibleAcc;
       const firstChunkLatencyMs = firstContentChunkSeen ? undefined : Date.now() - l3StartedAt;
       firstContentChunkSeen = true;
       voiceChatTraceIfActive("l3.chunk", {
@@ -1241,26 +1227,26 @@ function ChatApp() {
       });
       accumulatedForTts += delta;
       if (useJvsCompanionVoice) {
-        if (delta !== lastCompanionTtsDelta) {
-          lastCompanionTtsDelta = delta;
-          void voiceOrchestrator.onL3Chunk(delta);
+        if (companionDelta && companionDelta !== lastCompanionTtsDelta) {
+          lastCompanionTtsDelta = companionDelta;
+          void voiceOrchestrator.onL3Chunk(companionDelta);
         }
-        if (delta !== lastCompanionHudDelta) {
-          lastCompanionHudDelta = delta;
+        if (companionDelta && companionDelta !== lastCompanionHudDelta) {
+          lastCompanionHudDelta = companionDelta;
           voiceCompanionDebug("chat.companion_chunk", {
-            delta: truncVoiceLog(delta, 80),
+            delta: truncVoiceLog(companionDelta, 80),
             runId: runId ?? "",
             isReasoning: meta?.isReasoning ?? false,
           });
           void emitCompanionL3ToHud({
             kind: "chunk",
-            delta,
+            delta: companionDelta,
             runId: runId ?? undefined,
             chunkMeta: meta,
           });
         }
       } else if (useJvsChatVoice) {
-        void voiceOrchestrator.onL3Chunk(delta);
+        if (companionDelta) void voiceOrchestrator.onL3Chunk(companionDelta);
       } else {
         voiceCompanionDebug("chat.l3_chunk_no_companion", {
           delta: truncVoiceLog(delta, 60),
@@ -1370,7 +1356,7 @@ function ChatApp() {
     registerStepHandler(stepHandler);
     registerAnswerHandler((answerContent, meta) => {
       if (myTurnToken !== chatTurnTokenRef.current) return;
-      const safeAnswerContent = stripDefaultSadEmojiSuffix(String(answerContent ?? ""));
+      const safeAnswerContent = stripAssistantUiProtocol(stripDefaultSadEmojiSuffix(String(answerContent ?? "")));
       const rid = meta?.runId ?? "";
       if (rid && l3ActiveRunIdRef.current && !l3RunIdsSameTurn(rid, l3ActiveRunIdRef.current)) {
         voiceChatTraceIfActive("l3.answer_stale_ignored", {
@@ -2070,6 +2056,24 @@ function ChatApp() {
     }, 8000);
   }, [clearPttAudioWaitTimer, handlePttCaptureFailed]);
 
+  const abortActiveStt = useCallback((reason: string, endTrace = false) => {
+    const controller = activeSttAbortRef.current;
+    if (!controller) return;
+    voiceSttRequestSeqRef.current += 1;
+    activeSttAbortRef.current = null;
+    voiceChatTrace("stt.abort_active", {
+      reason,
+      requestSeq: voiceSttRequestSeqRef.current,
+    });
+    controller.abort();
+    if (endTrace) {
+      endVoiceChatTrace("cancel", {
+        reason,
+        stage: "stt_abort_active",
+      });
+    }
+  }, []);
+
   const submitVoiceUtterance = useCallback(
     async (
       wavBase64: string,
@@ -2088,6 +2092,11 @@ function ChatApp() {
         return;
       }
       lastVoiceSubmitRef.current = { fp, at: now };
+
+      abortActiveStt("new_voice_submit");
+      const sttRequestSeq = ++voiceSttRequestSeqRef.current;
+      const sttAbortController = new AbortController();
+      activeSttAbortRef.current = sttAbortController;
 
       if (profile === "chat_vad" && !getActiveVoiceChatTraceId()) {
         beginVoiceChatTrace("chat_vad", voiceTraceUiRef.current);
@@ -2205,7 +2214,17 @@ function ChatApp() {
             reason: "ptt_final_stt_required",
           });
         }
-        const finalTrace = await transcribeWavBase64Detailed(wavForStt, profile);
+        const finalTrace = await transcribeWavBase64Detailed(wavForStt, profile, {
+          signal: sttAbortController.signal,
+        });
+        if (sttAbortController.signal.aborted || sttRequestSeq !== voiceSttRequestSeqRef.current) {
+          voiceChatTrace("stt.pipeline_superseded", {
+            profile,
+            requestSeq: sttRequestSeq,
+            currentRequestSeq: voiceSttRequestSeqRef.current,
+          });
+          return;
+        }
         const sttTrace: Partial<VoiceTranscriptionResult> & { source: string } = {
           ...finalTrace,
           source: "jvs_http_transcribe",
@@ -2213,42 +2232,9 @@ function ChatApp() {
           provisional: false,
           streamText,
         };
-        const hotwordRisk = detectVoiceHotwordDomination(sttTrace);
-        sttTrace.hotwordDominated = hotwordRisk.dominated;
-        (sttTrace as Partial<VoiceTranscriptionResult> & { hotwordDominationReasons?: string[] }).hotwordDominationReasons = hotwordRisk.reasons;
+        sttTrace.hotwordDominated = false;
+        (sttTrace as Partial<VoiceTranscriptionResult> & { hotwordDominationReasons?: string[] }).hotwordDominationReasons = [];
         const text = sttTrace.text || "";
-        if (hotwordRisk.dominated) {
-          const question = `我刚才听到的是“${text}”，但这段语音像是被热词影响了。你可以再说一遍，或者确认这就是你要做的吗？`;
-          voiceChatTrace("stt.hotword_dominated_blocked", {
-            profile,
-            text,
-            rawText: sttTrace.rawText || text,
-            correctedText: sttTrace.correctedText || text,
-            streamText,
-            durationMs: sttTrace.durationMs,
-            hotwordCount: sttTrace.hotwordCount,
-            hotwordStatus: sttTrace.hotwordStatus,
-            reasons: hotwordRisk.reasons,
-          });
-          throw new VoiceServiceError(question, "clarification", {
-            rawText: sttTrace.rawText || text,
-            correctedText: sttTrace.correctedText || text,
-            userMessage: question,
-            userMessageSource: "hotword_domination_gate",
-            replyPlan: {
-              reply_intent: "confirm_hotword_dominated_stt",
-              question,
-              candidate_text: text,
-              reasons: hotwordRisk.reasons,
-            },
-            understanding: sttTrace.understanding,
-            confidence: sttTrace.confidence,
-            durationMs: sttTrace.durationMs,
-            language: sttTrace.language,
-            backend: sttTrace.backend,
-            source: sttTrace.source,
-          });
-        }
         voiceChatTrace("stt.recognized", {
           profile,
           text,
@@ -2297,6 +2283,21 @@ function ChatApp() {
         await dispatchVoiceUtterance(sendText, "ptt", sttTrace);
       } catch (e) {
         const msg = e instanceof VoiceServiceError ? e.message : VOICE_UNAVAILABLE_HINT;
+        const voiceErrorDetails = e instanceof VoiceServiceError && e.details ? e.details : {};
+        const voiceErrorReason = String((voiceErrorDetails as Record<string, unknown>).reason || "");
+        if (
+          voiceErrorReason === "jvs_stt_aborted" ||
+          sttAbortController.signal.aborted ||
+          sttRequestSeq !== voiceSttRequestSeqRef.current
+        ) {
+          voiceChatTrace("stt.pipeline_superseded", {
+            profile,
+            reason: voiceErrorReason || "request_aborted_or_stale",
+            requestSeq: sttRequestSeq,
+            currentRequestSeq: voiceSttRequestSeqRef.current,
+          });
+          return;
+        }
         if (e instanceof VoiceServiceError && e.code === "clarification") {
           const details = (e.details || {}) as Record<string, unknown>;
           const rawText = String(details.rawText || "").trim();
@@ -2427,9 +2428,13 @@ function ChatApp() {
         setRecordingStatus(`错误: ${msg}`);
         setState("idle");
         chatJvsVoiceActiveRef.current = false;
+      } finally {
+        if (activeSttAbortRef.current === sttAbortController) {
+          activeSttAbortRef.current = null;
+        }
       }
     },
-    [dispatchVoiceUtterance, setMessages, startCompanionJvsIfNeeded, setState, ttsEnabled, clearPttAudioWaitTimer, buildVoiceReplyComposerPrompt, deliverVoiceReplyComposerResult, doActualSend, ensureCompanionSurfaceVisible],
+    [dispatchVoiceUtterance, setMessages, startCompanionJvsIfNeeded, setState, ttsEnabled, clearPttAudioWaitTimer, abortActiveStt, buildVoiceReplyComposerPrompt, deliverVoiceReplyComposerResult, doActualSend, ensureCompanionSurfaceVisible],
   );
 
   useSttAudioReady({
@@ -2454,6 +2459,7 @@ function ChatApp() {
   /** 大窗语音：点击开始录音，点「结束」截句送 JVS STT（Voice Core） */
   const startRecording = async () => {
     if (isRecordingRef.current) return;
+    abortActiveStt("new_ptt_start", true);
     beginVoiceChatTrace("chat_ptt", voiceTraceUiRef.current);
     voiceChatTrace("ptt.start_click", { ui: voiceTraceUiRef.current });
     getCurrentWindow().setFocus().catch(() => {});
@@ -2946,7 +2952,3 @@ if (rootEl) {
     </React.StrictMode>
   );
 }
-
-
-
-
