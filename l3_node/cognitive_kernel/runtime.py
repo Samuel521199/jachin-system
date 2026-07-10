@@ -1,4 +1,4 @@
-"""Decision, WorkOrder, verification, recovery, and closure helpers."""
+﻿"""Decision, WorkOrder, verification, recovery, and closure helpers."""
 
 from __future__ import annotations
 
@@ -194,6 +194,10 @@ def _looks_failed(observation: str) -> tuple[bool, str]:
         "not allowed",
         "permission denied",
         "connection refused",
+        "unknown tool",
+        "未知工具",
+        "未知 wasm 技能",
+        "未找到技能",
         "无法",
         "失败",
         "错误",
@@ -206,6 +210,27 @@ def _looks_failed(observation: str) -> tuple[bool, str]:
     return False, ""
 
 
+def _looks_failed_from_evidence(extra_evidence: list[dict[str, Any]]) -> tuple[bool, str]:
+    for item in extra_evidence or []:
+        if not isinstance(item, dict) or item.get("type") != "role_execution":
+            continue
+        adapter_evidence = item.get("adapter_evidence") if isinstance(item.get("adapter_evidence"), dict) else {}
+        adapter_reason = ""
+        if isinstance(adapter_evidence, dict):
+            result = adapter_evidence.get("app_control_result")
+            if isinstance(result, dict):
+                adapter_reason = str(result.get("reason") or "")
+        if item.get("adapter_ok") is False and adapter_reason:
+            return True, adapter_reason
+        if isinstance(adapter_evidence, dict):
+            if adapter_evidence.get("strategy") == "app_control" and adapter_evidence.get("foreground_verified") is False:
+                return True, "app_control_foreground_unverified"
+        if item.get("adapter_ok") is False:
+            role_id = str(item.get("role_id") or "RoleExecutionAgent")
+            return True, f"{role_id}_adapter_failed"
+    return False, ""
+
+
 def verify_work_order(
     *,
     turn_id: str,
@@ -215,6 +240,11 @@ def verify_work_order(
     extra_evidence: list[dict[str, Any]] | None = None,
 ) -> VerificationReport:
     failed, reason = _looks_failed(observation)
+    evidence_items = list(extra_evidence or [])
+    evidence_failed, evidence_reason = _looks_failed_from_evidence(evidence_items)
+    if evidence_failed:
+        failed = True
+        reason = evidence_reason or reason
     ok = not failed
     report = VerificationReport(
         verification_id=_new_id("verify"),
@@ -228,7 +258,7 @@ def verify_work_order(
                 "length": len(str(observation or "")),
             }
         ]
-        + list(extra_evidence or []),
+        + evidence_items,
         confidence=0.82 if ok else 0.45,
         failure_reason=reason,
     )
@@ -368,3 +398,7 @@ def blocked_confirmation_observation(contract: DecisionContract) -> str:
         },
         ensure_ascii=False,
     )
+
+
+
+

@@ -3,7 +3,7 @@
 > **文档性质**：架构与工程问题分析（非修复 PR）。  
 > **背景**：开发者在改陪伴态 UI、TTS 语速/音色、唤醒、PTT、L3 流式播报等功能时，频繁出现「改 UI 布局坏了」「改音色口音变了」「改断句策略播报被拦」等连带回归。  
 > **结论先行**：**不是**「所有语音代码都写在一个文件里」的单文件灾难，而是 **「表面模块化 + 多套默认值 + 隐式 fallback + 超大胶水入口」** 叠加造成的 **契约缺失型耦合**。  
-> **关联文档**：`VOICE_UNIFIED_PIPELINE_PROPOSAL.md`（目标架构）、`VOICE_MODULE_HUMAN_GUIDE.md`（人话链路）、`COMPANION_UI_REGRESSION_ROOT_CAUSE_ANALYSIS.md`（陪伴 UI 专项）
+> **关联文档**：`VOICE_COMPANION_PIPELINE_READABLE.md`（当前语音链路 SSOT）、`VOICE_MODULE_HUMAN_GUIDE.md`（人话链路）、`COMPANION_UI_REGRESSION_ROOT_CAUSE_ANALYSIS.md`（陪伴 UI 专项）
 
 ---
 
@@ -31,7 +31,6 @@
 
 | 文件 | 行数（约） | 职责 |
 |------|------------|------|
-| `voiceIntentRouter.ts` | 383 | 进 L3 前规则路由 |
 | `voiceOrchestrator.ts` | 319 | L3 chunk → 断句 → TTS → 播放队列 |
 | `voicePlaybackController.ts` | 264 | 播放代次、native/WebView、打断 |
 | `voiceCore.ts` | 173 | STT 统一入口（JVS HTTP 回退） |
@@ -55,7 +54,7 @@ Rust 侧也有独立 crate 模块：`stt/`、`jvs/`、`tts/`、`voice_playback.r
 | 陪伴态模式切换 | `companionMode`、`useCompanionMode`、Rust `invoke` |
 | 语音 PTT / VAD | `startRecording`、`submitVoiceUtterance` |
 | TTS 会话编排 | `voiceOrchestrator.startSession`、L2 `createAudioQueue` |
-| 语音路由 | `dispatchVoiceUtterance`、`voiceIntentRouter` |
+| 语音转发 | `dispatchVoiceUtterance` 只负责把文本和语音证据送入 L3 |
 | Orb / HUD 同步 | `voiceCompanionBridge`、`emitCompanionL3ToHud` |
 | 全局语音 ref | `chatJvsVoiceActiveRef`、`voiceCompanionActiveRef` |
 
@@ -66,7 +65,7 @@ Rust 侧也有独立 crate 模块：`stt/`、`jvs/`、`tts/`、`voice_playback.r
 
 ## 三、根因 1：多套 TTS 主路径并存（引擎分裂）
 
-文档 SSOT（`VOICE_UNIFIED_PIPELINE_PROPOSAL.md`）声明桌面主路径应统一 **JVS Kokoro**，但代码里至少存在 **四条可发声路径**：
+当前语音链路 SSOT（`VOICE_COMPANION_PIPELINE_READABLE.md`）声明桌面主路径应统一 **JVS TTS**，但代码里至少存在 **四条可发声路径**：
 
 ```text
 路径 A（新主路径 · 陪伴 / 语音按钮）
@@ -757,7 +756,7 @@ UI / `chat.tsx` **禁止** import `synthesizeSpeech`、`synthesizeByJvs`。
 | Profile SSOT | `voiceProfiles.ts` | `VOICE_PROFILES` |
 | JVS 默认 | `voice_server/config.py` | `tts_voice` / `tts_speed` |
 | 陪伴 UI | `COMPANION_UI_REGRESSION_ROOT_CAUSE_ANALYSIS.md` | 全文 |
-| 目标架构 | `VOICE_UNIFIED_PIPELINE_PROPOSAL.md` | Phase U1–U6 |
+| 当前目标架构 | `VOICE_COMPANION_PIPELINE_READABLE.md` | 语音证据进入 L3 主循环 |
 | 治理路线图 | 本文 §10 | 阶段一～五 |
 
 ---

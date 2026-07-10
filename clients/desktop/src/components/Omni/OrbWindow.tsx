@@ -17,6 +17,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { AnimatePresence, motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Mic, Square } from "lucide-react";
 import { AiState, JachinOrb } from "./JachinOrb";
 import {
   COMPANION_QUICK_INPUT_BOTTOM_PX,
@@ -48,6 +49,7 @@ export function OrbWindow({
   const [inputOpen, setInputOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [tips, setTips] = useState<string[]>([]);
+  const [voicePulseKey, setVoicePulseKey] = useState(0);
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveDockDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -186,14 +188,14 @@ export function OrbWindow({
         data-companion-voice-btn
         data-tauri-drag-region="false"
       >
-        <button
+        <motion.button
           type="button"
           data-tauri-drag-region="false"
-          className={`pointer-events-auto rounded-md border px-3 py-1 text-[11px] font-medium tracking-[0.08em] transition ${
-            isRecording
-              ? "border-rose-400/70 bg-rose-500/20 text-rose-100 hover:bg-rose-500/30"
-              : "border-cyan-400/60 bg-cyan-500/15 text-cyan-100 hover:bg-cyan-500/25"
-          }`}
+          className={`companion-voice-button pointer-events-auto ${isRecording ? "is-recording" : ""}`}
+          initial={false}
+          whileHover={{ y: -1, scale: 1.025 }}
+          whileTap={{ y: 1, scale: 0.965 }}
+          transition={{ type: "spring", stiffness: 520, damping: 30, mass: 0.55 }}
           onPointerDown={(e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -205,6 +207,7 @@ export function OrbWindow({
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
+            setVoicePulseKey((v) => v + 1);
             if (clickTimerRef.current) {
               clearTimeout(clickTimerRef.current);
               clickTimerRef.current = null;
@@ -214,8 +217,29 @@ export function OrbWindow({
           }}
           title={isRecording ? "结束语音录制" : "开始语音录制"}
         >
-          {isRecording ? "结束语音" : "语音输入"}
-        </button>
+          <AnimatePresence>
+            {voicePulseKey > 0 ? (
+              <motion.span
+                key={voicePulseKey}
+                className="companion-voice-click-ring"
+                initial={{ opacity: 0.82, scale: 0.72 }}
+                animate={{ opacity: 0, scale: 1.78 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.62, ease: [0.22, 1, 0.36, 1] }}
+                aria-hidden
+              />
+            ) : null}
+          </AnimatePresence>
+          <span className="companion-voice-button-shine" aria-hidden />
+          <span className="companion-voice-icon" aria-hidden>
+            {isRecording ? (
+              <Square className="h-3.5 w-3.5 fill-current" strokeWidth={2.4} />
+            ) : (
+              <Mic className="h-3.5 w-3.5" strokeWidth={2.4} />
+            )}
+          </span>
+          <span className="relative z-[2]">{isRecording ? "结束语音" : "语音输入"}</span>
+        </motion.button>
       </div>
 
       <AnimatePresence>
@@ -256,3 +280,4 @@ export function OrbWindow({
 }
 
 export default OrbWindow;
+

@@ -214,8 +214,6 @@ backend
 hotword_count
 hotword_status
 understanding
-reply_plan
-user_message
 ```
 
 其中 `understanding` 里可能包含：
@@ -613,126 +611,30 @@ corrected_text 如果某一路径有轻量规整，会显示规整后文本
 text           最终交给 L3 主循环的文本
 ```
 
-#### 实体纠错层具体按什么规则改名
+#### 本地 VoiceUnderstandingCorrector 现在做什么
 
-下面这套 `VoiceUnderstandingCorrector` 是历史上的本地后处理/辅助理解模块说明，不是当前本地 sherpa 兜底主链路。当前架构里，更完整的应用、联系人、任务槽位理解主要在 L3 认知内核主循环里完成。
+`voice_server/services/voice_understanding.py` 现在只保留一个兼容壳：`VoiceUnderstandingCorrector`。
+
+它不再做这些事：
 
 ```text
-voice_server/services/voice_understanding.py
-VoiceUnderstandingCorrector
+实体扫描
+专有名词纠错
+任务意图判断
+槽位补全
+缺槽追问
+ReplyPlan 生成
 ```
 
-`VoiceUnderstandingCorrector` 做的不是简单的全局替换，而是“实体识别 + 任务理解”。大概分四步。
-
-第一步，加载实体库。
-
-实体库包含应用、联系人、项目：
+它现在只把输入原样返回，并在 `understanding` 里标记：
 
 ```text
-apps: Lark, Chrome, VS Code, Codex
-contacts: Vivian, Neil, Ethan, ...
-projects: Jachin
-```
-
-每个标准名都有别名，例如：
-
-```text
-Lark: lark, feishu, flybook, luck, lock, 拉克
-Vivian: vivian, vivi, 薇薇安, 微微安
-VS Code: vs code, vscode, visual studio code, ws code
-Jachin: jachin, jacking, 加勤, 嘉钦
-```
-
-第二步，在整句里扫描可能的实体。
-
-它会用几种相似方式找候选：
-
-```text
-完全相同：vivian == Vivian
-子串包含：google chrome 里包含 chrome
-字符相似：vivien 和 Vivian 很像
-拼音相似：薇薇安 和 Vivian 对应同一个联系人
-发音折叠：一些 v/w、ph/f、ck/k 之类的近似会放宽
-```
-
-每个候选会有分数和强度：
-
-```text
-strong  很确定
-medium  有点像，可以在有上下文时使用
-weak    太弱，不能直接执行
-```
-
-第三步，看这句话有没有动作意图。
-
-系统会检查动作词，例如：
-
-```text
-打开 / 启动 / 切到 / open
-找到 / 搜索 / 查找 / find
-发送 / 发消息 / message / send
-```
-
-然后把动作和实体组合起来。
-
-比如：
-
-```text
-打开 + Lark     -> open_app
-给 + Vivian + 发消息 -> send_message
-找到 + Neil     -> find_contact
-Jachin + 项目   -> open_project 或相关项目意图
-```
-
-第四步，决定能不能直接规整成标准名字。
-
-规则大概是：
-
-```text
-如果实体很强，而且动作也明确 -> 可以把别名换成标准名
-如果实体有点像，但不够确定 -> 需要确认或追问
-如果是发消息，但缺联系人或消息正文 -> 不直接执行，生成追问
-如果整句话不像任务 -> 不强行改，尽量保留原文本
-```
-
-举例：
-
-```text
-原始 STT: 打开拉克
-实体候选: 拉克 -> Lark，强匹配
-动作: 打开
-结果: corrected_text = 打开 Lark
-```
-
-```text
-原始 STT: 给薇薇安发消息
-实体候选: 薇薇安 -> Vivian，强匹配
-动作: 发消息
-缺失: 消息正文
-结果: 不直接执行，进入追问：要发的内容是什么？
-```
-
-```text
-原始 STT: 找一下 vivien
-实体候选: vivien -> Vivian，中高相似
-动作: 找一下
-结果: 可能规整成 Vivian；如果分数不够，会要求确认
-```
-
-```text
-原始 STT: 我觉得 lark 这个词挺怪
-虽然出现 Lark，但不像任务动作
-结果: 不应该直接变成“打开 Lark”或执行任务
-```
-
-如果某个历史/辅助纠错层被启用，它不应该无脑替换，而是先看：
-
-```text
-像不像实体
-像不像任务
-动作是否明确
-槽位是否完整
-风险是否需要确认
+voice_layer_scope = stt_only
+strategy = stt_passthrough
+entity_candidates = []
+task_candidates = []
+selected = {}
+reply_plan = {}
 ```
 
 这里有两层不要混在一起：
@@ -747,8 +649,8 @@ Jachin + 项目   -> open_project 或相关项目意图
 ```text
 用户说：帮我打开拉克
 云端 STT 有热词后更容易听出：拉克
-L3 主循环看到“打开 + 拉克”
-最终可能规整成：帮我打开 Lark
+JVS / 前端：只把文本和 STT 证据交给 L3
+L3 主循环：判断“打开 + 拉克”是否应规整为 Lark，并决定是否执行或追问
 ```
 
 再比如：
@@ -756,10 +658,9 @@ L3 主循环看到“打开 + 拉克”
 ```text
 用户说：给薇薇安发消息
 云端 STT 有热词后更容易听出：薇薇安 / Vivian
-L3 主循环看到“给 + 人名 + 发消息”
-最终规整成：给 Vivian 发消息
+JVS / 前端：不生成缺槽追问
+L3 主循环：判断联系人、消息内容、风险和是否需要追问
 ```
-
 ### 热词不会做什么
 
 热词不是万能的。
@@ -970,15 +871,15 @@ stt.hotword_dominated_blocked
 
 ### 追问生成
 
-如果 STT / understanding 判断缺槽，比如用户说“帮我发消息”，但没说发给谁、发什么，前端会进入追问生成路径。
+当前前端和 STT 层不再判断任务缺槽，也不再生成 `ReplyPlan` 或本地追问话术。
 
-这里的规则层只给出 `ReplyPlan`，真正说给用户的话会交给一个轻量 LLM composer 写成自然语言。
+如果用户说“帮我发消息”，但没说发给谁、发什么，前端只会把最终 STT 文本和语音证据发给 L3。要不要追问、追问什么、用什么语气追问，都由 L3 认知内核主循环决定。
 
 也就是说：
 
 ```text
-规则层：判断缺什么
-LLM composer：把追问说得像人话
+前端 / STT：只交付文本、声纹状态、STT 诊断和上下文证据
+L3 主循环：判断任务意图、缺失信息、风险和追问方式
 ```
 
 ## 4. 语音文本如何进入 L3 主循环
@@ -1060,18 +961,7 @@ active_task_context
 
 这些字段只描述“发生了什么”和“识别证据是什么”。它们不应该作为最终任务裁决。
 
-如果日志或兼容代码里还能看到下面这些旧字段，它们只能当历史兼容或调试信息看，不能当当前架构的事实来源：
-
-```text
-voice_dispatch_tier
-voice_intent_class
-voice_dispatch_lane
-voice_fast_lane
-prefer_direct_llm
-execution_lane
-```
-
-当前真正的事实来源是 L3 主循环日志里的理解、任务编排、工具选择、验证结果和最终回复。
+桌面语音入口不再发送旧前端路由字段。当前真正的事实来源是 L3 主循环日志里的理解、任务编排、工具选择、验证结果和最终回复。
 
 ## 7. L3 主循环内部怎么处理
 
@@ -1492,8 +1382,6 @@ C:/Users/Samuel/.jachin/jachin_debug/terminal_turn_*.log
 - 用户问正常问题，系统给出不相干回复。
 
 当前文档按新架构描述：前端不再做任务意图裁决。前端只传语音文本、STT 证据、声纹状态、UI 状态和 active task context；真正的理解、路由、任务编排和工具选择由 L3 认知内核主循环负责。
-
-如果日志里还能看到 `voice_fast_lane_kind`、`voice_allow_template_reply`、`voice_dispatch_*` 这类字段，要优先判断它们是兼容字段、调试字段，还是仍在影响执行。架构上不应该再依赖它们作为顶层决策。
 
 ### 14.2 “结构边界”和“大模型自由度”要分清
 

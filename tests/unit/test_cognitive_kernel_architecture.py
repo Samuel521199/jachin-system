@@ -714,3 +714,89 @@ def test_run_agent_file_direct_mainline_read_open_reveal(tmp_path, monkeypatch):
 
     reveal_reply = asyncio.run(agent_core.run_agent("reveal file README.md in explorer", object(), max_iterations=1))
     assert reveal_reply == "已完成文件操作：README.md。"
+
+
+def test_user_facing_reply_prompt_general_chitchat_builds_without_missing_mermaid_constant():
+    import l3_node.agent_core as agent_core
+
+    prompt = asyncio.run(
+        agent_core._build_direct_system_prompt(
+            prompt_cycle=None,
+            json_mode=False,
+            general_chitchat=True,
+        )
+    )
+
+    assert "UserFacingReplyAgent" in prompt
+    assert "Mermaid safety" in prompt
+    assert "_MERMAID_SAFE_RULES_SYSTEM_BLOCK_SLIM" not in prompt
+
+
+def test_conversation_workflow_returns_user_facing_reply_instead_of_failure_fallback(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    import l3_node.agent_core as agent_core
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+
+    class FakeEngine:
+        async def generate_response(self, messages, tools=None, **kwargs):
+            assert tools is None
+            assert kwargs.get("l3_call_purpose") == "user_facing_reply_agent"
+            assert any("UserFacingReplyAgent" in str(m.get("content", "")) for m in messages)
+            return "hello from fake user-facing reply"
+
+    plan = plan_cognitive_turn(_ctx("hello", turn_id="ck-conversation-reply"))
+    assert plan.decision_contract.task_type == "conversation"
+    assert plan.decision_contract.selected_workflow == "conversation_reply_workflow"
+    assert plan.work_orders == []
+
+    reply = asyncio.run(
+        agent_core._close_kernel_plan_without_text_transport(
+            plan=plan,
+            engine=FakeEngine(),
+            user_input="hello",
+            prior_messages=[],
+            run_id="ck-conversation-reply",
+        )
+    )
+
+    assert reply == "hello from fake user-facing reply"
+    assert "当前回复生成失败" not in reply
+    assert "没有执行任何外部操作" not in reply
+
+
+def test_user_facing_reply_failure_is_written_to_turn_debug(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    import l3_node.agent_core as agent_core
+    from l3_node import terminal_turn_debug_log as tlog
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+
+    captured = []
+
+    def fake_append_section(title, body):
+        captured.append((title, body))
+
+    async def fake_reply_failure(**kwargs):
+        raise RuntimeError("synthetic user-facing failure")
+
+    monkeypatch.setattr(tlog, "append_section", fake_append_section)
+    monkeypatch.setattr(agent_core, "_run_direct_llm_completion", fake_reply_failure)
+
+    plan = plan_cognitive_turn(_ctx("hello", turn_id="ck-conversation-failure-log"))
+    reply = asyncio.run(
+        agent_core._close_kernel_plan_without_text_transport(
+            plan=plan,
+            engine=object(),
+            user_input="hello",
+            prior_messages=[],
+            run_id="ck-conversation-failure-log",
+        )
+    )
+
+    assert "当前回复生成失败" in reply
+    assert any("UserFacingReplyAgent reply failure" in title for title, _body in captured)
+    failure_body = "\n".join(body for _title, body in captured)
+    assert "user_facing_reply_agent_failed" in failure_body
+    assert "RuntimeError" in failure_body
+    assert "synthetic user-facing failure" in failure_body

@@ -1046,13 +1046,33 @@ class CloudSttStreamSession:
                 bytes_sent=self.bytes_sent,
                 timeout_sec=timeout_sec,
             )
-            try:
-                self.recognition.stop()
-            finally:
-                self.closed = True
-        self.callback.completed.wait(timeout=max(0.1, float(timeout_sec)))
+            stop_done = threading.Event()
+
+            def _stop_recognition() -> None:
+                try:
+                    self.recognition.stop()
+                finally:
+                    stop_done.set()
+
+            threading.Thread(
+                target=_stop_recognition,
+                name="dashscope-stt-stream-stop",
+                daemon=True,
+            ).start()
+            stop_done.wait(timeout=max(0.1, float(timeout_sec)))
+            if not stop_done.is_set():
+                _diag_event(
+                    self.diag_events,
+                    "cloud_stream_stop_timeout",
+                    self.diag_started,
+                    timeout_sec=timeout_sec,
+                )
+            self.closed = True
+        completed = self.callback.completed.wait(timeout=0.05)
         self.poll_events()
+        has_final_text = bool("".join(self.callback.final_texts).strip())
         final_text = "".join(self.callback.final_texts).strip() or str(self.callback.latest_text or "").strip()
+        used_latest_partial = bool(final_text and not has_final_text)
         duration_ms = int((self.bytes_sent / max(1, self.sample_rate * 2)) * 1000)
         if self.callback.error and not final_text:
             _diag_event(
@@ -1064,6 +1084,16 @@ class CloudSttStreamSession:
             return _attach_cloud_diagnostics(
                 self.service._error_result(f"DashScope stream error: {self.callback.error}", duration_ms),
                 self.diag_events,
+            )
+        if not completed or not has_final_text:
+            _diag_event(
+                self.diag_events,
+                "cloud_stream_final_timeout",
+                self.diag_started,
+                completed=completed,
+                has_final_text=has_final_text,
+                used_latest_partial=used_latest_partial,
+                timeout_sec=timeout_sec,
             )
         _diag_event(
             self.diag_events,
@@ -1090,10 +1120,14 @@ class CloudSttStreamSession:
                 hotword_status=self.service._fun_asr_hotword_status(self.hotword_snapshot, self.vocabulary_id),
                 hotword_sources=tuple(self.service._fun_asr_hotword_sources(self.hotword_snapshot, self.vocabulary_id)),
                 backend=f"dashscope:{self.model}:stream",
-                understanding={"streaming_mode": "dashscope_recognition_start_send_audio_frame"},
+                understanding={
+                    "streaming_mode": "dashscope_recognition_start_send_audio_frame",
+                    "stream_completed": completed,
+                    "stream_finalized": has_final_text,
+                    "stream_used_latest_partial": used_latest_partial,
+                },
             ),
             self.diag_events,
         )
-
 
 

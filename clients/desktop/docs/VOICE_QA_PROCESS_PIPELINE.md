@@ -329,7 +329,7 @@ sequenceDiagram
 | 文档 | 看什么 |
 |------|--------|
 | `VOICE_MODULE_HUMAN_GUIDE.md` | 更细的逐步耗时、Orb 颜色对照 |
-| `VOICE_UNIFIED_PIPELINE_PROPOSAL.md` | 为什么统一成一条 Voice Core |
+| `VOICE_COMPANION_PIPELINE_READABLE.md` | 当前语音陪伴态真实链路 |
 | `VOICE_WAKE_ARCHITECTURE.md` | 门卫状态机 |
 | `VOICE_BARGE_IN_AND_WAKE_ACK.md` | 打断与「我在」细节 |
 | `VOICE_COMPANION_MODULE_PLAN.md` | JVS API 与模型目录 |

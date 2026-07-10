@@ -972,6 +972,55 @@ def test_dispatcher_recovery_stops_with_final_failure_report(tmp_path, monkeypat
     assert any(e["event_type"] == "final_failure_report" for e in events)
 
 
+
+def test_app_control_unknown_tool_observation_fails_verification(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.dispatcher import dispatch_tool_work_order
+    from l3_node.cognitive_kernel.ledger import current_ledger_path
+
+    async def _run():
+        async def unknown_tool(_work_order):
+            return "[未知工具: mcp:windows_open_app]"
+
+        result = await dispatch_tool_work_order(
+            turn_id="ck-app-unknown-tool",
+            goal="open lark",
+            tool="mcp:windows_open_app",
+            work_order_input='{"app_name":"lark"}',
+            executor=unknown_tool,
+        )
+        assert result.verification.ok is False
+        assert result.verification.failure_reason == "unknown_tool"
+        assert result.work_order.status == "failed"
+
+    asyncio.run(_run())
+    events = [json.loads(line) for line in current_ledger_path().read_text(encoding="utf-8").splitlines()]
+    finished = [e for e in events if e["event_type"] == "role_execution_finished"]
+    assert finished[-1]["payload"]["ok"] is False
+    assert finished[-1]["payload"]["failure_reason"] == "unknown_tool"
+
+
+def test_app_control_requires_foreground_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.dispatcher import dispatch_tool_work_order
+
+    async def _run():
+        async def claims_ok_without_window(_work_order):
+            return '{"ok":true,"detail":"started_process_only"}'
+
+        result = await dispatch_tool_work_order(
+            turn_id="ck-app-foreground-required",
+            goal="open lark",
+            tool="mcp:windows_open_app",
+            work_order_input='{"app_name":"lark"}',
+            executor=claims_ok_without_window,
+        )
+        assert result.verification.ok is False
+        assert result.verification.failure_reason == "app_control_foreground_unverified"
+
+    asyncio.run(_run())
 def test_stage_f_policy_boundaries_live_in_kernel():
     from l3_node.cognitive_kernel import (
         RECALL_MEMORY_TOOL_ID,
@@ -998,3 +1047,4 @@ def test_stage_f_policy_boundaries_live_in_kernel():
     )
     assert "core:fs_write" in build_fake_mcp_error_recovery_prompt()
     assert "util:get_weather_lite" in build_fake_weather_error_recovery_prompt()
+

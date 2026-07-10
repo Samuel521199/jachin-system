@@ -7,6 +7,8 @@ const STT_PTT_FAILED = "STT_PTT_FAILED";
 export interface SttAudioPayload {
   wav_base64: string;
   recognized_text?: string;
+  recognized_finalized?: boolean;
+  recognized_source?: string;
 }
 
 export interface SttPttFailedPayload {

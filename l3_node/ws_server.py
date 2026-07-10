@@ -112,7 +112,6 @@ def _normalize_ws_implicit_signals_for_kernel(
     cleaned = dict(implicit_signals)
     removed: list[str] = []
     for key in (
-        "voice_dispatcher_decision",
         "voice_decision_id",
         "voice_routed_text",
         "voice_dispatch_tier",
@@ -1803,7 +1802,6 @@ async def run_ws_server(
     raise RuntimeError(
         f"端口 {ports_to_try[0]}~{ports_to_try[-1]} 均被占用。请关闭其他 L3 实例: netstat -ano | findstr 18981"
     ) from last_err
-
 
 
 

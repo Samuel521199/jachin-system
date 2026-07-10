@@ -80,6 +80,60 @@ from l3_node.cognitive_kernel.runtime import close_turn, close_turn_waiting_user
 logger = logging.getLogger(__name__)
 
 
+def _emit_l3_kernel_status(
+    on_step: Optional[Callable[[str, str, str], None]],
+    run_id: str,
+    *,
+    stage: str,
+    message: str,
+    **meta: Any,
+) -> None:
+    """Send a concise, user-visible progress note into the reasoning panel.
+
+    This is deliberately not chain-of-thought: it exposes only the observable
+    Cognitive Kernel state machine stage and small structured facts.
+    """
+
+    if on_step is None:
+        return
+    labels = {
+        "turn_received": "1/7 接收输入",
+        "context_building": "2/7 构建上下文",
+        "context_ready": "2/7 上下文就绪",
+        "decision_ready": "3/7 认知裁决",
+        "tools_ready": "4/7 工具池就绪",
+        "direct_mainline": "5/7 执行通道",
+        "role_execution_started": "5/7 RoleExecutor 执行",
+        "verification_finished": "6/7 验证",
+        "waiting_user_confirmation": "5/7 等待确认",
+        "capability_adapter": "5/7 Skill/MCP 适配",
+        "turn_closure": "7/7 闭环收尾",
+        "turn_closure_finished": "7/7 TurnClosure",
+        "turn_closed": "7/7 回复就绪",
+    }
+    safe_meta: dict[str, str] = {}
+    for key, value in meta.items():
+        if value is None or value == "":
+            continue
+        text = str(value)
+        if len(text) > 160:
+            text = text[:157] + "..."
+        safe_meta[key] = text
+    lines = ["### L3 准循环进度", "", f"→ **{labels.get(stage, stage)}**：{message}"]
+    if safe_meta:
+        rendered = " · ".join(f"`{k}`={v}" for k, v in safe_meta.items())
+        lines.append(f"  {rendered}")
+    lines.append("")
+    try:
+        on_step("system_status", "\n".join(lines), run_id)
+    except Exception:
+        logger.debug("[L3 Agent] kernel status emit failed stage=%s", stage, exc_info=True)
+
+_MERMAID_SAFE_RULES_SYSTEM_BLOCK_SLIM = """Mermaid safety:
+- Only output Mermaid diagrams when the user asks for a diagram or it clearly helps.
+- Mermaid labels must avoid raw quotes, angle brackets, and unescaped newlines.
+- Prefer plain text labels and simple graph structures."""
+
 def _gateway_prior_brief(prior_messages: list[dict[str, Any]], max_chars: int = 1200) -> str:
     """Bounded chat recap helper; main-loop memory enters via MemoryRecallAgent."""
     parts: list[str] = []
@@ -2819,6 +2873,27 @@ async def _close_kernel_plan_without_text_transport(
             )
         except Exception as exc:
             logger.warning("[CognitiveKernel] UserFacingReplyAgent kernel-only reply failed: %s", exc)
+            try:
+                from l3_node.terminal_turn_debug_log import append_section
+
+                append_section(
+                    "[Cognitive Kernel] UserFacingReplyAgent reply failure",
+                    json.dumps(
+                        {
+                            "stage": "user_facing_reply_agent_failed",
+                            "turn_id": turn_id,
+                            "task_type": task_type,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                            "fallback_text": "我已理解你的问题，但当前回复生成失败；没有执行任何外部操作。",
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                        default=str,
+                    ),
+                )
+            except Exception:
+                pass
             final_text = "我已理解你的问题，但当前回复生成失败；没有执行任何外部操作。"
         close_turn(turn_id=turn_id, final_text=final_text, executed_work_orders=[], verification_reports=[], aborted=False)
         return final_text
@@ -2898,6 +2973,14 @@ async def run_agent(
         workspace_dir / git_workspace_dir / effective_workspace_root，再回退 ~/.jachin/workspace。
     """
     run_id = str(uuid.uuid4())
+    _emit_l3_kernel_status(
+        on_step,
+        run_id,
+        stage="turn_received",
+        message="已接收用户输入，进入 Memory-first Cognitive Kernel 主循环。",
+        input_chars=len(user_input or ""),
+        delegate_depth=_delegate_depth,
+    )
     try:
         from l3_node.engine.persistent_hook_log import ensure_persistent_hook_log_registered
 
@@ -3110,6 +3193,14 @@ async def run_agent(
     _cognitive_kernel_plan = None
     _cognitive_kernel_prompt_block = ""
     try:
+        _emit_l3_kernel_status(
+            on_step,
+            run_id,
+            stage="context_building",
+            message="正在构建 AgentInputEnvelope、记忆、附件与环境上下文。",
+            channel=_bg_channel or "run_agent",
+            history_msgs=len(prior_messages),
+        )
         _cognitive_ctx = await build_cognitive_turn_context(
             run_id=run_id,
             user_input=user_input or "",
@@ -3127,6 +3218,14 @@ async def run_agent(
             log_cognitive_mainline_context(_cognitive_ctx)
         except Exception:
             pass
+        _emit_l3_kernel_status(
+            on_step,
+            run_id,
+            stage="context_ready",
+            message="上下文已准备，进入 ReviewBoard 与 Arbiter 裁决。",
+            memory_hits=len(getattr(_cognitive_ctx.relevant_memory, "hits", []) or []),
+            attachment_count=len(attachments_metadata or []),
+        )
         _cognitive_kernel_plan = plan_cognitive_turn(_cognitive_ctx, emit_non_execution_closure=False)
         try:
             from l3_node.terminal_turn_debug_log import log_cognitive_mainline_plan
@@ -3134,6 +3233,20 @@ async def run_agent(
             log_cognitive_mainline_plan(_cognitive_kernel_plan)
         except Exception:
             pass
+        _ck_contract = _cognitive_kernel_plan.decision_contract
+        _ck_work_order = _cognitive_kernel_plan.work_orders[0] if _cognitive_kernel_plan.work_orders else None
+        _emit_l3_kernel_status(
+            on_step,
+            run_id,
+            stage="decision_ready",
+            message="已生成 DecisionContract，明确本轮是否需要执行外部动作。",
+            task_type=_ck_contract.task_type,
+            workflow=_ck_contract.selected_workflow,
+            risk=_ck_contract.risk_level.value,
+            work_orders=len(_cognitive_kernel_plan.work_orders),
+            tool=str((_ck_work_order.inputs.get("tool") if _ck_work_order else "") or ""),
+            role=str(_ck_work_order.role_agent if _ck_work_order else ""),
+        )
         _cognitive_kernel_prompt_block = (
             _cognitive_ctx.prompt_block(max_chars=4000)
             + "\n[Cognitive Kernel Plan]\n"
@@ -3633,6 +3746,14 @@ async def run_agent(
         len(tools),
         (_bg_channel or "-"),
     )
+    _emit_l3_kernel_status(
+        on_step,
+        run_id,
+        stage="tools_ready",
+        message="本轮可见工具池已装配，准备按 DecisionContract 进入执行或闭环。",
+        tool_count=len(tools),
+        allowlist_set=allowed is not None,
+    )
     try:
         log_run_agent_start(
             run_id=run_id,
@@ -3663,6 +3784,33 @@ async def run_agent(
     except Exception:
         pass
 
+    _planned_wo = _cognitive_kernel_plan.work_orders[0] if _cognitive_kernel_plan and _cognitive_kernel_plan.work_orders else None
+    if _planned_wo is not None:
+        _emit_l3_kernel_status(
+            on_step,
+            run_id,
+            stage="direct_mainline",
+            message="检测到可结构化执行的 WorkOrder，准备交给对应 RoleExecutor。",
+            work_order_id=_planned_wo.work_order_id,
+            role=_planned_wo.role_agent,
+            tool=str(_planned_wo.inputs.get("tool") or ""),
+        )
+
+    def _kernel_direct_status(stage: str, payload: dict[str, Any]) -> None:
+        messages_by_stage = {
+            "role_execution_started": "RoleExecutor 已开始调用授权工具。",
+            "verification_finished": "工具执行结果已进入 VerificationReport 验证。",
+            "waiting_user_confirmation": "当前动作需要用户确认，执行已暂停。",
+            "turn_closure_finished": "TurnClosure 已生成，本轮执行闭环完成。",
+        }
+        _emit_l3_kernel_status(
+            on_step,
+            run_id,
+            stage=stage,
+            message=messages_by_stage.get(stage, "L3 准循环状态已更新。"),
+            **payload,
+        )
+
     _mainline_direct_reply = await try_execute_cognitive_direct_plan(
         plan=_cognitive_kernel_plan,
         tools=tools,
@@ -3671,6 +3819,7 @@ async def run_agent(
         user_input=user_input or "",
         session_id=_lark_cid or "",
         channel=_bg_channel or "",
+        status_callback=_kernel_direct_status,
     )
     if _mainline_direct_reply is not None:
         if _session_messages is not None:
@@ -3690,9 +3839,23 @@ async def run_agent(
             )
         except Exception:
             pass
+        _emit_l3_kernel_status(
+            on_step,
+            run_id,
+            stage="turn_closed",
+            message="最终回复已准备好，即将返回给用户。",
+            path="cognitive_direct_mainline",
+        )
         _turn_dbg["answer"] = _mainline_direct_reply
         return _mainline_direct_reply
 
+    _emit_l3_kernel_status(
+        on_step,
+        run_id,
+        stage="capability_adapter",
+        message="直接执行通道未完成本轮，尝试 Skill/MCP WorkOrder 适配通道。",
+        tool_count=len(tools),
+    )
     _capability_work_order_reply = await try_execute_capability_work_order(
         user_input=user_input or "",
         tools=tools,
@@ -3719,9 +3882,23 @@ async def run_agent(
             )
         except Exception:
             pass
+        _emit_l3_kernel_status(
+            on_step,
+            run_id,
+            stage="turn_closed",
+            message="Skill/MCP WorkOrder 已完成，最终回复即将返回。",
+            path="capability_work_order",
+        )
         _turn_dbg["answer"] = _capability_work_order_reply
         return _capability_work_order_reply
 
+    _emit_l3_kernel_status(
+        on_step,
+        run_id,
+        stage="turn_closure",
+        message="没有进入旧式文本工具循环，改由 Kernel-only TurnClosure 生成用户回复。",
+        path="kernel_only",
+    )
     _kernel_only_reply = await _close_kernel_plan_without_text_transport(
         plan=_cognitive_kernel_plan,
         engine=engine,
@@ -3746,6 +3923,13 @@ async def run_agent(
         )
     except Exception:
         pass
+    _emit_l3_kernel_status(
+        on_step,
+        run_id,
+        stage="turn_closed",
+        message="TurnClosure 已完成，最终回复即将返回。",
+        path="kernel_only",
+    )
     _turn_dbg["answer"] = _kernel_only_reply
     return _kernel_only_reply
 
@@ -3773,3 +3957,4 @@ try:
     import l3_node.l3_compaction_bridge  # noqa: F401
 except Exception:
     pass
+

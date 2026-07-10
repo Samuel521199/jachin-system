@@ -3,7 +3,7 @@
 > **状态**：分析稿（仅分析，不改代码）  
 > **问题定义**：陪伴态（Orb/HUD）有文本回复，但用户听不到语音播报。  
 > **目标**：给出可执行的根因树、排查路径、日志判读标准和修复优先级。  
-> **关联文档**：`VOICE_INTENT_ROUTING_AND_TASK_ORCHESTRATION.md`、`VOICE_BARGE_IN_AND_WAKE_ACK.md`、`HUD_IO_DUPLICATION_QUICK_ANALYSIS.md`
+> **关联文档**：`VOICE_COMPANION_PIPELINE_READABLE.md`、`VOICE_BARGE_IN_AND_WAKE_ACK.md`、`HUD_IO_DUPLICATION_QUICK_ANALYSIS.md`
 
 ---
 
@@ -15,7 +15,7 @@
 2. HUD 或聊天气泡里**能看到文字**；
 3. 但**喇叭没有声音**（或偶发有声、偶发无声）。
 
-这说明：**上游链路（语音识别、意图路由、AI 回复）基本是通的**，问题几乎可以确定是在"把文字转成语音再播出来"这段链路上。
+这说明：**上游链路（语音识别、L3 主循环、AI 回复）基本是通的**，问题几乎可以确定是在"把文字转成语音再播出来"这段链路上。
 
 ---
 

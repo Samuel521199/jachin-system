@@ -32,6 +32,7 @@ from .runtime import close_turn, close_turn_waiting_user
 logger = logging.getLogger(__name__)
 
 RunToolFunc = Callable[[str, str, Optional[list[str]]], Any]
+KernelStatusCallback = Callable[[str, dict[str, Any]], None]
 
 
 def direct_mainline_enabled() -> bool:
@@ -51,6 +52,7 @@ async def try_execute_cognitive_direct_plan(
     user_input: str = "",
     session_id: str = "",
     channel: str = "",
+    status_callback: KernelStatusCallback | None = None,
 ) -> str | None:
     """Execute the first low-risk WorkOrder directly through Role Agents.
 
@@ -141,6 +143,14 @@ async def try_execute_cognitive_direct_plan(
             contract.task_type,
             work_order.work_order_id,
         )
+        _emit_status(
+            status_callback,
+            "waiting_user_confirmation",
+            task_type=contract.task_type,
+            risk_level=contract.risk_level.value,
+            work_order_id=work_order.work_order_id,
+            tool_id=str(work_order.inputs.get("tool") or ""),
+        )
         return question
     if not contract.execution_allowed:
         _log_direct_execution(
@@ -183,12 +193,30 @@ async def try_execute_cognitive_direct_plan(
         available_tools=tools,
         stage="direct_mainline_dispatch",
     )
+    _emit_status(
+        status_callback,
+        "role_execution_started",
+        task_type=contract.task_type,
+        role_agent=work_order.role_agent,
+        work_order_id=work_order.work_order_id,
+        tool_id=tool_id,
+    )
     result = await _execute_work_order(
         contract=contract,
         work_order=work_order,
         tool_id=tool_id,
         allowed_skills=allowed_skills,
         run_tool_func=run_tool_func,
+    )
+    _emit_status(
+        status_callback,
+        "verification_finished",
+        task_type=contract.task_type,
+        role_agent=work_order.role_agent,
+        work_order_id=work_order.work_order_id,
+        tool_id=tool_id,
+        ok=bool(result.verification.ok),
+        verification_status="passed" if result.verification.ok else "failed",
     )
     final_text = _planned_direct_reply(plan, bool(result.verification.ok), result.observation)
     closure = close_turn(
@@ -208,6 +236,17 @@ async def try_execute_cognitive_direct_plan(
         final_text=final_text,
     )
     await execute_turn_closure_memory_writes(closure)
+    _emit_status(
+        status_callback,
+        "turn_closure_finished",
+        task_type=contract.task_type,
+        role_agent=work_order.role_agent,
+        work_order_id=work_order.work_order_id,
+        tool_id=tool_id,
+        ok=bool(result.verification.ok),
+        verification_status=closure.verification_status,
+        closure_type=closure.closure_type.value,
+    )
     logger.info(
         "[CognitiveKernel] direct mainline executed turn=%s task=%s tool=%s ok=%s work_order=%s",
         contract.turn_id[:12],
@@ -217,6 +256,15 @@ async def try_execute_cognitive_direct_plan(
         work_order.work_order_id,
     )
     return final_text
+
+
+def _emit_status(callback: KernelStatusCallback | None, stage: str, **payload: Any) -> None:
+    if callback is None:
+        return
+    try:
+        callback(stage, payload)
+    except Exception:
+        logger.debug("[CognitiveKernel] status callback failed stage=%s", stage, exc_info=True)
 
 
 def _log_direct_execution(

@@ -1,4 +1,4 @@
-"""Generic Skill/MCP adapter for the Memory-first mainline.
+﻿"""Generic Skill/MCP adapter for the Memory-first mainline.
 
 This adapter is the bridge between dynamic capability metadata and the
 WorkOrder Dispatcher.  It deliberately does not know business domains such as
@@ -43,9 +43,14 @@ _SCHEMA_TEXT_FIELDS = (
     "term",
     "topic",
 )
-_RECIPIENT_FIELDS = ("recipient", "recipients", "to", "target", "chat", "chat_id")
+_RECIPIENT_FIELDS = ("recipient", "recipients", "recipients_json", "to", "target", "chat", "chat_id", "chat_ids")
 _PATH_FIELDS = ("path", "file_path", "directory_path", "project_path", "target_path")
 _APP_FIELDS = ("app", "app_name", "application", "window", "keywords")
+_WINDOWS_APP_CONTROL_TOOLS = {
+    "mcp:windows_open_app",
+    "mcp:windows_window_switch",
+    "mcp:windows_window_close",
+}
 
 
 async def try_execute_capability_work_order(
@@ -110,8 +115,11 @@ async def try_execute_capability_work_order(
     )
 
     async def _executor(_work_order):
+        current_tool = str(_work_order.inputs.get("tool") or tool_id).strip()
         raw_action = str(_work_order.inputs.get("work_order_input") or work_order_input)
-        return await _call_tool_runner(run_tool_func, tool_id, raw_action, allowed_skills)
+        if current_tool in _WINDOWS_APP_CONTROL_TOOLS:
+            return await _call_local_windows_app_control(current_tool, raw_action)
+        return await _call_tool_runner(run_tool_func, current_tool, raw_action, allowed_skills)
 
     result = await dispatch_tool_work_order(
         turn_id=run_id,
@@ -244,6 +252,14 @@ def _normalize_tool_id(raw: str) -> str:
     return f"mcp:{tid}"
 
 
+def _json_obj(text: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(str(text or "{}"))
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _chosen_tool_id(intent_decision: Any | None) -> str:
     chosen = getattr(intent_decision, "chosen", None)
     if not isinstance(chosen, dict):
@@ -309,7 +325,7 @@ def _build_action_payload(
                 else:
                     payload[prop] = user_input
             elif lname in _RECIPIENT_FIELDS:
-                payload[prop] = slots.get("recipients") or slots.get("recipient") or ""
+                payload[prop] = _recipient_slot_value(slots, prop)
             elif lname in _PATH_FIELDS:
                 payload[prop] = slots.get("project_path") or slots.get("file_path") or slots.get("path") or ""
             elif lname in _APP_FIELDS:
@@ -324,6 +340,35 @@ def _build_action_payload(
         "intent_frame": _safe_to_dict(getattr(intent_decision, "intent_frame", None)),
         "capability_match": match.to_dict() if match is not None else None,
     }
+
+
+def _recipient_slot_value(slots: dict[str, Any], field_name: str) -> Any:
+    value = (
+        slots.get("recipients")
+        or slots.get("recipient")
+        or slots.get("to")
+        or slots.get("chat_id")
+        or slots.get("chat")
+        or ""
+    )
+    if str(field_name or "").lower().endswith("_json"):
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return ""
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, list):
+                    return text
+            except Exception:
+                pass
+            return json.dumps([text], ensure_ascii=False)
+        if isinstance(value, list):
+            return json.dumps([str(v) for v in value if str(v).strip()], ensure_ascii=False)
+        if value:
+            return json.dumps([str(value)], ensure_ascii=False)
+        return ""
+    return value
 
 
 def _schema_properties(tool_meta: dict[str, Any]) -> list[str]:
@@ -422,6 +467,38 @@ async def _call_tool_runner(
     return str(result or "")
 
 
+async def _call_local_windows_app_control(tool_id: str, work_order_input: str) -> str:
+    payload = _json_obj(work_order_input)
+    args = payload if isinstance(payload, dict) else {}
+    from l3_client.local_mcps.windows_uia_mcp import server as windows_uia_server
+
+    if tool_id == "mcp:windows_open_app":
+        app_name = str(args.get("app_name") or args.get("name") or args.get("app") or args.get("target") or "").strip()
+        return await asyncio.to_thread(
+            windows_uia_server.windows_open_app,
+            app_name,
+            str(args.get("args_json") or "[]"),
+            str(args.get("out_dir") or ""),
+        )
+    if tool_id == "mcp:windows_window_switch":
+        return await asyncio.to_thread(
+            windows_uia_server.windows_window_switch,
+            str(args.get("keywords") or args.get("keyword") or args.get("window_title") or args.get("app_name") or ""),
+            str(args.get("exclude_keywords") or ""),
+            float(args.get("timeout") or 5.0),
+            str(args.get("out_dir") or ""),
+        )
+    if tool_id == "mcp:windows_window_close":
+        return await asyncio.to_thread(
+            windows_uia_server.windows_window_close,
+            str(args.get("keywords") or args.get("keyword") or args.get("window_title") or args.get("app_name") or ""),
+            str(args.get("exclude_keywords") or ""),
+            float(args.get("timeout") or 5.0),
+            str(args.get("out_dir") or ""),
+        )
+    return json.dumps({"ok": False, "error": f"unsupported_windows_app_control_tool:{tool_id}"}, ensure_ascii=False)
+
+
 def _final_reply(*, tool_id: str, ok: bool, observation: str) -> str:
     if ok:
         return f"已通过 {tool_id} 完成该能力调用。"
@@ -484,3 +561,8 @@ def _log_capability_adapter(
         append_section("[Capability WorkOrder Adapter] Skill/MCP 适配层", json.dumps(payload, ensure_ascii=False, indent=2))
     except Exception:
         pass
+
+
+
+
+

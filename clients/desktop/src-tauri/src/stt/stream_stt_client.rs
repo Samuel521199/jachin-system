@@ -4,7 +4,8 @@ use serde::Deserialize;
 use serde_json::json;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::time::{Duration, Instant};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{connect, Message, WebSocket};
 
@@ -39,17 +40,140 @@ struct RawTcpClient {
 pub struct SttStreamClient {
     transport: StreamTransport,
     latest_text: Option<String>,
+    session_id: String,
+    partial_count: usize,
+    final_count: usize,
+    audio_frames_sent: usize,
+}
+
+struct PrewarmedSttStream {
+    base_url: String,
+    session_id: String,
+    created_at: Instant,
+    client: SttStreamClient,
+}
+
+static PREWARMED_STT_STREAM: OnceLock<Mutex<Option<PrewarmedSttStream>>> = OnceLock::new();
+
+#[derive(Debug, Clone)]
+pub struct SttStreamFinalResult {
+    pub text: Option<String>,
+    pub finalized: bool,
+    pub partial_count: usize,
+    pub final_count: usize,
+    pub audio_frames_sent: usize,
+}
+
+fn prewarmed_slot() -> &'static Mutex<Option<PrewarmedSttStream>> {
+    PREWARMED_STT_STREAM.get_or_init(|| Mutex::new(None))
+}
+
+fn prewarm_session_id() -> String {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    format!("ptt-prewarm-{millis}")
+}
+
+pub fn prewarm(base_url: &str) -> Result<String, String> {
+    let mut guard = prewarmed_slot().lock().map_err(|e| e.to_string())?;
+    if let Some(existing) = guard.as_ref() {
+        if existing.base_url == base_url && existing.created_at.elapsed() < Duration::from_secs(45) {
+            crate::l3_spawn::write_voice_chat_trace(
+                "ptt",
+                "stream_prewarm_reuse",
+                &existing.session_id,
+                &format!("age_ms={}", existing.created_at.elapsed().as_millis()),
+            );
+            return Ok(existing.session_id.clone());
+        }
+    }
+    let session_id = prewarm_session_id();
+    let client = SttStreamClient::connect(base_url, &session_id)?;
+    crate::l3_spawn::write_voice_chat_trace(
+        "ptt",
+        "stream_prewarm_ready",
+        &session_id,
+        base_url,
+    );
+    *guard = Some(PrewarmedSttStream {
+        base_url: base_url.to_string(),
+        session_id: session_id.clone(),
+        created_at: Instant::now(),
+        client,
+    });
+    Ok(session_id)
+}
+
+pub fn take_prewarmed(base_url: &str, max_age: Duration) -> Option<SttStreamClient> {
+    let mut guard = prewarmed_slot().lock().ok()?;
+    let existing = guard.take()?;
+    let age = existing.created_at.elapsed();
+    if existing.base_url == base_url && age <= max_age {
+        crate::l3_spawn::write_voice_chat_trace(
+            "ptt",
+            "stream_prewarm_take",
+            &existing.session_id,
+            &format!("age_ms={}", age.as_millis()),
+        );
+        return Some(existing.client);
+    }
+    crate::l3_spawn::write_voice_chat_trace(
+        "ptt",
+        "stream_prewarm_stale",
+        &existing.session_id,
+        &format!("age_ms={} base_match={}", age.as_millis(), existing.base_url == base_url),
+    );
+    None
 }
 
 impl SttStreamClient {
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
     pub fn connect(base_url: &str, session_id: &str) -> Result<Self, String> {
+        crate::l3_spawn::write_voice_chat_trace(
+            "ptt",
+            "stream_connect_start",
+            session_id,
+            base_url,
+        );
         if let Ok(raw) = RawTcpClient::connect(base_url, session_id) {
+            crate::l3_spawn::write_voice_chat_trace(
+                "ptt",
+                "stream_connect_ok",
+                session_id,
+                "transport=raw_tcp",
+            );
+            crate::l3_spawn::write_voice_chat_trace(
+                "ptt",
+                "stream_start_sent",
+                session_id,
+                "sample_rate=16000 format=pcm16le",
+            );
             return Ok(Self {
                 transport: StreamTransport::RawTcp(raw),
                 latest_text: None,
+                session_id: session_id.to_string(),
+                partial_count: 0,
+                final_count: 0,
+                audio_frames_sent: 0,
             });
         }
-        Self::connect_ws(base_url, session_id)
+        match Self::connect_ws(base_url, session_id) {
+            Ok(client) => Ok(client),
+            Err(e) => {
+                crate::l3_spawn::write_voice_chat_trace(
+                    "ptt",
+                    "stream_connect_failed",
+                    session_id,
+                    &e,
+                );
+                Err(e)
+            }
+        }
     }
 
     fn connect_ws(base_url: &str, session_id: &str) -> Result<Self, String> {
@@ -94,9 +218,25 @@ impl SttStreamClient {
         });
         ws.write(Message::Text(start.to_string()))
             .map_err(|e| format!("stt stream start failed: {e}"))?;
+        crate::l3_spawn::write_voice_chat_trace(
+            "ptt",
+            "stream_connect_ok",
+            session_id,
+            "transport=websocket",
+        );
+        crate::l3_spawn::write_voice_chat_trace(
+            "ptt",
+            "stream_start_sent",
+            session_id,
+            "sample_rate=16000 format=pcm16le",
+        );
         Ok(Self {
             transport: StreamTransport::WebSocket(ws),
             latest_text: None,
+            session_id: session_id.to_string(),
+            partial_count: 0,
+            final_count: 0,
+            audio_frames_sent: 0,
         })
     }
 
@@ -120,11 +260,31 @@ impl SttStreamClient {
                 .write(Message::Binary(pcm))
                 .map_err(|e| format!("stt stream write chunk failed: {e}"))?,
         }
+        self.audio_frames_sent += 1;
+        if self.audio_frames_sent == 1 {
+            crate::l3_spawn::write_voice_chat_trace(
+                "ptt",
+                "stream_first_audio_sent",
+                &self.session_id,
+                &format!("bytes={}", chunk_f32.len() * 2),
+            );
+        }
         self.drain_nonblocking();
         Ok(())
     }
 
-    pub fn finalize_and_get_text(&mut self, timeout: Duration) -> Option<String> {
+    pub fn finalize(&mut self, timeout: Duration) -> SttStreamFinalResult {
+        crate::l3_spawn::write_voice_chat_trace(
+            "ptt",
+            "stream_finalize_sent",
+            &self.session_id,
+            &format!(
+                "timeout_ms={} partial_count={} audio_frames_sent={}",
+                timeout.as_millis(),
+                self.partial_count,
+                self.audio_frames_sent
+            ),
+        );
         match &mut self.transport {
             StreamTransport::RawTcp(raw) => {
                 let _ = raw.send_frame(TCP_FINALIZE, &[]);
@@ -140,23 +300,85 @@ impl SttStreamClient {
                 if !text.trim().is_empty() {
                     self.latest_text = Some(text.clone());
                 }
+                self.record_stream_event(&kind);
                 if kind == "final" {
                     got_final = true;
                 }
             }
             if got_final {
-                return self.latest_text.clone();
+                crate::l3_spawn::write_voice_chat_trace(
+                    "ptt",
+                    "stream_final_received",
+                    &self.session_id,
+                    &format!(
+                        "text_len={} partial_count={} final_count={}",
+                        self.latest_text.as_ref().map(|s| s.len()).unwrap_or(0),
+                        self.partial_count,
+                        self.final_count
+                    ),
+                );
+                return SttStreamFinalResult {
+                    text: self.latest_text.clone(),
+                    finalized: true,
+                    partial_count: self.partial_count,
+                    final_count: self.final_count,
+                    audio_frames_sent: self.audio_frames_sent,
+                };
             }
             std::thread::sleep(Duration::from_millis(15));
         }
-        self.latest_text.clone()
+        crate::l3_spawn::write_voice_chat_trace(
+            "ptt",
+            "stream_final_timeout",
+            &self.session_id,
+            &format!(
+                "text_len={} partial_count={} final_count={} audio_frames_sent={}",
+                self.latest_text.as_ref().map(|s| s.len()).unwrap_or(0),
+                self.partial_count,
+                self.final_count,
+                self.audio_frames_sent
+            ),
+        );
+        SttStreamFinalResult {
+            text: self.latest_text.clone(),
+            finalized: false,
+            partial_count: self.partial_count,
+            final_count: self.final_count,
+            audio_frames_sent: self.audio_frames_sent,
+        }
     }
 
     fn drain_nonblocking(&mut self) {
-        for (_kind, text) in self.read_available_messages() {
+        for (kind, text) in self.read_available_messages() {
             if !text.trim().is_empty() {
                 self.latest_text = Some(text);
             }
+            self.record_stream_event(&kind);
+        }
+    }
+
+    pub fn has_text(&self) -> bool {
+        self.latest_text
+            .as_ref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+    }
+
+    fn record_stream_event(&mut self, kind: &str) {
+        if kind == "partial" {
+            self.partial_count += 1;
+            crate::l3_spawn::write_voice_chat_trace(
+                "ptt",
+                "stream_partial_received",
+                &self.session_id,
+                &format!(
+                    "partial_count={} text_len={}",
+                    self.partial_count,
+                    self.latest_text.as_ref().map(|s| s.len()).unwrap_or(0)
+                ),
+            );
+        } else if kind == "final" {
+            self.final_count += 1;
         }
     }
 

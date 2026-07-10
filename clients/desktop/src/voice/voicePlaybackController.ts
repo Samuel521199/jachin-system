@@ -238,9 +238,9 @@ export class VoicePlaybackController {
   async enqueuePcm16Chunk(
     pcmBytes: ArrayBuffer,
     opts: { sampleRate: number; channels?: number; generation: number },
-  ): Promise<void> {
+  ): Promise<{ scheduledMs: number; durationMs: number; sampleRate: number; channels: number } | null> {
     const generation = opts.generation;
-    if (generation !== this.generation || !pcmBytes.byteLength) return;
+    if (generation !== this.generation || !pcmBytes.byteLength) return null;
     const channels = Math.max(1, Math.min(2, Number(opts.channels || 1)));
     const sampleRate = Math.max(8000, Number(opts.sampleRate || 24000));
     const ctx = this.getStreamAudioContext();
@@ -251,7 +251,7 @@ export class VoicePlaybackController {
     const view = new DataView(pcmBytes);
     const totalSamples = Math.floor(view.byteLength / 2);
     const frames = Math.floor(totalSamples / channels);
-    if (frames <= 0) return;
+    if (frames <= 0) return null;
     const buffer = ctx.createBuffer(channels, frames, sampleRate);
     for (let ch = 0; ch < channels; ch += 1) {
       const channel = buffer.getChannelData(ch);
@@ -266,6 +266,8 @@ export class VoicePlaybackController {
     source.connect(ctx.destination);
     const startAt = Math.max(ctx.currentTime + 0.03, this.streamNextTime || 0);
     this.streamNextTime = startAt + buffer.duration;
+    const scheduledMs = Math.round(Math.max(0, startAt - ctx.currentTime) * 1000);
+    const durationMs = Math.round(buffer.duration * 1000);
     this.streamSources.add(source);
     source.onended = () => {
       this.streamSources.delete(source);
@@ -277,21 +279,23 @@ export class VoicePlaybackController {
       generation,
       sampleRate,
       channels,
-      durationMs: Math.round(buffer.duration * 1000),
-      scheduledMs: Math.round(Math.max(0, startAt - ctx.currentTime) * 1000),
+      durationMs,
+      scheduledMs,
     });
+    return { scheduledMs, durationMs, sampleRate, channels };
   }
 
-  async endPcmStream(generation: number): Promise<void> {
+  async endPcmStream(generation: number, opts?: { waitForPlayback?: boolean }): Promise<void> {
     if (generation !== this.generation) return;
+    const waitForPlayback = opts?.waitForPlayback ?? true;
     const ctx = this.streamAudioContext;
     const waitMs = ctx && ctx.state !== "closed" ? Math.max(0, (this.streamNextTime - ctx.currentTime) * 1000) : 0;
-    if (waitMs > 0) {
+    if (waitForPlayback && waitMs > 0) {
       await new Promise<void>((resolve) => setTimeout(resolve, waitMs + 30));
     }
     this.streamActiveCount = Math.max(0, this.streamActiveCount - 1);
-    voiceCompanionDebug("playback.pcm_stream_end", { generation, active: this.streamActiveCount });
-    voiceChatTraceIfActive("tts.playback_pcm_stream_end", { generation, active: this.streamActiveCount, waitMs });
+    voiceCompanionDebug("playback.pcm_stream_end", { generation, active: this.streamActiveCount, waitMs, waitForPlayback });
+    voiceChatTraceIfActive("tts.playback_pcm_stream_end", { generation, active: this.streamActiveCount, waitMs, waitForPlayback });
     this.resolveIdleIfDone();
   }
 

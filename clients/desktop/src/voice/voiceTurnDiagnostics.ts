@@ -45,7 +45,7 @@ function copyObj(obj: Record<string, unknown>): Record<string, unknown> {
 function compactPayload(payload: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(payload || {})) {
-    if (key === "ui" || key === "understanding" || key === "replyPlan") continue;
+    if (key === "ui" || key === "understanding") continue;
     if (typeof value === "string") out[key] = value.length > 500 ? `${value.slice(0, 500)}...(${value.length})` : value;
     else out[key] = value;
   }
@@ -67,7 +67,6 @@ function recordSummary(stage: string, payload: Record<string, unknown>): void {
       "text",
       "rawText",
       "correctedText",
-      "userMessage",
       "confidence",
       "backend",
       "durationMs",
@@ -208,4 +207,3 @@ export function endVoiceTurnDiagnostics(outcome: string, extra: Record<string, u
   active = null;
   return lastSnapshot;
 }
-

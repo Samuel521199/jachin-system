@@ -1,6 +1,6 @@
-import { cancelJvsSession, streamSynthesizeByJvs, synthesizeByJvs } from "./voiceBridge";
+import { cancelJvsSession, streamSynthesizeByJvs, synthesizeByJvs, warmJvsAudioModels } from "./voiceBridge";
 import { splitSentences } from "./sentenceBuffer";
-import { prepareSentenceForTts } from "./speakableText";
+import { prepareSentenceForTtsDetailed } from "./speakableText";
 import { voicePlaybackController } from "./voicePlaybackController";
 import { voiceSessionStore } from "./voiceSessionStore";
 import { truncVoiceLog, voiceCompanionDebug } from "./voiceCompanionDebugLog";
@@ -8,7 +8,6 @@ import { voiceChatTraceIfActive } from "./voiceChatTraceLog";
 import { notifyCompanionVoicePhase } from "./voiceNativeBridge";
 import { synthesizeSpeechL2Only } from "../lib/api";
 import { DEFAULT_KOKORO_TTS_VOICE } from "./voiceDefaults";
-import { loadCompanionCueAudio } from "./voiceCueAudioCache";
 import { stripAssistantUiProtocol } from "../components/Chat/pendingConfirmationProtocol";
 
 type ChunkConsumer = (text: string) => void;
@@ -32,8 +31,16 @@ type PendingContentSegment = {
   units: number;
 };
 
-const CONTENT_COALESCE_MAX_CHARS = 72;
-const CONTENT_COALESCE_DELAY_MS = 700;
+const CONTENT_COALESCE_MAX_CHARS = 90;
+const CONTENT_COALESCE_DELAY_MS = 560;
+const TTS_FIRST_AUDIO_SLOW_MS = 1500;
+const FAST_TTS_MAX_NORMALIZED_CHARS = 12;
+const CLOUD_LEAD_MIN_CHARS = 8;
+const CLOUD_LEAD_MAX_CHARS = 15;
+const ENABLE_CLOUD_FAST_LEAD_SPLIT = false;
+const SOFT_BOUNDARY_RE = /[\uFF0C,\u3001\uFF1B;\uFF1A:]$/;
+const HARD_BOUNDARY_RE = /[\u3002\uFF01\uFF1F.!?]$/;
+const PROTECTED_TTS_TERMS = ["Lark", "Vivian", "Jachin", "Codex", "Ethan", "Qwen", "DashScope", "CosyVoice"];
 
 export type VoiceOrchestratorSessionOpts = {
   /** 0 = 不朗读 */
@@ -64,6 +71,9 @@ export class VoiceOrchestrator {
   private ttsVoice?: string;
   private pendingContentSegments: PendingContentSegment[] = [];
   private pendingContentFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private sessionStartedAt = 0;
+  private firstL3ChunkLogged = false;
+  private firstTtsTextLogged = false;
 
   /**
    * 仅把“完整句”计入 maxSpeakSentences。
@@ -72,8 +82,13 @@ export class VoiceOrchestrator {
   private isHardSentenceBoundary(text: string): boolean {
     const t = text.trim();
     if (!t) return false;
-    const last = t[t.length - 1] || "";
-    return /[。！？.!?]/.test(last);
+    return HARD_BOUNDARY_RE.test(t);
+  }
+
+  private isSoftSentenceBoundary(text: string): boolean {
+    const t = text.trim();
+    if (!t) return false;
+    return SOFT_BOUNDARY_RE.test(t);
   }
 
   private countHardSentenceUnits(text: string): number {
@@ -94,6 +109,47 @@ export class VoiceOrchestrator {
       .trim();
   }
 
+  private ttsRequestKindFor(speakable: string, job: SpeechJobContext): SpeechJobKind {
+    if (job.kind === "cue") return "cue";
+    return "content";
+  }
+
+  private isProtectedSplitIndex(text: string, index: number): boolean {
+    if (index <= 0 || index >= text.length) return true;
+    const before = text[index - 1] || "";
+    const after = text[index] || "";
+    if (/[A-Za-z0-9_]/.test(before) && /[A-Za-z0-9_]/.test(after)) return true;
+    const lower = text.toLowerCase();
+    for (const term of PROTECTED_TTS_TERMS) {
+      const start = lower.indexOf(term.toLowerCase());
+      if (start >= 0 && index > start && index < start + term.length) return true;
+    }
+    return false;
+  }
+
+  private findLeadSplitIndex(text: string): number {
+    const t = text.trim();
+    const min = Math.min(CLOUD_LEAD_MIN_CHARS, Math.max(0, t.length - 1));
+    const max = Math.min(CLOUD_LEAD_MAX_CHARS, t.length - 1);
+    for (let i = min; i <= max; i += 1) {
+      const left = t.slice(0, i + 1).trim();
+      if (SOFT_BOUNDARY_RE.test(left) && !this.isProtectedSplitIndex(t, i + 1)) return i + 1;
+    }
+    return -1;
+  }
+
+  private splitCloudLead(text: string): [string, string] | null {
+    if (!ENABLE_CLOUD_FAST_LEAD_SPLIT) return null;
+    const t = text.trim();
+    if (t.length <= CLOUD_LEAD_MAX_CHARS + 6) return null;
+    const splitAt = this.findLeadSplitIndex(t);
+    if (splitAt <= 0) return null;
+    const lead = t.slice(0, splitAt).trim();
+    const rest = t.slice(splitAt).trim();
+    if (!lead || !rest) return null;
+    return [lead, rest];
+  }
+
   startSession(sessionId: string, opts?: VoiceOrchestratorSessionOpts): void {
     this.sessionId = sessionId;
     this.sentenceRemainder = "";
@@ -102,6 +158,9 @@ export class VoiceOrchestrator {
     this.spokenOrQueuedSentenceKeys.clear();
     this.clearPendingContentFlushTimer();
     this.pendingContentSegments = [];
+    this.sessionStartedAt = Date.now();
+    this.firstL3ChunkLogged = false;
+    this.firstTtsTextLogged = false;
     this.maxSpeakSentences = opts?.maxSpeakSentences ?? 3;
     this.companionUi = opts?.companionUi ?? true;
     this.ttsVoice = (opts?.ttsVoice || DEFAULT_KOKORO_TTS_VOICE).trim() || DEFAULT_KOKORO_TTS_VOICE;
@@ -129,6 +188,10 @@ export class VoiceOrchestrator {
   }
 
   onL3Thinking(): void {
+    void warmJvsAudioModels({ stt: false, tts: true, sv: false, reason: "l3_thinking" }).catch((e) => {
+      voiceCompanionDebug("orchestrator.tts_prewarm_warn", { sessionId: this.sessionId, err: String(e) });
+      voiceChatTraceIfActive("tts.orchestrator.prewarm_warn", { sessionId: this.sessionId, err: String(e) });
+    });
     if (!this.companionUi) return;
     voiceSessionStore.setState("thinking");
     void notifyCompanionVoicePhase("thinking");
@@ -155,6 +218,15 @@ export class VoiceOrchestrator {
       chunk: truncVoiceLog(chunk, 120),
       len: chunk.length,
     });
+    if (!this.firstL3ChunkLogged) {
+      this.firstL3ChunkLogged = true;
+      voiceChatTraceIfActive("llm_first_token_ms", {
+        latencyMs: Math.max(0, Date.now() - this.sessionStartedAt),
+        sessionId: this.sessionId,
+        chunk: truncVoiceLog(chunk, 120),
+        len: chunk.length,
+      });
+    }
     this.chunkChain = this.chunkChain.then(() =>
       this.processChunk(chunk, onSentence),
     );
@@ -200,6 +272,16 @@ export class VoiceOrchestrator {
       reason,
       sentenceUnits,
     };
+    if (!this.firstTtsTextLogged) {
+      this.firstTtsTextLogged = true;
+      voiceChatTraceIfActive("tts_first_text_ms", {
+        latencyMs: Math.max(0, Date.now() - this.sessionStartedAt),
+        sessionId: this.sessionId,
+        reason: reason ?? "",
+        chars: sentence.trim().length,
+        text: truncVoiceLog(sentence, 160),
+      });
+    }
     this.ttsChain = this.ttsChain
       .then(() => this.speakSentence(sentence, onSentence, job))
       .catch((e) => {
@@ -237,10 +319,20 @@ export class VoiceOrchestrator {
       });
       return;
     }
-    const speakable = prepareSentenceForTts(sentence);
+    const prepared = prepareSentenceForTtsDetailed(sentence);
+    const speakable = prepared.text;
     if (!speakable) {
       voiceCompanionDebug("orchestrator.tts_skip_unspeakable", {
         raw: truncVoiceLog(sentence, 80),
+        normalized: truncVoiceLog(prepared.normalizedText, 120),
+        skipReason: prepared.skipReason ?? "",
+        matchedRule: prepared.matchedRule ?? "",
+      });
+      voiceChatTraceIfActive("tts.orchestrator.skip_unspeakable", {
+        raw: truncVoiceLog(sentence, 120),
+        normalized: truncVoiceLog(prepared.normalizedText, 160),
+        skipReason: prepared.skipReason ?? "",
+        matchedRule: prepared.matchedRule ?? "",
       });
       return;
     }
@@ -261,6 +353,7 @@ export class VoiceOrchestrator {
     const sessionId = job.sessionId;
     const ttsVoice = (job.ttsVoice || DEFAULT_KOKORO_TTS_VOICE).trim() || DEFAULT_KOKORO_TTS_VOICE;
     const useMandarinNeuralVoice = false;
+    const ttsRequestKind = this.ttsRequestKindFor(speakable, job);
     onSentence?.(speakable);
     if (job.kind === "content" && this.isHardSentenceBoundary(speakable)) {
       this.spokenSentenceCount += Math.max(1, job.sentenceUnits);
@@ -272,6 +365,7 @@ export class VoiceOrchestrator {
       spoken: this.spokenSentenceCount,
       sentenceUnits: job.sentenceUnits,
       kind: job.kind,
+      ttsRequestKind,
       reason: job.reason ?? "",
     });
     voiceChatTraceIfActive("tts.orchestrator.request", {
@@ -281,22 +375,23 @@ export class VoiceOrchestrator {
       sessionId,
       queueWaitMs,
       kind: job.kind,
+      ttsRequestKind,
       reason: job.reason ?? "",
     });
     try {
       const synthStartedAt = Date.now();
-      const cachedCue = await loadCompanionCueAudio(speakable);
-      if (!cachedCue && !useMandarinNeuralVoice && job.kind === "content") {
+      if (!useMandarinNeuralVoice) {
         let streamStarted = false;
         try {
           voicePlaybackController.beginPcmStream(jobGeneration);
           streamStarted = true;
           let firstStreamChunk = true;
+          let firstPlayLogged = false;
           const streamResult = await streamSynthesizeByJvs(
             speakable,
             ttsVoice,
             sessionId,
-            job.kind,
+            ttsRequestKind,
             async (chunk, meta) => {
               if (jobGeneration !== voicePlaybackController.getGeneration()) return;
               if (firstStreamChunk) {
@@ -306,14 +401,32 @@ export class VoiceOrchestrator {
                   void notifyCompanionVoicePhase("speaking");
                 }
               }
-              await voicePlaybackController.enqueuePcm16Chunk(chunk, {
+              const playInfo = await voicePlaybackController.enqueuePcm16Chunk(chunk, {
                 sampleRate: meta.sampleRate,
                 channels: meta.channels,
                 generation: jobGeneration,
               });
+              if (!firstPlayLogged && playInfo) {
+                firstPlayLogged = true;
+                voiceChatTraceIfActive("tts_first_play_ms", {
+                  latencyMs: Date.now() - synthStartedAt + playInfo.scheduledMs,
+                  localScheduleMs: playInfo.scheduledMs,
+                  sampleRate: playInfo.sampleRate,
+                  channels: playInfo.channels,
+                  durationMs: playInfo.durationMs,
+                  textLen: speakable.length,
+                  kind: ttsRequestKind,
+                  sessionId,
+                });
+              }
+            },
+            {
+              firstAudioSlowMs: TTS_FIRST_AUDIO_SLOW_MS,
+              failOnFirstAudioSlow: false,
             },
           );
-          await voicePlaybackController.endPcmStream(jobGeneration);
+          await voicePlaybackController.endPcmStream(jobGeneration, { waitForPlayback: false });
+          streamStarted = false;
           if (streamResult.ok && streamResult.chunks > 0) {
             const synthMs = Date.now() - synthStartedAt;
             voiceCompanionDebug("orchestrator.tts_ok", {
@@ -322,6 +435,7 @@ export class VoiceOrchestrator {
               generation: jobGeneration,
               engine: "jvs_cloud_stream",
               voice: ttsVoice ?? "",
+              ttsRequestKind,
               synthMs,
               queueWaitMs,
               firstAudioMs: streamResult.firstAudioMs,
@@ -334,8 +448,11 @@ export class VoiceOrchestrator {
               queueWaitMs,
               engine: "jvs_cloud_stream",
               voice: ttsVoice ?? "",
+              ttsRequestKind,
               firstAudioMs: streamResult.firstAudioMs,
               chunks: streamResult.chunks,
+              format: streamResult.format,
+              model: streamResult.model,
             });
             return;
           }
@@ -350,14 +467,14 @@ export class VoiceOrchestrator {
           });
         } finally {
           if (streamStarted) {
-            await voicePlaybackController.endPcmStream(jobGeneration).catch(() => undefined);
+            await voicePlaybackController.endPcmStream(jobGeneration, { waitForPlayback: false }).catch(() => undefined);
           }
         }
       }
-      const blob = cachedCue?.blob ?? (
+      const blob = (
         useMandarinNeuralVoice
           ? await synthesizeSpeechL2Only(speakable, ttsVoice)
-          : await synthesizeByJvs(speakable, ttsVoice, sessionId, job.kind)
+          : await synthesizeByJvs(speakable, ttsVoice, sessionId, ttsRequestKind)
       );
       const synthMs = Date.now() - synthStartedAt;
       if (jobGeneration !== voicePlaybackController.getGeneration()) {
@@ -372,20 +489,20 @@ export class VoiceOrchestrator {
         bytes: blob.size,
         sentence: truncVoiceLog(speakable, 80),
         generation: jobGeneration,
-        engine: cachedCue ? "local_cue_cache" : (useMandarinNeuralVoice ? "l2_edge" : "jvs_kokoro"),
+        engine: useMandarinNeuralVoice ? "l2_edge" : "jvs_kokoro",
         voice: ttsVoice ?? "",
+        ttsRequestKind,
         synthMs,
         queueWaitMs,
-        cueId: cachedCue?.id ?? "",
       });
       voiceChatTraceIfActive("tts.orchestrator.ok", {
         bytes: blob.size,
         sentence: truncVoiceLog(speakable, 120),
         latencyMs: synthMs,
         queueWaitMs,
-        engine: cachedCue ? "local_cue_cache" : (useMandarinNeuralVoice ? "l2_edge" : "jvs_kokoro"),
+        engine: useMandarinNeuralVoice ? "l2_edge" : "jvs_kokoro",
         voice: ttsVoice ?? "",
-        cueId: cachedCue?.id ?? "",
+        ttsRequestKind,
       });
       if (job.companionUi) {
         voiceSessionStore.setState("speaking");
@@ -469,7 +586,14 @@ export class VoiceOrchestrator {
     });
     const merged = this.pendingContentSegments.map((item) => item.text).join("");
     const units = this.pendingContentSegments.reduce((sum, item) => sum + item.units, 0);
-    if (merged.length >= CONTENT_COALESCE_MAX_CHARS || units >= this.maxSpeakSentences) {
+    const isImmediatePhrase = this.isHardSentenceBoundary(text);
+    if (isImmediatePhrase || merged.length >= CONTENT_COALESCE_MAX_CHARS || units >= this.maxSpeakSentences) {
+      voiceChatTraceIfActive("tts.orchestrator.flush_ready", {
+        reason: isImmediatePhrase ? "sentence_boundary" : "coalesce_limit",
+        chars: merged.length,
+        units,
+        text: truncVoiceLog(merged, 160),
+      });
       this.flushPendingContentSegments();
       return;
     }
@@ -494,6 +618,12 @@ export class VoiceOrchestrator {
       chars: merged.length,
       text: truncVoiceLog(merged, 200),
     });
+    const leadSplit = this.splitCloudLead(merged);
+    if (leadSplit) {
+      this.scheduleSpeakSentence(leadSplit[0], undefined, "cue", "cloud_fast_lead", 1);
+      this.scheduleSpeakSentence(leadSplit[1], onSentence, "content", "cloud_base_remainder", Math.max(1, units - 1));
+      return;
+    }
     this.scheduleSpeakSentence(merged, onSentence, "content", "coalesced_content", units);
   }
 

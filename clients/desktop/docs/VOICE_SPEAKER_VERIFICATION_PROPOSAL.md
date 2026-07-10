@@ -2,7 +2,7 @@
 
 > **目的**：Jachin 只响应**本机登记主人**的语音；旁人喊唤醒词、误触发、录指令时插话，**不要进 STT、不要进 L3、不要进聊天记录**。  
 > **状态**：方案稿 v3（修正 v2 标题/阈值不一致、补全登记、性能、时机、文件格式）  
-> **关联**：`VOICE_WAKE_ARCHITECTURE.md`、`VOICE_UNIFIED_PIPELINE_PROPOSAL.md`、`VOICE_BARGE_IN_AND_WAKE_ACK.md`、`data/models/voice/sv/README.md`
+> **关联**：`VOICE_WAKE_ARCHITECTURE.md`、`VOICE_COMPANION_PIPELINE_READABLE.md`、`VOICE_BARGE_IN_AND_WAKE_ACK.md`、`data/models/voice/sv/README.md`
 
 ---
 

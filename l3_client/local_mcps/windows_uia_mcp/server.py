@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Windows UI Automation MCP server.
 
 This MCP is the structured Windows layer: it uses Microsoft UI Automation
@@ -27,8 +27,20 @@ logger = logging.getLogger("windows_uia_mcp")
 try:
     from mcp.server.fastmcp import FastMCP
 except ImportError:
-    logger.error("Please install mcp: pip install mcp")
-    sys.exit(1)
+    logger.warning("mcp package is not installed; windows_uia_mcp server transport is unavailable, but local tool functions remain importable.")
+
+    class FastMCP:  # type: ignore[no-redef]
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            self._missing_mcp = True
+
+        def tool(self, *_args: Any, **_kwargs: Any):
+            def _decorator(func):
+                return func
+
+            return _decorator
+
+        def run(self, *_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("mcp package is required to run windows_uia_mcp as a server")
 
 try:
     mcp = FastMCP(
@@ -889,3 +901,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

@@ -40,6 +40,7 @@ class WarmAudioRequest(BaseModel):
     stt: bool = False
     tts: bool = False
     sv: bool = False
+    reason: Optional[str] = None
 
 
 cfg = load_config()
@@ -104,7 +105,7 @@ def _make_tts_service():
             cfg.dashscope_http_api_base,
         )
         return CloudTtsService(
-            api_key=cfg.dashscope_api_key,
+            api_key=cfg.dashscope_tts_api_key,
             http_api_base=cfg.dashscope_http_api_base,
             model=cfg.tts_model,
             fast_model=cfg.tts_fast_model,
@@ -146,6 +147,15 @@ def _stt_cloud_soft_timeout_seconds(hard_timeout_sec: float) -> float:
     # Leave room for the local fallback before the HTTP/client hard timeout.
     return max(1.0, min(value, max(1.0, hard_timeout_sec - 2.0)))
 
+
+def _stt_stream_final_timeout_seconds() -> float:
+    raw = os.getenv("JACHIN_STT_STREAM_FINAL_TIMEOUT_SEC", "").strip()
+    try:
+        value = float(raw or "1.2")
+    except ValueError:
+        value = 1.2
+    return max(0.8, min(value, 1.5))
+
 # Raw TCP STT IPC frame types (lower framing overhead vs HTTP/WebSocket).
 _STT_TCP_START = 0x01
 _STT_TCP_CHUNK = 0x02
@@ -182,10 +192,16 @@ def _warmup_stt_engine() -> None:
             )
 
 
-def _warmup_tts_engine() -> None:
+def _warmup_tts_engine(reason: str = "startup") -> dict[str, Any]:
     if tts_service.ready:
         logger.info("Preloading %s TTS engine...", getattr(tts_service, "model_name", "unknown"))
-        if tts_service._load_engine() and cfg.tts_backend != "cloud":
+        loaded = tts_service._load_engine()
+        if loaded and cfg.tts_backend == "cloud" and hasattr(tts_service, "prewarm_stream"):
+            enabled = os.getenv("JACHIN_TTS_PREWARM_STREAM", "1").strip().lower() not in {"0", "false", "no", "off"}
+            if not enabled:
+                return {"ok": True, "status": "disabled"}
+            return tts_service.prewarm_stream(reason=reason)
+        if loaded and cfg.tts_backend != "cloud":
             # Local fallback only: avoid spending cloud TTS quota during warmup.
             result = tts_service.synthesize("\u4f60\u597d\u3002", voice=cfg.tts_voice)
             logger.info(
@@ -194,8 +210,11 @@ def _warmup_tts_engine() -> None:
                 result.sample_rate,
                 result.duration_ms,
             )
+            return {"ok": True, "status": "local_warmed", "sample_rate": result.sample_rate, "duration_ms": result.duration_ms}
+        return {"ok": bool(loaded), "status": "loaded" if loaded else "load_failed"}
     else:
         logger.warning("TTS backend not ready: %s", getattr(tts_service, "model_path", "unknown"))
+        return {"ok": False, "status": "not_ready", "error": getattr(tts_service, "model_path", "unknown")}
 
 
 def _warmup_sv_engine() -> None:
@@ -237,6 +256,8 @@ app.add_middleware(
 def health() -> dict:
     available_voices = tts_service.list_voices()
     current_tts_voice = cfg.tts_cloud_voice if cfg.tts_backend == "cloud" else cfg.tts_voice
+    tts_last_prewarm = getattr(tts_service, "_last_prewarm_trace", {})
+    tts_prewarm_checks = tts_last_prewarm.get("checks", {}) if isinstance(tts_last_prewarm, dict) else {}
     return {
         "ok": True,
         "stt_ready": stt_service.ready,
@@ -244,6 +265,15 @@ def health() -> dict:
         "sv_ready": sv_service.ready,
         "stt_model": stt_service.model_name,
         "tts_model": getattr(tts_service, "model_name", "unknown"),
+        "tts_format": getattr(tts_service, "audio_format", cfg.tts_format),
+        "tts_sample_rate": getattr(tts_service, "sample_rate", cfg.tts_sample_rate),
+        "tts_http_api_base": cfg.dashscope_http_api_base,
+        "tts_connection_reuse_supported": bool(getattr(tts_service, "_pool_enabled", lambda: False)()),
+        "tts_pool_ready": bool(getattr(tts_service, "_pool", None) is not None),
+        "tts_pool_trace": getattr(tts_service, "_pool_ready_trace", {}),
+        "tts_last_prewarm": tts_last_prewarm,
+        "tts_stream_cue_ready": bool((tts_prewarm_checks.get("cue") or {}).get("ok")),
+        "tts_stream_content_ready": bool((tts_prewarm_checks.get("content") or {}).get("ok")),
         "stt_backend": cfg.stt_backend,
         "stt_http_timeout_sec": _stt_http_timeout_seconds(),
         "stt_cloud_soft_timeout_sec": _stt_cloud_soft_timeout_seconds(_stt_http_timeout_seconds()),
@@ -314,6 +344,31 @@ def _stt_transcribe_pcm_sync(pcm_bytes: bytes, sample_rate: int = 16000) -> "Stt
     return result
 
 
+def _stt_transcribe_pcm_local_fallback_sync(
+    pcm_bytes: bytes,
+    sample_rate: int = 16000,
+    reason: str = "stream_final_timeout",
+    cloud_elapsed_ms: int | None = None,
+) -> Any | None:
+    wav_bytes = _pcm16le_to_wav_bytes(pcm_bytes, sample_rate=sample_rate, channels=1)
+    return _transcribe_with_local_fallback_sync(wav_bytes, reason=reason, cloud_elapsed_ms=cloud_elapsed_ms)
+
+
+async def _stt_transcribe_pcm_local_fallback_async(
+    pcm_bytes: bytes,
+    sample_rate: int = 16000,
+    reason: str = "stream_final_timeout",
+    cloud_elapsed_ms: int | None = None,
+) -> Any | None:
+    return await asyncio.to_thread(
+        _stt_transcribe_pcm_local_fallback_sync,
+        pcm_bytes,
+        sample_rate,
+        reason,
+        cloud_elapsed_ms,
+    )
+
+
 def _stt_result_needs_local_fallback(result: Any) -> bool:
     text = str(getattr(result, "text", "") or "").strip()
     if text.startswith("[STT error]") or text.startswith("\u3010STT\u9519\u8bef\u3011"):
@@ -321,6 +376,17 @@ def _stt_result_needs_local_fallback(result: Any) -> bool:
     if not text and float(getattr(result, "confidence", 0.0) or 0.0) <= 0.0:
         return True
     return False
+
+
+def _stt_stream_result_needs_local_fallback(result: Any) -> bool:
+    if _stt_result_needs_local_fallback(result):
+        return True
+    understanding = getattr(result, "understanding", {}) or {}
+    if not isinstance(understanding, dict):
+        return False
+    if understanding.get("streaming_mode") != "dashscope_recognition_start_send_audio_frame":
+        return False
+    return not bool(understanding.get("stream_finalized"))
 
 
 def _mark_local_fallback_result(result: Any, reason: str, cloud_elapsed_ms: int | None = None) -> Any:
@@ -838,8 +904,18 @@ class _SttTcpHandler(socketserver.BaseRequestHandler):
                     continue
                 if msg_type == _STT_TCP_FINALIZE:
                     if realtime_session is not None:
-                        final = realtime_session.finish(timeout_sec=3.0)
+                        stream_started = time.monotonic()
+                        final = realtime_session.finish(timeout_sec=_stt_stream_final_timeout_seconds())
                         drain_realtime_events()
+                        if _stt_stream_result_needs_local_fallback(final):
+                            fallback = _stt_transcribe_pcm_local_fallback_sync(
+                                bytes(pcm_buffer),
+                                sample_rate=sample_rate,
+                                reason="stream_final_timeout_or_partial",
+                                cloud_elapsed_ms=int((time.monotonic() - stream_started) * 1000),
+                            )
+                            if fallback is not None:
+                                final = fallback
                     else:
                         maybe_partial(force=True)
                         final = _stt_transcribe_pcm_sync(bytes(pcm_buffer), sample_rate=sample_rate)
@@ -962,6 +1038,42 @@ async def stt_transcribe(audio: UploadFile = File(...), session_id: Optional[str
     return {**_stt_result_payload(result), "session_id": session_id}
 
 
+@app.post("/v1/stt/transcribe_local")
+async def stt_transcribe_local(audio: UploadFile = File(...), session_id: Optional[str] = None) -> dict:
+    try:
+        raw = await audio.read()
+    finally:
+        await audio.close()
+    if not raw:
+        raise HTTPException(status_code=400, detail="empty audio payload")
+    local_service = local_stt_fallback_service or (stt_service if cfg.stt_backend != "cloud" else None)
+    if local_service is None or not getattr(local_service, "ready", False):
+        raise HTTPException(status_code=503, detail="local STT fallback not ready")
+    started = time.monotonic()
+    try:
+        result = await asyncio.to_thread(local_service.transcribe, raw)
+        result = _mark_local_fallback_result(
+            result,
+            reason="stream_miss_local_first",
+            cloud_elapsed_ms=None,
+        )
+        _append_understanding_event(
+            result,
+            "stt_orchestration",
+            _orchestration_event(
+                "local_first_result",
+                started,
+                reason="stream_miss_local_first",
+                text_len=len(str(getattr(result, "text", "") or "")),
+                backend=str(getattr(result, "backend", "") or ""),
+            ),
+        )
+    except Exception as e:
+        logger.exception("STT local transcribe failed session_id=%s bytes=%s", session_id, len(raw))
+        raise HTTPException(status_code=500, detail=f"local STT transcribe failed: {e}")
+    return {**_stt_result_payload(result), "session_id": session_id}
+
+
 @app.websocket("/v1/stt/stream")
 async def stt_stream(websocket: WebSocket, session_id: Optional[str] = None):
     await websocket.accept()
@@ -1050,8 +1162,21 @@ async def stt_stream(websocket: WebSocket, session_id: Optional[str] = None):
                     continue
                 if msg_type == "finalize":
                     if realtime_session is not None:
-                        final = await asyncio.to_thread(realtime_session.finish, 3.0)
+                        stream_started = time.monotonic()
+                        final = await asyncio.to_thread(
+                            realtime_session.finish,
+                            _stt_stream_final_timeout_seconds(),
+                        )
                         await drain_realtime_events()
+                        if _stt_stream_result_needs_local_fallback(final):
+                            fallback = await _stt_transcribe_pcm_local_fallback_async(
+                                bytes(pcm_buffer),
+                                sample_rate=sample_rate,
+                                reason="stream_final_timeout_or_partial",
+                                cloud_elapsed_ms=int((time.monotonic() - stream_started) * 1000),
+                            )
+                            if fallback is not None:
+                                final = fallback
                     else:
                         await maybe_infer_partial(force=True)
                         final = await _stt_transcribe_pcm_async(bytes(pcm_buffer), sample_rate=sample_rate)
@@ -1180,6 +1305,8 @@ async def tts_stream(websocket: WebSocket):
                     {
                         "type": "done",
                         "first_packet_ms": event.get("first_packet_ms", 0),
+                        "opened_ms": event.get("opened_ms", 0),
+                        "total_ms": event.get("total_ms", 0),
                         "request_id": event.get("request_id", ""),
                     }
                 )
@@ -1195,7 +1322,12 @@ async def tts_stream(websocket: WebSocket):
             elif event_type == "meta":
                 await websocket.send_json({k: v for k, v in event.items() if k != "data"})
             elif event_type in {"open", "close"}:
-                await websocket.send_json({"type": event_type})
+                await websocket.send_json(
+                    {
+                        "type": event_type,
+                        "elapsed_ms": event.get("elapsed_ms", 0),
+                    }
+                )
             else:
                 await websocket.send_json({"type": "event", "message": str(event.get("message") or "")[:1000]})
     except WebSocketDisconnect:
@@ -1370,16 +1502,17 @@ async def sv_filter_owner_track(
 @app.post("/v1/models/audio/warm")
 def warm_audio_models(req: WarmAudioRequest) -> dict:
     warmed: dict[str, bool] = {"stt": False, "tts": False, "sv": False}
+    details: dict[str, Any] = {}
     if req.stt:
         _warmup_stt_engine()
         warmed["stt"] = True
     if req.tts:
-        _warmup_tts_engine()
+        details["tts"] = _warmup_tts_engine(reason=req.reason or "warm_endpoint")
         warmed["tts"] = True
     if req.sv:
         _warmup_sv_engine()
         warmed["sv"] = True
-    return {"ok": True, "warmed": warmed}
+    return {"ok": True, "warmed": warmed, "details": details}
 
 
 if __name__ == "__main__":

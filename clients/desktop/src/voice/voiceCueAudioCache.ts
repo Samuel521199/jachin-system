@@ -39,9 +39,19 @@ for (const item of CUE_MANIFEST.items || []) {
   });
 }
 
+const CUE_TEXT_ALIASES: Record<string, string> = {
+  嗯: "好的",
+  嗯嗯: "好的",
+  好: "好的",
+  好的好的: "好的",
+  收到啦: "收到",
+  收到了: "收到",
+  我在呢: "我在",
+};
+
 export function findCompanionCueAudio(text: string): CachedCue | null {
   const key = normalizeCueText(text);
-  return cueByText.get(key) ?? null;
+  return cueByText.get(key) ?? cueByText.get(normalizeCueText(CUE_TEXT_ALIASES[key] || "")) ?? null;
 }
 
 export async function loadCompanionCueAudio(text: string): Promise<{ blob: Blob; id: string; url: string } | null> {

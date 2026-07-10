@@ -1,4 +1,4 @@
-"""Role-agent execution adapters for WorkOrder dispatch.
+﻿"""Role-agent execution adapters for WorkOrder dispatch.
 
 Role adapters own per-role policy, ledger logging, verification evidence, and
 failure shaping. Unknown tools still pass through a generic low-level transport,
@@ -107,11 +107,13 @@ class RoleExecutionAdapter:
             observation = await self._execute(work_order, tool_transport_executor, context)
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             evidence = self.enrich_evidence(evidence, observation, work_order, context)
+            ok, failure_reason = self.evaluate_observation(observation, evidence, work_order, context)
             result = RoleExecutionResult(
                 observation=str(observation or ""),
                 adapter_role=self.role_id,
                 elapsed_ms=elapsed_ms,
-                ok=True,
+                ok=ok,
+                failure_reason=failure_reason,
                 evidence=evidence,
             )
         except Exception as exc:
@@ -186,6 +188,18 @@ class RoleExecutionAdapter:
     ) -> dict[str, object]:
         return evidence
 
+    def evaluate_observation(
+        self,
+        observation: str,
+        evidence: dict[str, object],
+        work_order: WorkOrder,
+        context: RoleExecutionContext,
+    ) -> tuple[bool, str]:
+        status = _parse_observation_status(observation)
+        if not bool(status.get("ok")):
+            return False, str(status.get("reason") or "adapter_observation_failed")[:500]
+        return True, ""
+
 
 class AppControlExecutor(RoleExecutionAdapter):
     role_id = "AppControlExecutorAgent"
@@ -255,9 +269,23 @@ class AppControlExecutor(RoleExecutionAdapter):
         enriched["app_control_result"] = _parse_observation_status(observation)
         enriched["foreground_verified"] = _observation_mentions_any(
             observation,
-            ["active_window", "foreground", "window_title", "hwnd", "screenshot", "ok"],
+            ["active_window", "foreground", "window_title", "active_title", "hwnd", "screenshot"],
         )
         return enriched
+
+    def evaluate_observation(
+        self,
+        observation: str,
+        evidence: dict[str, object],
+        work_order: WorkOrder,
+        context: RoleExecutionContext,
+    ) -> tuple[bool, str]:
+        ok, reason = super().evaluate_observation(observation, evidence, work_order, context)
+        if not ok:
+            return ok, reason
+        if evidence.get("foreground_verified") is False:
+            return False, "app_control_foreground_unverified"
+        return True, ""
 
 
 class FileExecutor(RoleExecutionAdapter):
@@ -785,6 +813,13 @@ def _classify_memory_tags(tags: list[str] | None) -> str:
 
 def _parse_observation_status(observation: str) -> dict[str, object]:
     text = str(observation or "")
+    unknown_reason = _unknown_tool_reason(text)
+    if unknown_reason:
+        return {
+            "ok": False,
+            "reason": unknown_reason,
+            "json": False,
+        }
     parsed = _json_obj(text)
     if isinstance(parsed, dict):
         ok = parsed.get("ok")
@@ -804,6 +839,18 @@ def _parse_observation_status(observation: str) -> dict[str, object]:
         "reason": fail_match.group(1) if fail_match else "",
         "json": False,
     }
+
+
+def _unknown_tool_reason(text: str) -> str:
+    raw = str(text or "")
+    low = raw.lower()
+    if "[未知工具" in raw or "未知工具" in raw:
+        return "unknown_tool"
+    if "unknown tool" in low:
+        return "unknown_tool"
+    if "未知 wasm 技能" in low or "未找到技能" in raw:
+        return "unknown_tool"
+    return ""
 
 
 def _message_error_retryable(reason: str) -> bool:
@@ -827,3 +874,7 @@ async def _run_sync(fn):
     import asyncio
 
     return await asyncio.to_thread(fn)
+
+
+
+

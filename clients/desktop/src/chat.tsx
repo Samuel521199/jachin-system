@@ -14,7 +14,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import {
   appendL3VoiceDiagnostics,
-  composeVoiceReply,
   synthesizeSpeech,
   streamChatMessage,
   tryL3AgentForIntent,
@@ -402,10 +401,10 @@ function ChatApp() {
   const lastBargeInAtRef = useRef(0);
   /** 最近一次唤醒时间：用于告知 L3 当前可能处于唤醒首句场景。 */
   const lastWakeUpAtRef = useRef(0);
-  /** 语音分流：后台任务上下文（用于 STATUS/ABORT target_task_id 解析） */
+  /** 语音会话中的后台任务上下文：只作为 L3 证据，不做前端路由。 */
   const activeVoiceTasksRef = useRef<Map<string, VoiceTaskRef>>(new Map());
   const lastFocusVoiceTaskIdRef = useRef<string | null>(null);
-  /** 大窗 PTT/VAD：走 JVS TTS，不绑 Orb（见 VOICE_UNIFIED_PIPELINE_PROPOSAL） */
+  /** 大窗 PTT/VAD：走 JVS TTS，不绑 Orb。 */
   const chatJvsVoiceActiveRef = useRef(false);
   const lastJvsWarmAtRef = useRef(0);
   const startCompanionJvsIfNeeded = useCallback(() => {
@@ -423,6 +422,18 @@ function ChatApp() {
         console.warn("[VoiceCompanion] JVS start failed:", e);
       }));
   }, []);
+  const prewarmPttSttStream = useCallback((reason: string) => {
+    void invoke<string>("prewarm_ptt_stt_stream")
+      .then((sessionId) => {
+        voiceChatTrace("stt.stream_prewarm_ok", { reason, sessionId });
+      })
+      .catch((e) => {
+        voiceCompanionDebug("chat.stt_stream_prewarm_warn", { reason, error: String(e) });
+      });
+  }, []);
+  useEffect(() => {
+    prewarmPttSttStream("chat_mount");
+  }, [prewarmPttSttStream]);
   isLoadingRef.current = isLoading;
   isTypingRef.current = isTyping;
 
@@ -1651,7 +1662,6 @@ function ChatApp() {
           voice_asr_raw_text: sttTrace?.rawText || t,
           voice_corrected_text: sttTrace?.correctedText || sttTrace?.text || t,
           voice_final_text: sttTrace?.text || t,
-          voice_stt_user_message: sttTrace?.userMessage || "",
           voice_stt_confidence: sttTrace?.confidence,
           voice_stt_backend: sttTrace?.backend,
           voice_stt_source: sttTrace?.source || "",
@@ -1672,86 +1682,6 @@ function ChatApp() {
     },
     [buildVoiceAssistantCue, doActualSend],
   );
-
-  const buildVoiceReplyComposerPrompt = useCallback((payload: Record<string, unknown>, userText: string) => {
-    const replyPlan = payload.replyPlan && typeof payload.replyPlan === "object" ? payload.replyPlan : {};
-    return [
-      "【语音追问生成任务】",
-      "你不是在执行用户原始任务，而是在根据规则层给出的 ReplyPlan 生成一句自然追问/确认话术。",
-      "规则层只负责边界，最终对用户说的话由你来写。",
-      "禁止调用工具，禁止声称已经执行，禁止补全用户没说的信息。",
-      "请只输出最终要对用户说的一句话，不要 Markdown。",
-      "",
-      `用户原始语音文本：${userText}`,
-      "ReplyPlan JSON：",
-      JSON.stringify(replyPlan, null, 2),
-    ].join("\n");
-  }, []);
-
-  const deliverVoiceReplyComposerResult = useCallback(
-    async (args: {
-      userText: string;
-      reply: string;
-      companionUi: boolean;
-      source?: string;
-      model?: string;
-      elapsedMs?: number;
-    }) => {
-      const userText = stripDefaultSadEmojiSuffix((args.userText || "").trim());
-      const reply = stripDefaultSadEmojiSuffix((args.reply || "").trim());
-      if (!reply) return;
-      const turnSessionId = currentSessionIdRef.current;
-      updateSessionMessagesById(turnSessionId, (prev) => [
-        ...prev,
-        { role: "user", content: userText || "语音追问", timestamp: Date.now() },
-        { role: "assistant", content: reply, reasoning: "", timestamp: Date.now(), source: "L3" },
-      ]);
-      setInput("");
-      setPendingFiles([]);
-      setAttachmentHint(null);
-      setRecordingStatus("");
-      setIsLoading(false);
-      setIsTyping(false);
-      setLocalStreamChunkKind(null);
-      setRiskLevel("safe");
-      setState("thinking");
-
-      const companionVoice = resolveCompanionJvsVoice(ttsVoice);
-      if (args.companionUi) {
-        voiceCompanionActiveRef.current = true;
-        voiceOrchestrator.startSession(`companion-fast-reply-${turnSessionId}-${Date.now()}`, {
-          ttsVoice: companionVoice,
-        });
-        startCompanionJvsIfNeeded();
-        voiceCompanionDebug("chat.voice_reply_composer_fast", {
-          source: args.source || "",
-          model: args.model || "",
-          elapsedMs: args.elapsedMs ?? null,
-          reply: truncVoiceLog(reply, 120),
-        });
-        void emitCompanionL3ToHud({ kind: "answer", content: reply });
-        void voiceOrchestrator.onL3Chunk(reply);
-        void voiceOrchestrator.finishStream().finally(() => setState("idle"));
-      } else {
-        chatJvsVoiceActiveRef.current = true;
-        voiceOrchestrator.startSession(`chat-voice-fast-reply-${turnSessionId}-${Date.now()}`, {
-          maxSpeakSentences: VOICE_PROFILES.chat_ptt.maxSpeakSentences,
-          companionUi: false,
-          ttsVoice: DEFAULT_KOKORO_TTS_VOICE,
-        });
-        startCompanionJvsIfNeeded();
-        voiceChatTraceIfActive("tts.fast_reply_session_armed", {
-          source: args.source || "",
-          model: args.model || "",
-          elapsedMs: args.elapsedMs ?? null,
-        });
-        void voiceOrchestrator.onL3Chunk(reply);
-        void voiceOrchestrator.finishStream().finally(() => setState("idle"));
-      }
-    },
-    [startCompanionJvsIfNeeded, ttsVoice, updateSessionMessagesById, setState],
-  );
-
 
   // 语音陪伴：HUD / Orb / 模拟脚本注入用户文本 → chat 单一 L3 发送方
   useEffect(() => {
@@ -2024,6 +1954,8 @@ function ChatApp() {
       wavBase64: string,
       profile: "chat_ptt" | "chat_vad",
       preRecognizedText?: string,
+      preRecognizedFinalized?: boolean,
+      preRecognizedSource?: string,
     ) => {
       const fp = `${wavBase64.length}:${wavBase64.slice(0, 64)}:${wavBase64.slice(-64)}`;
       const now = Date.now();
@@ -2153,15 +2085,40 @@ function ChatApp() {
         const sttStarted = Date.now();
         const streamText = stripDefaultSadEmojiSuffix((preRecognizedText || "").trim());
         if (streamText) {
-          voiceChatTrace("stt.stream_preview_ignored_for_final", {
+          voiceChatTrace("stt.stream_preview_available", {
             profile,
             streamText,
-            reason: "ptt_final_stt_required",
+            finalized: Boolean(preRecognizedFinalized),
+            source: preRecognizedSource || "",
           });
         }
-        const finalTrace = await transcribeWavBase64Detailed(wavForStt, profile, {
-          signal: sttAbortController.signal,
-        });
+        const useRealtimeFinal =
+          profile === "chat_ptt" &&
+          Boolean(streamText) &&
+          preRecognizedFinalized === true &&
+          !shouldRunPttOwnerTrack;
+        const useLocalFirstFallback = profile === "chat_ptt" && !useRealtimeFinal;
+        const finalTrace = useRealtimeFinal
+          ? ({
+              text: streamText,
+              rawText: streamText,
+              correctedText: streamText,
+              confidence: 0.92,
+              durationMs: 0,
+              language: "auto",
+              backend: preRecognizedSource || "jvs_stream_final",
+              hotwordCount: 0,
+              hotwordStatus: "streaming",
+              hotwordSources: [],
+              understanding: {
+                streamingMode: "ptt_realtime_stt",
+                source: preRecognizedSource || "jvs_stream_final",
+              },
+            } as VoiceTranscriptionResult)
+          : await transcribeWavBase64Detailed(wavForStt, profile, {
+              signal: sttAbortController.signal,
+              localFirst: useLocalFirstFallback,
+            });
         if (sttAbortController.signal.aborted || sttRequestSeq !== voiceSttRequestSeqRef.current) {
           voiceChatTrace("stt.pipeline_superseded", {
             profile,
@@ -2172,7 +2129,7 @@ function ChatApp() {
         }
         const sttTrace: Partial<VoiceTranscriptionResult> & { source: string } = {
           ...finalTrace,
-          source: "jvs_http_transcribe",
+          source: useRealtimeFinal ? "jvs_stream_final" : (useLocalFirstFallback ? "jvs_local_fallback" : "jvs_http_transcribe"),
           finalized: true,
           provisional: false,
           streamText,
@@ -2185,7 +2142,6 @@ function ChatApp() {
           text,
           rawText: sttTrace.rawText || text,
           correctedText: sttTrace.correctedText || text,
-          userMessage: sttTrace.userMessage || "",
           confidence: sttTrace.confidence,
           backend: sttTrace.backend,
           durationMs: sttTrace.durationMs,
@@ -2195,7 +2151,7 @@ function ChatApp() {
           hotwordDominated: sttTrace.hotwordDominated,
           hotwordDominationReasons: (sttTrace as any).hotwordDominationReasons,
           latencyMs: Date.now() - sttStarted,
-          source: "jvs_http_transcribe",
+          source: useRealtimeFinal ? "jvs_stream_final" : (useLocalFirstFallback ? "jvs_local_fallback" : "jvs_http_transcribe"),
           finalized: true,
           provisional: false,
           streamText,
@@ -2243,119 +2199,6 @@ function ChatApp() {
           });
           return;
         }
-        if (e instanceof VoiceServiceError && e.code === "clarification") {
-          const details = (e.details || {}) as Record<string, unknown>;
-          const rawText = String(details.rawText || "").trim();
-          const correctedText = String(details.correctedText || rawText || msg || "").trim();
-          const displayText = correctedText || rawText || msg;
-          voiceChatTrace("stt.clarification_required", {
-            profile,
-            question: msg,
-            replyPlan: details.replyPlan,
-            userMessageSource: details.userMessageSource,
-            rawText,
-            correctedText,
-            displayText,
-          });
-          const clarificationCompanionUi = companionModeRef.current || voiceCompanionActiveRef.current;
-          chatJvsVoiceActiveRef.current = true;
-          voiceCompanionActiveRef.current = clarificationCompanionUi || voiceCompanionActiveRef.current;
-          startCompanionJvsIfNeeded();
-          if (clarificationCompanionUi && displayText) {
-            void emitCompanionUserToHud(displayText);
-          }
-          setRecordingStatus("");
-          const replyPlan = details.replyPlan && typeof details.replyPlan === "object"
-            ? (details.replyPlan as Record<string, unknown>)
-            : {};
-          if (Object.keys(replyPlan).length > 0) {
-            const fastStarted = Date.now();
-            const fastComposer = await composeVoiceReply({
-              reply_plan: replyPlan,
-              user_text: displayText,
-              fallback_text: msg,
-              timeout_sec: 5,
-              max_tokens: 80,
-            }).catch((err) => {
-              voiceChatTrace("reply_composer.fast_error", {
-                error: err instanceof Error ? err.message : String(err),
-                latencyMs: Date.now() - fastStarted,
-              });
-              return null;
-            });
-            if (
-              fastComposer?.ok &&
-              fastComposer.source === "qwen_flash" &&
-              typeof fastComposer.reply === "string" &&
-              fastComposer.reply.trim()
-            ) {
-              voiceChatTrace("reply_composer.fast_ok", {
-                source: fastComposer.source,
-                model: fastComposer.model || "",
-                elapsedMs: fastComposer.elapsed_ms ?? null,
-                latencyMs: Date.now() - fastStarted,
-              });
-              await deliverVoiceReplyComposerResult({
-                userText: displayText || msg,
-                reply: fastComposer.reply,
-                companionUi: clarificationCompanionUi,
-                source: fastComposer.source,
-                model: fastComposer.model,
-                elapsedMs: fastComposer.elapsed_ms,
-              });
-              endVoiceChatTrace("clarification_required", {
-                question: fastComposer.reply,
-                source: "qwen_flash_reply_composer",
-                model: fastComposer.model || "",
-                elapsedMs: fastComposer.elapsed_ms ?? null,
-              });
-              return;
-            }
-            voiceChatTrace("reply_composer.fast_miss", {
-              source: fastComposer?.source || "none",
-              error: fastComposer?.error || "",
-              latencyMs: Date.now() - fastStarted,
-            });
-          }
-          if (msg) {
-            await deliverVoiceReplyComposerResult({
-              userText: displayText || msg,
-              reply: msg,
-              companionUi: clarificationCompanionUi,
-              source: Object.keys(replyPlan).length
-                ? "stt_clarification_question_after_composer_miss"
-                : "stt_clarification_question",
-            });
-            endVoiceChatTrace("clarification_required", {
-              question: msg,
-              source: Object.keys(replyPlan).length
-                ? "stt_clarification_question_after_composer_miss"
-                : "stt_clarification_question",
-            });
-            return;
-          }
-          const composerPrompt = buildVoiceReplyComposerPrompt(details, displayText);
-          await doActualSend(composerPrompt, [], {
-            displayContent: displayText || msg,
-            extraImplicitSignals: {
-              desktop_companion: true,
-              source: "desktop_voice_reply_composer",
-              voice_reply_composer: true,
-              voice_reply_plan: details.replyPlan || {},
-              voice_raw_stt_text: rawText || displayText,
-              voice_asr_raw_text: details.rawText || rawText || displayText,
-              voice_corrected_text: correctedText || displayText,
-              voice_final_text: displayText,
-              voice_stt_user_message: msg,
-              voice_stt_user_message_source: details.userMessageSource || "",
-              voice_stt_understanding: details.understanding,
-              local_voice_session: true,
-              clarification_pending: true,
-            },
-          });
-          endVoiceChatTrace("clarification_required", { question: msg, source: "l3_reply_composer" });
-          return;
-        }
         voiceChatTrace("stt.pipeline_fail", {
           profile,
           error: msg,
@@ -2375,7 +2218,7 @@ function ChatApp() {
         }
       }
     },
-    [dispatchVoiceUtterance, setMessages, startCompanionJvsIfNeeded, setState, ttsEnabled, clearPttAudioWaitTimer, abortActiveStt, buildVoiceReplyComposerPrompt, deliverVoiceReplyComposerResult, doActualSend, ensureCompanionSurfaceVisible],
+    [dispatchVoiceUtterance, setMessages, startCompanionJvsIfNeeded, setState, ttsEnabled, clearPttAudioWaitTimer, abortActiveStt, ensureCompanionSurfaceVisible],
   );
 
   useSttAudioReady({
@@ -2385,7 +2228,14 @@ function ChatApp() {
       if (pttFinalizePendingRef.current || isRecordingRef.current) {
         clearPttAudioWaitTimer();
         pttFinalizePendingRef.current = false;
-        void submitVoiceUtterance(payload.wav_base64, "chat_ptt", payload.recognized_text);
+        void submitVoiceUtterance(
+          payload.wav_base64,
+          "chat_ptt",
+          payload.recognized_text,
+          payload.recognized_finalized,
+          payload.recognized_source,
+        );
+        prewarmPttSttStream("ptt_audio_ready_next_turn");
         return;
       }
       if (!isVadActiveRef.current) return;
@@ -2410,6 +2260,7 @@ function ChatApp() {
     try {
       // Pre-flight: 麦克风刚起录即通知 L3 后台预热历史/摘要。
       sendPrepareContextControl("ptt_start");
+      prewarmPttSttStream("ptt_start");
       // start_ptt_capture 内会先 stop 唤醒门卫并等待麦克风释放
       await invoke("start_ptt_capture");
       isRecordingRef.current = true;
@@ -2444,7 +2295,12 @@ function ChatApp() {
     pttFinalizePendingRef.current = true;
     setRecordingStatus("正在识别…");
     try {
-      const payload = await invoke<{ wav_base64: string; recognized_text?: string }>("stop_ptt_capture");
+      const payload = await invoke<{
+        wav_base64: string;
+        recognized_text?: string;
+        recognized_finalized?: boolean;
+        recognized_source?: string;
+      }>("stop_ptt_capture");
       voiceChatTrace("ptt.rust_capture_stopped", {
         ui: voiceTraceUiRef.current,
         wavBase64Len: payload?.wav_base64?.length ?? 0,
@@ -2453,7 +2309,14 @@ function ChatApp() {
       clearPttAudioWaitTimer();
       pttFinalizePendingRef.current = false;
       if (payload?.wav_base64) {
-        void submitVoiceUtterance(payload.wav_base64, "chat_ptt", payload.recognized_text);
+        void submitVoiceUtterance(
+          payload.wav_base64,
+          "chat_ptt",
+          payload.recognized_text,
+          payload.recognized_finalized,
+          payload.recognized_source,
+        );
+        prewarmPttSttStream("ptt_stop_next_turn");
       } else {
         schedulePttAudioWaitTimeout();
       }
