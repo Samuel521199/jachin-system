@@ -73,7 +73,7 @@ def _make_contract_and_work_order(
         decision_id=decision_id,
         role_agent=role_agent,
         task=goal,
-        inputs={"tool": tool, "action_input": action_input},
+        inputs={"tool": tool, "work_order_input": action_input},
         tool_policy=policy,
         expected_outputs=["observation", "evidence"],
         verification_criteria=["ok"],
@@ -127,7 +127,7 @@ async def _run_demo(args: argparse.Namespace) -> list[dict[str, Any]]:
         raise AssertionError(f"legacy executor should not run for {work_order.role_agent}")
 
     async def dry_message_sender(work_order):
-        payload = json.loads(str(work_order.inputs.get("action_input") or "{}"))
+        payload = json.loads(str(work_order.inputs.get("work_order_input") or "{}"))
         return json.dumps(
             {
                 "ok": True,
@@ -213,7 +213,7 @@ async def _run_demo(args: argparse.Namespace) -> list[dict[str, Any]]:
 
 
 async def _real_lark_sender(work_order):
-    raw = str(work_order.inputs.get("action_input") or "{}")
+    raw = str(work_order.inputs.get("work_order_input") or "{}")
     try:
         from core.mcp_client import mcp_registry
 

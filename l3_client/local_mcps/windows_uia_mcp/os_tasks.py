@@ -2368,7 +2368,8 @@ def _build_lark_history_summary(lines: list[str], days: int) -> dict[str, Any]:
 def _import_pyautogui():
     import pyautogui  # type: ignore
 
-    pyautogui.FAILSAFE = True
+    disable_failsafe = str(os.environ.get("JACHIN_WINDOWS_UIA_DISABLE_FAILSAFE") or "").strip().lower()
+    pyautogui.FAILSAFE = disable_failsafe not in {"1", "true", "yes", "on"}
     return pyautogui
 
 

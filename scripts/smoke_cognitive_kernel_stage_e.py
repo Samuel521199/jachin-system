@@ -46,7 +46,7 @@ async def _dispatches(real_memory: bool) -> list[dict[str, Any]]:
         turn_id="stage-e-file-write",
         goal="Stage E smoke writes a file through FileExecutorAgent.",
         tool="core:fs_write",
-        action_input='{"path":"stage_e/smoke.txt","content":"stage-e-file-ok"}',
+        work_order_input='{"path":"stage_e/smoke.txt","content":"stage-e-file-ok"}',
         executor=legacy_should_not_run,
     )
     close_turn(
@@ -61,7 +61,7 @@ async def _dispatches(real_memory: bool) -> list[dict[str, Any]]:
         turn_id="stage-e-file-read",
         goal="Stage E smoke reads a file through FileExecutorAgent.",
         tool="core:fs_read",
-        action_input='{"path":"stage_e/smoke.txt"}',
+        work_order_input='{"path":"stage_e/smoke.txt"}',
         executor=legacy_should_not_run,
     )
     close_turn(
@@ -84,7 +84,7 @@ async def _dispatches(real_memory: bool) -> list[dict[str, Any]]:
         turn_id="stage-e-app-switch",
         goal="Stage E smoke switches an app and auto-recovers once.",
         tool="mcp:windows_window_switch",
-        action_input='{"window_title":"Calculator"}',
+        work_order_input='{"window_title":"Calculator"}',
         executor=flaky_app,
     )
     close_turn(
@@ -114,7 +114,7 @@ async def _dispatches(real_memory: bool) -> list[dict[str, Any]]:
         turn_id="stage-e-message-send",
         goal="Stage E smoke validates MessageExecutorAgent evidence without sending real Lark.",
         tool="mcp:lark_send_text",
-        action_input='{"recipients":["Neil"],"text":"Stage E smoke: dry Lark message."}',
+        work_order_input='{"recipients":["Neil"],"text":"Stage E smoke: dry Lark message."}',
         executor=dry_lark_sender,
     )
     close_turn(
@@ -137,7 +137,7 @@ async def _dispatches(real_memory: bool) -> list[dict[str, Any]]:
         turn_id="stage-e-memory-write",
         goal="Stage E smoke writes memory through MemoryWriteAgent.",
         tool="core:local_memory_append",
-        action_input='{"content":"Stage E smoke validated role evidence chain.","tags":["stage-e","workflow"]}',
+        work_order_input='{"content":"Stage E smoke validated role evidence chain.","tags":["stage-e","workflow"]}',
         executor=legacy_should_not_run,
     )
     close_turn(
