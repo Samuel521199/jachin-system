@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import io
 import sys
@@ -37,7 +37,7 @@ def test_fun_asr_passes_native_vocabulary_id_and_context_hotwords(monkeypatch) -
 
     class FakeResult:
         status_code = 200
-        output = {"sentence": [{"text": "打开 Lark"}]}
+        output = {"sentence": [{"text": "鎵撳紑 Lark"}]}
 
         def get_sentence(self):
             return self.output["sentence"]
@@ -70,8 +70,8 @@ def test_fun_asr_passes_native_vocabulary_id_and_context_hotwords(monkeypatch) -
 
     result = svc.transcribe(_wav_bytes())
 
-    assert result.text == "打开 Lark"
-    assert result.raw_text == "打开 Lark"
+    assert result.text == "鎵撳紑 Lark"
+    assert result.raw_text == "鎵撳紑 Lark"
     assert result.backend == "dashscope:fun-asr-realtime"
     assert result.hotword_count == 3
     assert result.hotword_status == "native_vocabulary_id+context_terms"
@@ -97,7 +97,7 @@ def test_fun_asr_auto_syncs_existing_hotwords_to_dashscope_vocabulary(monkeypatc
         status_code = 200
 
         def get_sentence(self):
-            return {"text": "找到 Vivian"}
+            return {"text": "鎵惧埌 Vivian"}
 
     class FakeRecognition:
         def __init__(self, **kwargs):
@@ -137,7 +137,7 @@ def test_fun_asr_auto_syncs_existing_hotwords_to_dashscope_vocabulary(monkeypatc
 
     result = svc.transcribe(_wav_bytes())
 
-    assert result.text == "找到 Vivian"
+    assert result.text == "鎵惧埌 Vivian"
     assert result.hotword_status == "native_vocabulary_id+context_terms"
     assert seen["list"]["prefix"] == "jachin"
     assert seen["create"]["target_model"] == "fun-asr-realtime"
@@ -146,14 +146,49 @@ def test_fun_asr_auto_syncs_existing_hotwords_to_dashscope_vocabulary(monkeypatc
     assert seen["call"]["phrase_id"] == "created-vocab"
 
 
+def test_fun_asr_does_not_apply_local_domain_term_rewrites(monkeypatch) -> None:
+    class FakeResult:
+        status_code = 200
+
+        def get_sentence(self):
+            return {"text": "open Lock"}
+
+    class FakeRecognition:
+        def __init__(self, **kwargs):
+            pass
+
+        def call(self, file: str, phrase_id: str | None = None, **kwargs):
+            return FakeResult()
+
+    class FakeCallback:
+        pass
+
+    svc = CloudSttService(
+        api_key="test-key",
+        api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        model="fun-asr-realtime",
+        auto_sync_vocabulary=False,
+    )
+    svc._hotwords = _FakeHotwords()
+    monkeypatch.setenv("JACHIN_STT_DOMAIN_TERMS", "Lock=Lark")
+    monkeypatch.setattr(svc, "_configure_dashscope_sdk", lambda: None)
+    monkeypatch.setattr(svc, "_recognition_class", lambda: FakeRecognition)
+    monkeypatch.setattr(svc, "_recognition_callback_class", lambda: FakeCallback)
+
+    result = svc.transcribe(_wav_bytes())
+
+    assert result.text == "open Lock"
+    assert result.raw_text == "open Lock"
+
 def test_fun_asr_extracts_sentence_list_and_dict() -> None:
     class ListResult:
         def get_sentence(self):
-            return [{"text": "打开"}, {"text": "Lark"}]
+            return [{"text": "鎵撳紑"}, {"text": "Lark"}]
 
     class DictResult:
         def get_sentence(self):
-            return {"text": "找到 Vivian"}
+            return {"text": "鎵惧埌 Vivian"}
 
-    assert CloudSttService._extract_fun_asr_text(ListResult()) == "打开Lark"
-    assert CloudSttService._extract_fun_asr_text(DictResult()) == "找到 Vivian"
+    assert CloudSttService._extract_fun_asr_text(ListResult()) == "鎵撳紑Lark"
+    assert CloudSttService._extract_fun_asr_text(DictResult()) == "鎵惧埌 Vivian"
+

@@ -78,16 +78,11 @@ def test_stt_service_detects_zipformer_model_files(tmp_path) -> None:
     assert svc._files.bpe_vocab is not None
 
 
-def test_stt_service_writes_sherpa_hotword_file(tmp_path) -> None:
+def test_local_stt_service_has_no_hotword_or_rewrite_pipeline(tmp_path) -> None:
     svc = SttService(tmp_path)
-    snapshot = type("Snapshot", (), {"words": {"Lark": 8, "Vivian": 12}})()
 
-    path = svc._prepare_hotword_file(snapshot)
-
-    assert path is not None
-    text = path.read_text(encoding="utf-8")
-    assert "Lark :8" in text
-    assert "Vivian :12" in text
+    assert not hasattr(svc, "_hotwords")
+    assert not hasattr(svc, "_prepare_hotword_file")
 
 
 def test_stt_resample_to_16k_uses_quality_resampler_shape() -> None:
@@ -98,3 +93,4 @@ def test_stt_resample_to_16k_uses_quality_resampler_shape() -> None:
     assert out.dtype == np.float32
     assert 1550 <= len(out) <= 1650
     assert np.isfinite(out).all()
+

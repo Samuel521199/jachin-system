@@ -112,12 +112,37 @@ def _normalize_ws_implicit_signals_for_kernel(
     cleaned = dict(implicit_signals)
     removed: list[str] = []
     for key in (
+        "voice_dispatcher_decision",
+        "voice_decision_id",
+        "voice_routed_text",
+        "voice_dispatch_tier",
+        "voice_intent_class",
+        "voice_dispatch_lane",
+        "voice_interrupt_verdict",
+        "voice_route_source",
+        "voice_route_notes",
+        "voice_confidence",
+        "voice_task_title",
+        "voice_active_task_ids",
         "voice_fast_lane",
+        "voice_fast_lane_kind",
+        "server_voice_fast_lane",
+        "voice_allow_template_reply",
+        "voice_route_evidence",
         "skip_context_retrieval",
         "skip_context_sniffer",
         "skip_gateway_enrich",
         "skip_experience_rag",
-        "voice_allow_template_reply",
+        "prefer_direct_llm",
+        "force_background",
+        "acceptance_round",
+        "inject_task_context",
+        "inject_light_task_context",
+        "light_task_context",
+        "max_foreground_tool_sec",
+        "awaiting_confirmation",
+        "target_task_id",
+        "task_context_summary",
     ):
         if key in cleaned:
             removed.append(key)
@@ -1778,7 +1803,6 @@ async def run_ws_server(
     raise RuntimeError(
         f"端口 {ports_to_try[0]}~{ports_to_try[-1]} 均被占用。请关闭其他 L3 实例: netstat -ano | findstr 18981"
     ) from last_err
-
 
 
 

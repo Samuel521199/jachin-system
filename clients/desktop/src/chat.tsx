@@ -89,11 +89,6 @@ import { voicePlaybackController } from "./voice/voicePlaybackController";
 import { voiceSessionStore } from "./voice/voiceSessionStore";
 import { initVoiceCompanionDebugLog, truncVoiceLog, voiceCompanionDebug } from "./voice/voiceCompanionDebugLog";
 import { DEFAULT_KOKORO_TTS_VOICE } from "./voice/voiceDefaults";
-import {
-  dispatchVoiceIntent,
-  type VoiceDispatcherDecision,
-  type VoiceTaskRef,
-} from "./voice/voiceIntentRouter";
 import { l3RunIdsSameTurn } from "./utils/l3RunIdCompat";
 import {
   buildAttachmentsMetadataPayload,
@@ -112,6 +107,11 @@ import { WindowResizeHandles } from "./components/Omni/WindowResizeHandles";
 import { CompanionOverlay } from "./components/Omni/CompanionOverlay";
 import type { AiState } from "./components/Omni/JachinOrb";
 import { useCompanionMode } from "./hooks/useCompanionMode";
+
+type VoiceTaskRef = {
+  id: string;
+  title?: string;
+};
 import { scheduleCompanionLayoutSyncWithRetry } from "./components/Omni/companionLayoutCheck";
 import { SensoryOverlay } from "./console/components/SensoryOverlay";
 import { useJachinCoreState } from "./hooks/useJachinCoreState";
@@ -1591,12 +1591,13 @@ function ChatApp() {
     }
   };
 
-  const buildVoiceAssistantCue = useCallback((decision: VoiceDispatcherDecision): { text: string; reason: string } | null => {
-    if (!decision.latency_masking.play_task_ack) return null;
-    if (decision.tier === "LONG_TASK" || decision.execution_lane === "background_submit") {
-      return { text: "收到，我来处理。", reason: "voice_task_background_ack" };
+  const buildVoiceAssistantCue = useCallback((
+    source: "sim" | "hud" | "ptt" | "companion_quick_send",
+  ): { text: string; reason: string } | null => {
+    if (source === "companion_quick_send") {
+      return { text: "收到。", reason: "voice_companion_quick_reply_ack" };
     }
-    return { text: "我想想。", reason: "voice_task_foreground_ack" };
+    return null;
   }, []);
 
   const dispatchVoiceUtterance = useCallback(
@@ -1608,14 +1609,20 @@ function ChatApp() {
       const t = stripDefaultSadEmojiSuffix(text.trim());
       if (!t) return;
       const activeTasks = Array.from(activeVoiceTasksRef.current.values());
-      const decision: VoiceDispatcherDecision = dispatchVoiceIntent(t, {
-        activeTasks,
-        lastFocusTaskId: lastFocusVoiceTaskIdRef.current,
-      });
-      if (decision.target_task_id) {
-        lastFocusVoiceTaskIdRef.current = decision.target_task_id;
-      }
-      voiceCompanionDebug("chat.voice_dispatch_decision", {
+      const activeTaskContext = activeTasks.length > 0
+        ? {
+            active_tasks: activeTasks.slice(0, 3).map((task) => ({
+              id: task.id,
+              title: task.title || "",
+            })),
+            focused_task_id: lastFocusVoiceTaskIdRef.current || activeTasks[0]?.id || null,
+            summary: activeTasks[0]?.title
+              ? `${activeTasks[0].title}${activeTasks.length > 1 ? `（另有${activeTasks.length - 1}个任务）` : ""}`
+              : undefined,
+            source: "desktop_voice_active_task_context",
+          }
+        : undefined;
+      voiceCompanionDebug("chat.voice_text_to_l3", {
         source,
         text: truncVoiceLog(t, 100),
         rawText: truncVoiceLog(sttTrace?.rawText || t, 100),
@@ -1629,49 +1636,17 @@ function ChatApp() {
         hotwordStatus: sttTrace?.hotwordStatus,
         hotwordDominated: sttTrace?.hotwordDominated,
         hotwordDominationReasons: (sttTrace as any)?.hotwordDominationReasons,
-        routedText: truncVoiceLog(decision.normalized_text || t, 140),
-        tier: decision.tier,
-        intent: decision.intent_class,
-        verdict: decision.interrupt_verdict,
-        lane: decision.execution_lane,
-        routeSource: decision.route_source,
-        confidence: decision.confidence,
-        targetTaskId: decision.target_task_id ?? "",
-        taskTitle: decision.task_title ?? "",
-        activeTaskCount: decision.active_task_ids.length,
-        routeNotes: decision.route_notes,
-        fastLane: decision.router_hints.fast_lane,
-        fastLaneKind: decision.router_hints.fast_lane_kind,
-        allowTemplateReply: decision.router_hints.allow_template_reply,
-        routeEvidence: decision.route_evidence,
-        injectLightTaskContext: decision.router_hints.inject_light_task_context,
-        skipContextRetrieval: decision.router_hints.skip_context_retrieval,
-        skipContextSniffer: decision.router_hints.skip_context_sniffer,
-        skipExperienceRag: decision.router_hints.skip_experience_rag,
-        skipGatewayEnrich: decision.router_hints.skip_gateway_enrich,
+        activeTaskCount: activeTasks.length,
+        focusedTaskId: activeTaskContext?.focused_task_id || "",
       });
-      const assistantCue = buildVoiceAssistantCue(decision);
-      const leadTask = activeTasks.find((it) => it.id === (decision.target_task_id || "")) ?? activeTasks[0];
-      const taskSummary = leadTask?.title
-        ? `${leadTask.title}${activeTasks.length > 1 ? `（另有${activeTasks.length - 1}个任务）` : ""}`
-        : "";
-      const lightTaskContext = decision.router_hints.inject_light_task_context && activeTasks.length > 0
-        ? {
-            active_tasks: activeTasks.slice(0, 3).map((task) => ({
-              id: task.id,
-              title: task.title || "",
-            })),
-            focused_task_id: decision.target_task_id || lastFocusVoiceTaskIdRef.current || activeTasks[0]?.id || null,
-            summary: taskSummary || undefined,
-            source: "voice_intent_router",
-          }
-        : undefined;
-      const routedText = decision.normalized_text?.trim() || t;
-      await doActualSend(routedText, [], {
+      const assistantCue = buildVoiceAssistantCue(source);
+      await doActualSend(t, [], {
         displayContent: t,
         assistantCueText: assistantCue?.text,
         assistantCueReason: assistantCue?.reason,
         extraImplicitSignals: {
+          desktop_companion: true,
+          local_voice_session: true,
           voice_raw_stt_text: t,
           voice_asr_raw_text: sttTrace?.rawText || t,
           voice_corrected_text: sttTrace?.correctedText || sttTrace?.text || t,
@@ -1690,37 +1665,7 @@ function ChatApp() {
           voice_stt_hotword_dominated: sttTrace?.hotwordDominated,
           voice_stt_hotword_domination_reasons: (sttTrace as any)?.hotwordDominationReasons,
           voice_stt_understanding: sttTrace?.understanding,
-          voice_routed_text: routedText,
-          voice_dispatcher_decision: decision,
-          voice_decision_id: decision.decision_id,
-          voice_dispatch_tier: decision.tier,
-          voice_intent_class: decision.intent_class,
-          voice_dispatch_lane: decision.execution_lane,
-          voice_interrupt_verdict: decision.interrupt_verdict,
-          voice_route_source: decision.route_source,
-          voice_route_notes: decision.route_notes,
-          voice_confidence: decision.confidence,
-          voice_task_title: decision.task_title,
-          voice_active_task_ids: decision.active_task_ids,
-          voice_fast_lane: decision.router_hints.fast_lane,
-          voice_fast_lane_kind: decision.router_hints.fast_lane_kind,
-          voice_allow_template_reply: decision.router_hints.allow_template_reply,
-          voice_route_evidence: decision.route_evidence,
-          skip_context_retrieval: decision.router_hints.skip_context_retrieval,
-          skip_context_sniffer: decision.router_hints.skip_context_sniffer,
-          skip_experience_rag: decision.router_hints.skip_experience_rag,
-          skip_gateway_enrich: decision.router_hints.skip_gateway_enrich,
-          prefer_direct_llm: decision.router_hints.prefer_direct_llm,
-          force_background: decision.router_hints.force_background,
-          acceptance_round: decision.router_hints.acceptance_round,
-          inject_task_context: decision.router_hints.inject_task_context,
-          inject_light_task_context: decision.router_hints.inject_light_task_context,
-          light_task_context: lightTaskContext,
-          max_foreground_tool_sec: decision.router_hints.max_foreground_tool_sec,
-          awaiting_confirmation: decision.router_hints.awaiting_confirmation,
-          clarification_pending: decision.router_hints.clarification_pending,
-          target_task_id: decision.target_task_id,
-          task_context_summary: taskSummary || undefined,
+          voice_active_task_context: activeTaskContext,
           source,
         },
       });
@@ -2404,11 +2349,7 @@ function ChatApp() {
               voice_stt_user_message: msg,
               voice_stt_user_message_source: details.userMessageSource || "",
               voice_stt_understanding: details.understanding,
-              prefer_direct_llm: true,
-              skip_context_retrieval: true,
-              skip_context_sniffer: true,
-              skip_experience_rag: true,
-              skip_gateway_enrich: true,
+              local_voice_session: true,
               clarification_pending: true,
             },
           });

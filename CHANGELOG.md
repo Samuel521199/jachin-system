@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.108] - 2026-07-10
+
+### Added / Changed
+
+- 都测试可以：主循环、语音桥接、云端/本地 STT、ws_server 与 chat 链路经回归验证。
+- 完善主循环后的热词：热词注入与 STT 服务仍有待完善（已知遗留项）。
+- **Version**: Desktop **0.9.108**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
 ## [v0.9.107] - 2026-07-10
 
 ### Added / Changed

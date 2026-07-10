@@ -18,7 +18,7 @@ const JVS_BASE =
     ? "/jvs"
     : import.meta.env.VITE_JVS_BASE_URL || "http://127.0.0.1:18982";
 
-const DEFAULT_STT_TIMEOUT_MS = Number(import.meta.env.VITE_JVS_STT_TIMEOUT_MS || 15000);
+const DEFAULT_STT_TIMEOUT_MS = Number(import.meta.env.VITE_JVS_STT_TIMEOUT_MS || 30000);
 
 export type JvsTranscribeOptions = {
   sessionId?: string;
@@ -101,7 +101,7 @@ export async function transcribeByJvs(audioBlob: Blob, sessionIdOrOptions?: stri
 }> {
   const options: JvsTranscribeOptions =
     typeof sessionIdOrOptions === "string" ? { sessionId: sessionIdOrOptions } : sessionIdOrOptions || {};
-  const timeoutMs = Math.max(3000, Number(options.timeoutMs || DEFAULT_STT_TIMEOUT_MS || 15000));
+  const timeoutMs = Math.max(3000, Number(options.timeoutMs || DEFAULT_STT_TIMEOUT_MS || 30000));
   const form = new FormData();
   form.append("audio", audioBlob, "speech.wav");
   if (options.sessionId) form.append("session_id", options.sessionId);

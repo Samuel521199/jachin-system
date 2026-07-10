@@ -7,11 +7,11 @@
 ```text
 用户声音
   -> 录音 / 声纹可选过滤
-  -> STT 语音识别
-  -> STT 文本修正与热词风险判断
-  -> 前端语音意图路由
+  -> STT 语音识别（热词只在云端 DashScope 原生侧辅助识别）
+  -> 前端整理最终文本和语音诊断证据
   -> L3 WebSocket / HTTP 发送
-  -> L3 快路由 / 直连模型 / 完整 Agent
+  -> L3 认知内核主循环
+  -> 主循环理解意图、编排任务、选择工具或直接回答
   -> 前端流式接收文字
   -> 分句、清洗、去重
   -> JVS TTS 合成
@@ -36,8 +36,9 @@ clients/desktop/src/voice/
 
 - 接收语音按钮、HUD、Orb、模拟脚本输入。
 - 调用本地 JVS 做 STT。
-- 做前端意图路由。
-- 把路由结果包装成 `implicit_signals` 发给 L3。
+- 展示和记录 STT、声纹、云端诊断、TTS 状态。
+- 把最终识别文本、原始识别文本、语音诊断、设备和会话上下文发给 L3。
+- 不在前端做任务意图裁决；任务意图、工具选择、任务编排由 L3 主循环负责。
 - 接收 L3 的流式文字。
 - 把文字拆成适合朗读的句子。
 - 调 JVS TTS 合成语音。
@@ -49,7 +50,9 @@ clients/desktop/src/voice/
 
 ```text
 voice_server/main.py
+voice_server/services/cloud_stt_service.py
 voice_server/services/stt_service.py
+voice_server/services/cloud_tts_service.py
 voice_server/services/tts_service.py
 voice_server/services/sv_service.py
 ```
@@ -60,12 +63,32 @@ voice_server/services/sv_service.py
 http://127.0.0.1:18982
 ```
 
-它负责本地音频模型：
+它负责语音能力的本地入口。当前可以按配置走云端模型，也可以走本地模型或本地兜底：
 
 - `/v1/stt/transcribe`：语音识别。
+- `/v1/stt/stream`：流式语音识别 WebSocket。
+- raw TCP STT：默认 `tcp://127.0.0.1:18983`，桌面 PTT 优先使用，失败再回退 WebSocket。
 - `/v1/tts/synthesize`：语音合成。
+- `/v1/tts/stream`：流式语音合成 WebSocket。
 - `/v1/sv/filter_owner_track`：主人声纹轨道过滤。
 - `/v1/models/audio/warm`：预热 STT / TTS / SV。
+
+当前这台机器上的健康检查会暴露这些关键状态：
+
+```text
+stt_backend
+stt_model
+stt_http_timeout_sec
+stt_cloud_soft_timeout_sec
+stt_local_fallback_enabled
+stt_local_fallback_ready
+stt_stream_mode
+tts_backend
+tts_model
+sv_ready
+```
+
+这些字段比文档里的静态描述更权威。实际排查时先看 `/health`。
 
 ### L3 智能层
 
@@ -84,10 +107,10 @@ ws://127.0.0.1:18981
 
 它负责：
 
-- 判断这一轮是否可以走语音 fast lane。
-- 调用远端或本地 LLM。
-- 决定是否跳过完整记忆、检索、工具、任务链路。
-- 对任务类请求进入完整 agent / 工具 / 任务调度。
+- 接收语音最终文本和语音诊断上下文。
+- 进入认知内核主循环。
+- 在主循环里完成理解、意图路由、任务编排、工具选择、验证和回复组织。
+- 根据任务本身决定是否调用模型、工具、MCP、后台任务等能力。
 - 把回复流式回传给前端。
 
 ## 2. 从用户说话到 STT
@@ -139,23 +162,46 @@ other 段
 
 ### STT 模型
 
-当前 JVS STT 是：
+当前这套语音服务的 STT 不是单一模型，而是“云端优先 + 本地兜底”：
 
 ```text
-sherpa-onnx Zipformer zh-en
+主路径：DashScope Fun-ASR / fun-asr-realtime
+本地兜底：sherpa-onnx Zipformer zh-en
 ```
 
 服务端文件：
 
 ```text
+voice_server/services/cloud_stt_service.py
 voice_server/services/stt_service.py
+voice_server/main.py
 ```
 
-它做三件事：
+默认流程是：
 
-1. 把音频解码并重采样到 16k。
-2. 用 Sherpa-ONNX Zipformer 得到原始识别文本。
-3. 经过 `VoiceUnderstandingCorrector` 做领域纠错和初步理解。
+1. `/v1/stt/transcribe` 收到完整 WAV。
+2. JVS 先启动云端 DashScope STT。
+3. 如果云端在 `JACHIN_STT_CLOUD_SOFT_TIMEOUT_SEC` 内没有返回，默认 7 秒，会启动本地 sherpa 兜底。
+4. 如果云端先返回有效结果，就使用云端结果。
+5. 如果本地兜底先返回，就先把本地结果交给前端，同时后台记录云端是否晚到。
+
+所以日志里看到：
+
+```text
+backend = dashscope:fun-asr-realtime
+```
+
+表示云端 STT 直接成功。
+
+看到：
+
+```text
+backend = sherpa-onnx-zipformer+fallback_from_cloud
+```
+
+表示云端没有在软超时内返回，本轮最终使用了本地 sherpa 兜底。
+
+本地 sherpa 会把音频解码、重采样到 16k，再用 Zipformer 得到原始识别文本。云端 DashScope 路径会通过 SDK 调用 Fun-ASR，并返回云端识别文本。两条路径的结果都会被包装成统一的 STT 结果格式。
 
 返回结果里不只有 `text`，还有：
 
@@ -172,7 +218,102 @@ reply_plan
 user_message
 ```
 
-其中 `reply_plan` 和 `user_message` 用于一种特殊情况：STT 层已经判断“这个语音不能直接执行，需要追问”。
+其中 `understanding` 里可能包含：
+
+```text
+cloud_diagnostics      云端 STT 诊断事件
+stt_orchestration      云端/本地兜底编排事件
+stt_fallback           本地兜底是否被使用
+```
+
+当前 STT 层本身只做识别、云端原生热词偏置、轻量文本清洗和诊断。本地 sherpa 兜底不使用项目热词。真正的任务意图、缺槽追问、工具选择，交给 L3 认知内核主循环负责；前端只传递最终文本和证据。
+
+### 云端 STT 诊断和本地兜底
+
+现在 JVS 会把云端 STT 的关键阶段写入 `understanding.cloud_diagnostics`，前端再把这些事件展开写进 `voice_chat.log`。
+
+常见阶段包括：
+
+```text
+stt.cloud_start
+stt.cloud_dns
+stt.cloud_connect
+stt.cloud_hotwords_snapshot_start
+stt.cloud_hotwords_snapshot_done
+stt.cloud_vocabulary_sync_start
+stt.cloud_vocabulary_sync_done / stt.cloud_vocabulary_sync_skipped / stt.cloud_vocabulary_sync_exception
+stt.cloud_upload_start
+stt.cloud_sdk_call_done
+stt.cloud_result
+stt.cloud_exception
+```
+
+这些阶段用于回答一个问题：云端 STT 慢，到底慢在哪里。
+
+例如：
+
+```text
+cloud_dns 慢       -> DNS 或网络解析慢
+cloud_connect 慢   -> 到 DashScope endpoint 的 TCP 连接慢
+cloud_vocabulary_sync 慢或异常 -> 热词词表同步慢或失败
+cloud_upload_start 后长期没有 cloud_result -> SDK 调用、上传、服务端排队或识别慢
+cloud_exception    -> 云端 SDK 或服务端返回异常
+```
+
+云端和本地兜底的编排事件会写在 `understanding.stt_orchestration`，前端也会展开成日志阶段：
+
+```text
+stt.cloud_wait_start
+stt.cloud_soft_timeout
+stt.fallback_start
+stt.fallback_result
+stt.cloud_late_observer_started
+stt.cloud_late_result
+```
+
+其中：
+
+```text
+cloud_soft_timeout
+```
+
+表示云端没有在软超时时间内回来，于是 JVS 启动本地 sherpa 兜底。
+
+```text
+cloud_late_result
+```
+
+表示本地结果已经先返回，但云端后来又回来了。这个事件主要用于排查云端是“慢”还是“彻底失败”。
+
+注意：当前系统为了前台响应速度，fallback 先返回时不会等待云端晚到结果再改写已经发给 L3 的文本。云端晚到结果主要作为诊断证据。
+
+### 真流式 STT 和最终 STT
+
+当前 JVS 有两类 STT 接口：
+
+```text
+/v1/stt/transcribe  完整 WAV 识别，用于最终文本
+/v1/stt/stream      WebSocket 流式识别
+raw TCP STT         本机低开销流式识别，桌面 PTT 优先使用
+```
+
+当前云端配置支持真正的 DashScope 实时流式 STT：
+
+```text
+stt_stream_mode = cloud_realtime
+```
+
+它的含义是：桌面录音过程中，音频块可以通过 raw TCP 或 WebSocket 进入 JVS，JVS 再用 DashScope `Recognition.start()`、`send_audio_frame()`、`stop()` 把音频流发给云端。
+
+如果 health 里看到：
+
+```text
+stt_stream_mode = batch_incremental
+```
+
+那说明当前没有使用真云端流式，只是在 JVS 内部对累计音频做增量识别。这个模式可以提供预览，但不应该被当成真正降低云端延迟的流式 STT。
+
+无论有没有流式预览，任务执行仍应以最终 STT 为准。前端现在会把 PTT 期间拿到的 `recognized_text` 当作预览证据，最终仍调用 `/v1/stt/transcribe` 得到 finalized 结果。
 
 ### STT 热词是什么
 
@@ -228,10 +369,10 @@ config/voice_domain_lexicon.json
 环境变量 JACHIN_STT_HOTWORDS
 ```
 
-按当前项目里的 snapshot，热词总数大约是：
+热词数量不是固定值，会随 `l3_node.voice_entity_correction.export_hotwords()`、配置文件和环境变量变化。实际值以日志里的 `hotword_count` 或 `/health` 对应状态为准。
 
 ```text
-155 个
+hotword_count = 当前这一轮实际加载的热词数量
 ```
 
 主要分成几类。
@@ -360,27 +501,38 @@ Jachin  20
 
 ### 热词如何辅佐 STT
 
-完整流程大概是：
+当前热词只服务云端 DashScope STT。Jachin 不再给本地 sherpa 兜底路径生成热词文件，也不再让本地 sherpa 因热词切换到 `modified_beam_search`。
+
+云端 DashScope 路径大概是：
+
+```text
+录音音频
+  -> JVS /v1/stt/transcribe
+  -> SttHotwordProvider 汇总热词
+  -> DashScope vocabulary / raw_input.context
+  -> Fun-ASR 云端识别
+  -> 得到 raw_text
+  -> 返回 text / raw_text / hotword metadata / cloud_diagnostics
+```
+
+本地 sherpa 兜底路径大概是：
 
 ```text
 录音音频
   -> STT 服务收到音频
-  -> SttHotwordProvider 汇总热词
-  -> 生成临时 hotwords 文件
-  -> Sherpa-ONNX Zipformer 用 modified_beam_search 解码
+  -> Sherpa-ONNX Zipformer 固定用 greedy_search 解码
   -> 得到 raw_text
-  -> VoiceUnderstandingCorrector 做实体纠错和理解
-  -> 返回 text / raw_text / hotword metadata
+  -> 轻清洗
+  -> 返回 text / raw_text，并标记 local_hotwords = disabled
 ```
 
 更人话一点：
 
 1. 每次识别前，JVS 会拿一份最新热词清单。
-2. 如果热词清单变了，STT recognizer 会重新加载。
-3. 有热词时，Sherpa 会从普通 `greedy_search` 改成 `modified_beam_search`。
-4. 它会在“多个可能听法”之间，给热词那条路径加一点倾向。
-5. 最后输出识别文本。
-6. 输出后再进实体纠错层，把上下文里的别名规整成标准名字。
+2. 如果走云端，JVS 会把热词传给 DashScope vocabulary 或 `raw_input.context`。
+3. 如果走本地 sherpa，JVS 不读取 `SttHotwordProvider`，不生成临时 hotwords 文件。
+4. 本地 sherpa 固定 `greedy_search`，避免热词把兜底识别吸偏。
+5. 最后输出识别文本，并把最终文本交给 L3 主循环。
 
 #### “多个可能听法”是怎么来的
 
@@ -404,87 +556,34 @@ STT 模型听声音时，不是像人一样一次性听出一句确定的话。�
 打开那个
 ```
 
-如果不用热词，系统可能只走最贪心的一条路：当前哪一个 token 分最高，就一路选下去。这就是 `greedy_search`，优点是快，缺点是容易早早选错。
-
-有热词时，当前配置会让 Sherpa-ONNX Zipformer 使用：
+本地 sherpa 兜底现在固定走最朴素的 `greedy_search`：当前哪一个 token 分最高，就一路选下去。
 
 ```text
-modified_beam_search
+本地 sherpa / greedy_search：一路往前猜，不做项目热词偏置
 ```
 
-它的意思不是“把所有可能句子都列出来给我们看”，而是模型解码时内部同时保留几条还不错的候选路径。当前代码里这个数量由下面参数控制：
-
-```text
-JACHIN_STT_MAX_ACTIVE_PATHS，默认 4
-```
-
-所以可以粗略理解成：
-
-```text
-不用热词 / greedy_search：一路往前猜，猜错了不太回头
-使用热词 / modified_beam_search：同时保留几条可能听法，最后再选总分最高的一条
-```
-
-注意：这些候选路径是 Sherpa 解码器内部状态，当前 JVS 没有把“候选 1 / 候选 2 / 候选 3”都返回给前端。前端拿到的仍然只有最终胜出的 `raw_text`。
-
-#### 热词权重到底怎么影响选择
-
-JVS 会先把热词写成 Sherpa 能读的临时文件：
-
-```text
-Lark :25
-Vivian :25
-Jachin :20
-...
-```
-
-文件位置通常是系统临时目录里的：
-
-```text
-jachin_sherpa_hotwords.txt
-```
-
-然后 Sherpa 初始化 recognizer 时会拿到：
-
-```text
-hotwords_file = 临时热词文件
-hotwords_score = JACHIN_STT_HOTWORDS_SCORE，默认 4.0
-```
-
-这里有两个“力度”：
-
-```text
-词自己的 weight：例如 Lark=25，Vivian=25
-全局 hotwords_score：默认 4.0
-```
-
-人话解释就是：
-
-```text
-如果某条候选路径里出现了热词，Sherpa 会给这条路径一点额外加分。
-热词权重越高、全局 hotwords_score 越高，这个加分倾向越明显。
-```
-
-但它不是无条件替换。它不会看到“有点像 Lark”就一定输出 Lark。最终还是要看声音本身、语言模型分数、候选路径总分。
-
-所以它的效果更像：
+云端 DashScope 的热词权重仍然可能影响选择。它的效果更像：
 
 ```text
 原本：打开 luck  51 分，打开 Lark  49 分 -> 输出 luck
-加热词后：打开 luck 51 分，打开 Lark  49 分 + 热词加成 -> 可能输出 Lark
+云端热词后：打开 luck 51 分，打开 Lark  49 分 + 热词加成 -> 可能输出 Lark
 ```
 
-这就是“在多个可能听法之间，给热词那条路径加一点倾向”的具体含义。
+所以热词风险主要来自云端原生热词或历史日志里的旧本地热词行为。当前本地 sherpa 兜底不再参与热词偏置。
 
 #### 最后输出识别文本是怎么做的
 
-Sherpa 解码结束后，JVS 不是拿到一堆候选，而是拿到一个最终文本：
+云端和本地最终都会被 JVS 规整成同一种返回结构。
+
+如果走本地 sherpa，JVS 从 sherpa stream 里拿到：
 
 ```text
 stream.result.text
 ```
 
-然后 JVS 会做一个轻清洗：
+如果走云端 DashScope，JVS 从 DashScope `RecognitionResult` 里提取 sentence text。
+
+然后 JVS 会做轻清洗：
 
 ```text
 去掉多余空白
@@ -492,40 +591,38 @@ stream.result.text
 得到 raw_text
 ```
 
-接着进入：
+当前云端 STT 路径会做轻量 domain terms 替换，例如把一些常见误听词规整成 `Jachin / Codex / Lark`。
+
+当前本地 sherpa 兜底路径不走项目热词，也不走 `VoiceUnderstandingCorrector` 的任务理解链路。它只负责把音频转成尽量朴素的 `raw_text / text`，避免兜底识别阶段再引入额外偏置。
+
+最终 STT 结果会输出：
 
 ```text
-VoiceUnderstandingCorrector.correct(raw_text)
-```
-
-它会输出：
-
-```text
-corrected_text
+text
+raw_text
 confidence
-understanding
-reply_plan
-user_message
+backend
+understanding（可能为空，或只包含本地热词禁用等诊断）
 ```
 
 最终前端通常看到的是：
 
 ```text
 raw_text       原始 STT 文本
-corrected_text 经过语音理解层规整后的文本
-text           最终用于后续路由的文本
+corrected_text 如果某一路径有轻量规整，会显示规整后文本
+text           最终交给 L3 主循环的文本
 ```
 
 #### 实体纠错层具体按什么规则改名
 
-当前 JVS 后处理用的是：
+下面这套 `VoiceUnderstandingCorrector` 是历史上的本地后处理/辅助理解模块说明，不是当前本地 sherpa 兜底主链路。当前架构里，更完整的应用、联系人、任务槽位理解主要在 L3 认知内核主循环里完成。
 
 ```text
 voice_server/services/voice_understanding.py
 VoiceUnderstandingCorrector
 ```
 
-它做的不是简单的全局替换，而是“实体识别 + 任务理解”。大概分四步。
+`VoiceUnderstandingCorrector` 做的不是简单的全局替换，而是“实体识别 + 任务理解”。大概分四步。
 
 第一步，加载实体库。
 
@@ -628,7 +725,7 @@ Jachin + 项目   -> open_project 或相关项目意图
 结果: 不应该直接变成“打开 Lark”或执行任务
 ```
 
-这就是为什么文档里说“输出后再进实体纠错层，把上下文里的别名规整成标准名字”。它不是无脑替换，而是先看：
+如果某个历史/辅助纠错层被启用，它不应该无脑替换，而是先看：
 
 ```text
 像不像实体
@@ -641,16 +738,16 @@ Jachin + 项目   -> open_project 或相关项目意图
 这里有两层不要混在一起：
 
 ```text
-热词层：帮助 STT 更容易听出 Lark / Vivian / Jachin
-纠错层：在“打开/发送/切到”等上下文里，把别名改成标准实体
+云端热词层：通过 DashScope 原生能力，让 STT 更容易听出 Lark / Vivian / Jachin
+理解层：由 L3 主循环在“打开/发送/切到”等上下文里判断标准实体、动作和槽位
 ```
 
 举例：
 
 ```text
 用户说：帮我打开拉克
-STT 有热词后更容易听出：拉克
-实体纠错看到“打开 + 拉克”
+云端 STT 有热词后更容易听出：拉克
+L3 主循环看到“打开 + 拉克”
 最终可能规整成：帮我打开 Lark
 ```
 
@@ -658,8 +755,8 @@ STT 有热词后更容易听出：拉克
 
 ```text
 用户说：给薇薇安发消息
-STT 有热词后更容易听出：薇薇安 / Vivian
-实体纠错看到“给 + 人名 + 发消息”
+云端 STT 有热词后更容易听出：薇薇安 / Vivian
+L3 主循环看到“给 + 人名 + 发消息”
 最终规整成：给 Vivian 发消息
 ```
 
@@ -676,7 +773,7 @@ STT 有热词后更容易听出：薇薇安 / Vivian
 任务槽位一定完整
 ```
 
-它只是提高某些词被选中的概率。
+它只是提高某些词在云端 STT 里被选中的概率。
 
 所以热词既能救识别，也可能带来副作用。
 
@@ -779,7 +876,7 @@ short_hotword_task_from_long_audio
 
 #### 3. 热词数量很大，且结果正好是短任务
 
-当前热词集合大约 155 个，已经属于比较大的上下文偏置集合。
+当前热词集合数量是动态的。如果日志里 `hotword_count` 较大，说明这一轮带了较多上下文偏置。
 
 如果热词数量超过阈值，并且识别结果又是很短的热词任务，系统会更谨慎。
 
@@ -884,267 +981,59 @@ stt.hotword_dominated_blocked
 LLM composer：把追问说得像人话
 ```
 
-## 4. 前端意图路由
+## 4. 语音文本如何进入 L3 主循环
 
-前端语音路由的单一事实源是：
+前端现在不做任务意图裁决。它不会再把语音先分成 `CHIT_CHAT / SHORT_TASK / LONG_TASK`，也不会用前端路由决定 `direct_llm / foreground / background_submit`。
 
-```text
-clients/desktop/src/voice/voiceIntentRouter.ts
-```
-
-Python 里的：
+前端负责的是把“可被 L3 使用的事实”交出去：
 
 ```text
-scripts/voice_intent_router.py
+最终识别文本
+原始 STT 文本
+修正后文本
+STT backend / source / duration / confidence
+cloud_diagnostics
+stt_orchestration
+声纹结果
+是否陪伴态
+当前会话 / 任务上下文摘要
+附件 / UI 状态
 ```
 
-只是为了 benchmark / 脚本测试去调用同一个 TypeScript 路由，不是第二套路由。
-
-### 路由输出什么
-
-路由器输出一个 `VoiceDispatcherDecision`，核心字段有：
+也就是说，前端不回答这些问题：
 
 ```text
-tier                 大层级：闲聊 / 短任务 / 长任务
-intent_class         更具体的意图类别
-execution_lane       执行车道
-interrupt_verdict    如果已有任务，判断是查状态、取消、修改、并行还是恢复
-router_hints         给 L3 的提示
-route_evidence       路由证据
-normalized_text      给 L3 的修正文案
+这是不是任务？
+要不要调用工具？
+该用哪个 MCP？
+要不要后台执行？
+要不要追问？
 ```
 
-### 三个 tier
+这些问题交给 L3 认知内核主循环。
 
-当前有三层：
+## 5. L3 主循环负责意图路由
+
+语音文本到 L3 后，和普通文本一样进入认知内核主循环。主循环会自己判断：
 
 ```text
-CHIT_CHAT   闲聊、轻问答、陪伴连接
-SHORT_TASK  短任务，适合前台同步处理
-LONG_TASK   长任务，适合后台提交
+用户是在闲聊、提问、下指令、控制已有任务，还是在补充上一轮信息？
+是否需要工具 / MCP / OS workflow？
+目标对象是什么？
+缺什么槽位？
+风险等级如何？
+执行前要不要确认？
+执行后如何验证？
+失败时如何恢复或追问？
 ```
 
-### intent_class
+这里的“意图路由”不是前端规则表，也不是旧的 voice fast lane，而是 L3 主循环的一部分。
 
-常见值：
+主循环可以为了性能选择轻量路径，比如非常简单的问答可以少检索、少开工具、少做任务编排；但这是 L3 内部优化，不是前端提前裁决。
 
-```text
-CHITCHAT       普通闲聊
-QUERY_LIGHT    轻问答，例如“今天吃什么”
-TASK_SYNC      短任务，例如“打开计算器”
-TASK_ASYNC     长任务，例如“把整个目录生成报告”
-CONTROL        对已有任务的控制，例如取消、查进度、修改
-CLARIFY_REPLY  用户正在回答上一轮追问
-AMBIGUOUS      太模糊，需要澄清
-```
+## 6. 前端传给 L3 的内容
 
-### execution_lane
-
-这个字段决定后面怎么走：
-
-```text
-direct_llm          直接问模型，不进完整任务链
-foreground          前台短任务
-background_submit   后台长任务提交
-background_control  控制已有后台任务
-control_local       本地控制
-```
-
-## 5. 当前意图路由规则
-
-路由本质是“规则主导 + 给大模型留表达空间”。
-
-也就是说，它不是让大模型从零判断一切，而是先用规则把边界定住：
-
-- 这是不是任务？
-- 要不要执行工具？
-- 要不要进后台？
-- 能不能跳过记忆和检索？
-- 能不能直接模板回复？
-- 有没有正在运行的任务要控制？
-
-但是具体回复内容，尤其是闲聊和轻问答，仍然由 LLM 来写。
-
-### 5.1 presence_template：只确认“你在不在”
-
-典型输入：
-
-```text
-你好
-在吗
-你在吗
-听得到吗
-喂
-说话
-讲讲话
-```
-
-路由结果：
-
-```text
-tier = CHIT_CHAT
-intent_class = CHITCHAT
-execution_lane = direct_llm
-fast_lane = true
-fast_lane_kind = presence_template
-allow_template_reply = true
-skip_context_retrieval = true
-skip_context_sniffer = true
-skip_experience_rag = true
-skip_gateway_enrich = true
-```
-
-这类请求允许 L3 直接用模板回答：
-
-```text
-我在。
-在呢。
-听着呢。
-```
-
-它的目标是极快，让用户知道系统活着。
-
-### 5.2 light_query：轻问答，但不能模板敷衍
-
-典型输入：
-
-```text
-今天吃什么
-你觉得我今天吃什么
-我要不要喝咖啡
-这个怎么选
-```
-
-路由结果：
-
-```text
-tier = CHIT_CHAT
-intent_class = QUERY_LIGHT
-execution_lane = direct_llm
-fast_lane = true
-fast_lane_kind = light_query
-allow_template_reply = false
-```
-
-关键点是：
-
-```text
-light_query 也走 fast lane，但禁止模板回复。
-```
-
-所以“今天吃什么”不能再回答“我在”。它必须进入 direct LLM，让模型回答问题本身。
-
-### 5.3 chat_direct：普通闲聊
-
-典型输入：
-
-```text
-陪我聊聊
-我今天有点累
-谢谢
-没事
-好吧
-```
-
-路由结果通常是：
-
-```text
-CHIT_CHAT + direct_llm + fast_lane
-```
-
-它会跳过完整上下文检索，但由模型生成自然回复。
-
-### 5.4 SHORT_TASK：短任务
-
-典型输入：
-
-```text
-帮我打开计算器
-提醒我下午开会
-查一下天气
-打开 Chrome
-```
-
-路由结果：
-
-```text
-tier = SHORT_TASK
-intent_class = TASK_SYNC
-execution_lane = foreground
-fast_lane = false
-play_task_ack = true
-```
-
-前端会先播一个短提示，比如：
-
-```text
-我想想。
-```
-
-然后把任务交给 L3 的正常链路。
-
-### 5.5 LONG_TASK：长任务
-
-典型输入：
-
-```text
-把整个目录生成报告
-批量分析这些文件
-把所有 md 文档逐个摘要并生成报告
-```
-
-路由结果：
-
-```text
-tier = LONG_TASK
-intent_class = TASK_ASYNC
-execution_lane = background_submit
-force_background = true
-acceptance_round = true
-play_task_ack = true
-hud_terminal = true
-```
-
-前端会尽快给用户一个确认：
-
-```text
-收到，我来处理。
-```
-
-然后让 L3 / task engine 去处理长任务。
-
-### 5.6 CONTROL：有任务运行时的控制语音
-
-如果当前已经有 active task，用户说：
-
-```text
-停一下
-取消
-做到哪了
-进度怎么样
-改成这样
-继续
-```
-
-路由会优先认为这是对已有任务的控制。
-
-可能结果：
-
-```text
-interrupt_verdict = ABORT
-interrupt_verdict = STATUS
-interrupt_verdict = MODIFY
-interrupt_verdict = RESUME
-interrupt_verdict = PARALLEL
-```
-
-这就是“任务还没执行完时用户继续讲话”的主要调配机制。
-
-## 6. 前端如何把路由结果发给 L3
-
-路由完成后，前端不会只发一句文本。
-
-它会把用户原始 STT、修正后文本、路由结果、fast lane 标记、任务上下文一起塞进 `implicit_signals`。
+前端仍然可以发送 `implicit_signals`，但它的含义变了：它不是“前端判好的路由结果”，而是 L3 主循环使用的证据包。
 
 大概包括：
 
@@ -1154,192 +1043,81 @@ voice_raw_stt_text
 voice_asr_raw_text
 voice_corrected_text
 voice_final_text
-voice_routed_text
-voice_dispatcher_decision
+voice_stt_backend
+voice_stt_source
+voice_stt_confidence
+voice_stt_duration_ms
+voice_stt_hotword_count
+voice_stt_hotword_status
+voice_stt_hotword_sources
+voice_cloud_diagnostics
+voice_stt_orchestration
+voice_sv_status
+voice_session_id
+voice_companion_ui
+active_task_context
+```
+
+这些字段只描述“发生了什么”和“识别证据是什么”。它们不应该作为最终任务裁决。
+
+如果日志或兼容代码里还能看到下面这些旧字段，它们只能当历史兼容或调试信息看，不能当当前架构的事实来源：
+
+```text
 voice_dispatch_tier
 voice_intent_class
 voice_dispatch_lane
-voice_interrupt_verdict
 voice_fast_lane
-voice_fast_lane_kind
-voice_allow_template_reply
-voice_route_evidence
-skip_context_retrieval
-skip_context_sniffer
-skip_experience_rag
-skip_gateway_enrich
 prefer_direct_llm
-force_background
-acceptance_round
-inject_task_context
-inject_light_task_context
-light_task_context
-target_task_id
-task_context_summary
+execution_lane
 ```
 
-这包东西很重要。它告诉 L3：
+当前真正的事实来源是 L3 主循环日志里的理解、任务编排、工具选择、验证结果和最终回复。
 
-- 这句话原始 STT 是什么。
-- 前端修正后准备让模型看到什么。
-- 这是闲聊、轻问答、短任务还是长任务。
-- 要不要跳过重链路。
-- 能不能用模板。
-- 是否有后台任务正在跑。
+## 7. L3 主循环内部怎么处理
 
-## 7. L3 收到语音后的路径
+主循环不是简单地把一句话扔给模型。它大致按这个顺序工作：
 
-L3 WebSocket 在：
+1. 接收用户文本和语音证据。
+2. 归一化输入，比如清理 STT 噪声、合并上下文、识别本轮是新问题还是上一轮补充。
+3. 读取必要的环境状态、短期记忆、长期记忆、当前任务状态。
+4. 理解用户真正想要的结果。
+5. 判断是直接回答、继续对话、追问补槽，还是进入任务执行。
+6. 如果需要执行任务，生成工单：目标、对象、边界、风险、可用工具、验证方式。
+7. 选择模型、工具、MCP、OS workflow、后台任务或子 agent。
+8. 执行或委派执行。
+9. 验证结果。
+10. 组织用户能听懂的最终回复。
+
+不是每一轮都必须完整跑完所有昂贵步骤。比如一句普通闲聊不需要真的启动工具链；但架构责任仍然在 L3 主循环，而不是前端路由。
+
+## 8. 模型和工具如何参与
+
+旧文档里曾经把语音链路写成类似这样的分层：
 
 ```text
-l3_node/ws_server.py
+快路由 / 直连模型 / 完整 Agent
 ```
 
-收到消息后，先做一个判断：
+这个说法现在容易误导。更准确的说法是：
 
 ```text
-这是不是 voice fast lane？
+L3 认知内核主循环
+  -> 根据任务需要选择轻量回答、完整推理、工具、MCP、OS workflow、后台任务或子 agent
 ```
 
-### 7.1 presence_template 的最快路径
+也就是说，`direct_llm`、fast lane、短任务、长任务这些概念如果还存在，只能是 L3 内部的执行优化或兼容字段，不再是前端对语音请求做出的顶层路由判断。
 
-如果是 `presence_template`，并且 `allow_template_reply = true`，L3 可以不调大模型，直接返回模板。
-
-这条路径最快：
+对用户来说，真实链路应该理解成：
 
 ```text
-前端路由
-  -> L3 模板选择
-  -> chunk
-  -> answer
-  -> TTS
+我说一句话
+  -> STT 把声音变成文本和证据
+  -> 前端把文本和证据交给 L3
+  -> L3 主循环判断我要什么
+  -> L3 决定直接回答还是调工具做事
+  -> L3 验证后给出人话回复
+  -> 前端把回复播出来
 ```
-
-适合“在吗/你好/听得到吗”。
-
-### 7.2 light_query / chat_direct 的 fast lane
-
-如果是 `light_query` 或普通闲聊：
-
-```text
-voice_fast_lane = true
-allow_template_reply = false
-```
-
-L3 会走直连模型：
-
-```text
-_voice_fast_lane_messages
-  -> engine.generate_response_stream
-  -> 1 到 2 句短回复
-```
-
-这条路径跳过：
-
-- 完整上下文检索。
-- context sniffer。
-- gateway enrich。
-- experience RAG。
-- 工具池加载。
-- ReAct 工具循环。
-
-但是它仍然会调用 LLM，所以如果远端模型首 token 卡住，用户还是会觉得慢。
-
-L3 还有一个首 token 超时保护：
-
-```text
-JACHIN_VOICE_FAST_LANE_TIMEOUT_SEC 默认约 1.4 秒
-```
-
-如果 presence ack 超时，可以兜底“我在。”。
-
-但如果是非 presence 的轻问答，不能兜底“我在”，否则就会答非所问，所以会抛给后续链路或报错。
-
-### 7.3 完整 Agent 路径
-
-如果不是 fast lane，或者 fast lane 失败，就进入：
-
-```text
-run_agent
-```
-
-完整路径可能包含：
-
-- 会话历史。
-- Memory Nexus。
-- Intent Gateway。
-- output format signals。
-- direct_llm_bypass 判断。
-- OOD veto。
-- DAG / subintent 拆解。
-- 工具加载。
-- ReAct 循环。
-- 本地工具执行。
-- 长任务调度。
-- 记忆写入。
-
-这条路径能力强，但慢，也更容易出现“用户只是想聊天，系统却像在做项目调度”的感觉。
-
-## 8. L3 里模型如何运作
-
-### 快路由模型调用
-
-语音 fast lane 会构造一个非常短的 system prompt。
-
-它告诉模型：
-
-- 你是 Jachin 的陪伴态语音助手。
-- 当前是语音闲聊快路径。
-- 直接、自然、温柔。
-- 中文短答，1 到 2 句。
-- 不要工具。
-- 不要展示推理。
-- 如果是轻问答，必须回答问题本身，不能只说“我在”。
-
-模型参数大致偏保守：
-
-```text
-temperature 约 0.35
-max_tokens 约 80
-```
-
-可以通过环境变量指定快路由模型：
-
-```text
-JACHIN_VOICE_FAST_LANE_MODEL
-```
-
-### direct_llm_bypass
-
-在 `agent_core.py` 里，如果判断可以直连模型，会走：
-
-```text
-_run_direct_llm_completion
-```
-
-如果是语音 fast lane，它会：
-
-- 禁用完整 ReAct。
-- 限制输出 tokens。
-- 提示不要长篇。
-- 对 light_query 额外强调不要答“我在”。
-- 尝试关闭模型 thinking。
-
-### 完整 ReAct / 工具路径
-
-任务类请求会进入更完整的 agent。
-
-这时模型不是只“回答”，而是可能：
-
-- 判断要调用什么工具。
-- 读取文件。
-- 操作窗口。
-- 发消息。
-- 建任务。
-- 写记忆。
-- 汇报执行结果。
-
-所以任务类语音天然比闲聊慢。
 
 ## 9. 从 L3 文字到 TTS
 
@@ -1397,21 +1175,24 @@ voiceOrchestrator.onL3Chunk
 
 ## 10. TTS 模型
 
-当前 JVS TTS 是 Kokoro ONNX。
+当前 JVS TTS 默认走云端 DashScope CosyVoice：
 
 核心文件：
 
 ```text
+voice_server/services/cloud_tts_service.py
 voice_server/services/tts_service.py
 ```
 
-默认配置：
+当前健康检查里常见的云端配置是：
 
 ```text
-voice = zm_053
-speed = 1.25
+tts_backend = cloud
+tts_model = cosyvoice-v3-plus
+tts_fast_model = cosyvoice-v3-flash
+tts_voice = longanhuan
+speed = 1.0
 sample_rate = 24000
-model = Kokoro-82M-v1.1-zh-ONNX
 ```
 
 前端默认值：
@@ -1420,9 +1201,42 @@ model = Kokoro-82M-v1.1-zh-ONNX
 clients/desktop/src/voice/voiceDefaults.ts
 ```
 
-### Kokoro 合成流程
+注意：前端日志里可能还会出现 `zm_053` 这类本地 voice alias 或 UI 配置字段；最终云端实际使用的声音要看 JVS 返回的 stream meta 或 `/health`。
+
+### 云端 CosyVoice 合成流程
 
 JVS `/v1/tts/synthesize` 收到文本后，大概流程：
+
+```text
+文本清洗 / 归一化
+  -> 调 DashScope CosyVoice HTTP 接口
+  -> 返回 WAV / PCM 音频
+  -> 前端播放
+```
+
+流式 TTS 会走：
+
+```text
+/v1/tts/stream
+  -> DashScope CosyVoice streaming
+  -> tts.jvs_stream_start
+  -> tts.jvs_stream_meta
+  -> tts.playback_pcm_chunk
+  -> tts.jvs_stream_done
+```
+
+这就是现在日志里常见的云端 TTS 形态。
+
+### 本地 Kokoro 路径
+
+如果 `JACHIN_TTS_BACKEND` 配成 local，JVS 才会使用 Kokoro ONNX：
+
+```text
+voice_server/services/tts_service.py
+model = Kokoro-82M-v1.1-zh-ONNX
+```
+
+本地 Kokoro 路径大概会做：
 
 ```text
 文本归一化
@@ -1438,17 +1252,9 @@ JVS `/v1/tts/synthesize` 收到文本后，大概流程：
   -> 输出 WAV
 ```
 
-这里要注意：TTS 不是“调用一下就完事”。Kokoro 中文链路需要自己处理：
+所以，如果系统当前是云端 TTS，就不要把口音、延迟、英文读法问题直接归因到 Kokoro。只有 `/health` 显示 `tts_backend = local` 时，Kokoro 中文前端、phoneme 映射、style vector 这些才是主排查对象。
 
-- 数字怎么读。
-- 英文怎么混读。
-- 中文标点怎么影响停顿。
-- 拼音声调怎么保留。
-- phoneme 里模型不认识的符号怎么映射。
-- voice bin 的 style index 怎么选。
-- 首尾静音怎么裁。
-
-所以之前出现“方言感、黏连、英文不读、完成说不清楚”时，本质多半不是播放问题，而是中文前端、phoneme 映射、标点停顿、style vector 选择这些层出了偏差。
+云端 TTS 的问题更多要看 DashScope 返回延迟、stream 首包时间、voice 配置和前端播放队列。
 
 ### TTS 返回给前端的诊断头
 
@@ -1513,29 +1319,40 @@ voiceOrchestrator.bargeIn()
 
 ## 12. 任务没执行完时用户继续说话
 
-这个场景由两个层共同处理。
+这个场景由前端状态传递和 L3 主循环共同处理。
 
-### 前端路由层
+### 前端状态层
 
-前端保存 active voice tasks。
+前端可以保存 active voice tasks，用来展示状态、打断播放、取消当前语音会话，并把当前任务摘要作为上下文发给 L3。
 
-如果有任务正在跑，新语音会先被判断是不是控制请求：
+前端不直接判断这一句到底是取消、查进度、修改任务还是新话题。它只把这些事实交给 L3：
+
+```text
+active_task_id
+active_task_status
+active_task_summary
+last_user_turn
+voice_final_text
+voice_stt_evidence
+```
+
+这一步的目标是让 L3 主循环有足够上下文判断用户是在控制已有任务，还是开启一个新问题。
+
+### L3 主循环 / task 层
+
+L3 主循环根据用户原话和 active task context 判断本轮意图：
 
 ```text
 取消 / 停止 -> ABORT
 进度 / 做到哪了 -> STATUS
 改成 / 再加 -> MODIFY
 继续 -> RESUME
-其他新话题 -> PARALLEL 或 direct_llm
+其他新话题 -> PARALLEL 或普通回答
 ```
 
-这一步的目标是不要把“停一下”误当成普通聊天。
+如果判断是任务控制，会进入 L3 的后台控制路径。
 
-### L3 / task 层
-
-如果路由结果是任务控制，会进入 L3 的后台控制路径。
-
-如果是普通聊天但有 active task，前端可以注入轻量任务上下文：
+如果是普通聊天但有 active task，前端注入的任务上下文只作为背景证据：
 
 ```text
 inject_light_task_context = true
@@ -1565,7 +1382,17 @@ stt.prepare
 stt.wav_ready
 stt.jvs_ready
 stt.jvs_transcribe_request
+stt.cloud_start
+stt.cloud_dns
+stt.cloud_connect
+stt.cloud_upload_start
+stt.cloud_result / stt.cloud_exception
+stt.cloud_soft_timeout
+stt.fallback_start
+stt.fallback_result
+stt.cloud_late_result
 stt.jvs_transcribe_ok
+stt.local_fallback_used
 stt.recognized
 l3.send_start
 l3.route_decision
@@ -1578,6 +1405,10 @@ tts.orchestrator.request
 tts.jvs_fetch_start
 tts.jvs_fetch_response
 tts.jvs_blob_ok
+tts.jvs_stream_start
+tts.jvs_stream_meta
+tts.playback_pcm_chunk
+tts.jvs_stream_done
 tts.orchestrator.ok
 tts.playback_enqueue
 tts.playback_native_start / tts.playback_web_start
@@ -1603,6 +1434,27 @@ tts.orchestrator.request -> tts.jvs_fetch_response -> tts.playback_start
 stt.audio_ready -> stt.recognized
 ```
 
+如果要进一步判断云端 STT 慢在哪里，看：
+
+```text
+stt.cloud_dns
+stt.cloud_connect
+stt.cloud_vocabulary_sync_*
+stt.cloud_upload_start
+stt.cloud_result / stt.cloud_exception
+stt.cloud_soft_timeout
+stt.fallback_result
+stt.cloud_late_result
+```
+
+如果出现：
+
+```text
+stt.local_fallback_used
+```
+
+说明这一轮最终用了本地 sherpa 兜底，而不是云端直接成功。
+
 如果声纹慢，看：
 
 ```text
@@ -1627,65 +1479,62 @@ C:/Users/Samuel/.jachin/jachin_debug/voice_companion.log
 C:/Users/Samuel/.jachin/jachin_debug/terminal_turn_*.log
 ```
 
-它更偏 L3 内部 agent 过程，比如 direct_llm_bypass、ReAct、工具调用、异常。
+它更偏 L3 内部过程，比如认知内核主循环、归一化、记忆/环境状态读取、任务编排、工具调用、验证、异常。
 
 ## 14. 当前系统最容易混乱的地方
 
-### 14.1 “快路由”有两层
+### 14.1 不要再把旧前端路由当事实源
 
-第一层在前端：
-
-```text
-voiceIntentRouter.ts
-```
-
-第二层在 L3：
-
-```text
-ws_server.py
-agent_core.py
-```
-
-如果两层理解不一致，就会出现：
+旧版本里前端和 L3 都有路由判断，容易出现两层理解不一致：
 
 - 前端认为是轻问答。
-- L3 当成 presence ack。
-- 用户问“今天吃什么”，系统答“我在”。
+- L3 当成任务或 presence ack。
+- 用户问正常问题，系统给出不相干回复。
 
-现在已经通过 `voice_fast_lane_kind` 和 `voice_allow_template_reply` 把这件事拉齐：
+当前文档按新架构描述：前端不再做任务意图裁决。前端只传语音文本、STT 证据、声纹状态、UI 状态和 active task context；真正的理解、路由、任务编排和工具选择由 L3 认知内核主循环负责。
 
-```text
-presence_template 才能模板答“我在”
-light_query 禁止模板，必须问模型
-```
+如果日志里还能看到 `voice_fast_lane_kind`、`voice_allow_template_reply`、`voice_dispatch_*` 这类字段，要优先判断它们是兼容字段、调试字段，还是仍在影响执行。架构上不应该再依赖它们作为顶层决策。
 
-### 14.2 “规则边界”和“大模型自由度”要分清
+### 14.2 “结构边界”和“大模型自由度”要分清
 
-现在的路由偏规则主导，但不是规则写死所有回复。
+新架构不是完全不要结构，也不是把所有事情交给一段自由文本模型输出。
 
-规则负责：
+结构负责：
 
-- 分层。
-- 安全边界。
-- 是否执行。
-- 是否后台。
-- 是否跳过重链路。
-- 是否允许模板。
+- 主循环步骤。
+- 工单字段。
+- 工具和 MCP 调用边界。
+- 风险控制。
+- 验证要求。
+- 失败恢复策略。
 
 大模型负责：
 
-- 闲聊怎么说。
-- 轻问答怎么回答。
-- 追问怎么自然表达。
-- 任务结果怎么组织语言。
+- 理解用户真实意图。
+- 填写对象、动作、约束、缺槽。
+- 判断是否需要追问。
+- 选择合适的执行路径。
+- 把结果组织成自然、人话的回复。
 
-这是比较合理的方向。问题通常不在“有没有规则”，而在规则是否把某类话误分到错误车道。
+问题通常不在“有没有结构”，而在结构是否抢走了 L3 主循环本该做的语义判断。
 
-### 14.3 TTS 的中文前端很敏感
+### 14.3 TTS 要先区分云端还是本地
 
-Kokoro 不是完整中文产品级 TTS 封装，而是 ONNX 模型加一堆本地前端适配。
+当前默认是云端 DashScope CosyVoice。排查口音、停顿、英文混读、延迟时，先看 `/health`：
 
-任何一层出错都可能影响听感：
+```text
+tts_backend = cloud  -> 看 CosyVoice、voice、首包时间、stream chunk、播放队列
+tts_backend = local  -> 看 Kokoro 中文前端、phoneme mapping、style、静音裁剪
+```
+
+如果是云端 TTS，重点看：
+
+- `tts.jvs_stream_meta` 里的 backend、model、voice、synthesisText。
+- `firstAudioMs` 是否过高。
+- `tts.playback_pcm_chunk` 是否连续。
+- 播放队列是否被旧 generation 占住。
+
+如果是本地 Kokoro，才重点看：
 
 - 中文标点被处理错，断句会怪。
 - phoneme OOV 被丢，字会含混。
@@ -1710,28 +1559,27 @@ Kokoro 不是完整中文产品级 TTS 封装，而是 ONNX 模型加一堆本�
 
 ```text
 感知层：录音、声纹、STT
-路由层：判断闲聊、轻问答、短任务、长任务、任务控制
-智能层：模板、快模型、direct LLM、完整 Agent / 工具 / 任务
+传递层：前端整理最终文本、语音诊断、UI 状态和任务上下文
+认知层：L3 主循环理解意图、补槽、编排任务、选择工具、验证恢复
 表达层：流式文字、分句、TTS、播放、打断
 ```
 
 最理想的运行方式是：
 
 - “你好 / 在吗”秒回连接感。
-- “今天吃什么”走轻问答，不进任务链，也不模板敷衍。
-- “帮我打开计算器”走短任务。
-- “把目录生成报告”走后台长任务。
-- 任务执行中用户说“停一下 / 进度怎么样 / 改成这样”，走任务控制。
+- “今天吃什么”由 L3 主循环判断为普通问答，不进任务链，也不模板敷衍。
+- “帮我打开计算器”由 L3 主循环判断为本地 OS 任务，再选择对应工具。
+- “把目录生成报告”由 L3 主循环判断为更长任务，再决定后台执行或分派。
+- 任务执行中用户说“停一下 / 进度怎么样 / 改成这样”，由 L3 主循环结合 active task context 判断任务控制意图。
 - 用户打断旧语音时，旧 TTS 和旧播放队列被取消，新请求优先。
 
 如果之后要继续优化，建议按日志把问题归因到具体层：
 
 ```text
 STT 慢或错 -> 看 voice_server STT / hotword / owner-track
-路由错 -> 看 voice_dispatch_decision / route_evidence
-文字慢 -> 看 L3 fast lane / direct_llm / run_agent
+意图或任务判断错 -> 看 terminal_turn 里的 L3 主循环、归一化、任务编排、工具选择、验证证据
+文字慢 -> 看 L3 主循环耗时、模型首 token、工具执行耗时
 文字对但说话慢 -> 看 TTS synth / playback queue
-说得难听 -> 看 Kokoro frontend / phoneme mapping / pause / style
+说得难听 -> 先看 tts_backend；cloud 看 CosyVoice/voice/首包，local 看 Kokoro frontend / phoneme mapping / pause / style
 旧话乱插 -> 看 generation / cancel / playback queue
 ```
-

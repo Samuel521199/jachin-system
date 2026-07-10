@@ -5,15 +5,12 @@ import logging
 import math
 import os
 import re
-import tempfile
 import wave
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-
-from services.stt_hotwords import HotwordSnapshot, SttHotwordProvider
 
 logger = logging.getLogger("jachin.voice_server.stt")
 _MEANINGFUL_CHAR_RE = re.compile(r"[\u4e00-\u9fffA-Za-z0-9]")
@@ -48,8 +45,9 @@ class SttResult:
 class SttService:
     """Sherpa-ONNX Zipformer Transducer local STT.
 
-    The voice layer is STT-only: native hotwords may bias decoding, but this
-    service does not rewrite entities, select intents, or create reply plans.
+    The local fallback is STT-only. It intentionally does not apply Jachin
+    hotwords because local phrase biasing has proven too brittle for fallback
+    recognition. Cloud STT may still use provider-native hotwords.
     """
 
     model_name = "sherpa-onnx-zipformer-zh-en-2023-11-22"
@@ -60,9 +58,6 @@ class SttService:
         self._files = self._find_zipformer_files(stt_dir)
         self._engine: Any = None
         self._load_error: str | None = None
-        self._hotwords = SttHotwordProvider()
-        self._hotword_file: Path | None = None
-        self._hotword_signature: tuple[tuple[str, int], ...] = ()
 
     @property
     def ready(self) -> bool:
@@ -92,12 +87,7 @@ class SttService:
             bpe_vocab=bpe_vocab if bpe_vocab.is_file() else None,
         )
 
-    def _load_engine(self, hotword_snapshot: HotwordSnapshot | None = None) -> Any | None:
-        hotword_snapshot = hotword_snapshot or self._hotwords.snapshot()
-        hotword_signature = self._snapshot_signature(hotword_snapshot)
-        if self._engine is not None and hotword_signature != self._hotword_signature:
-            logger.info("Sherpa hotwords changed; reloading STT recognizer")
-            self._engine = None
+    def _load_engine(self) -> Any | None:
         if self._engine is not None:
             return self._engine
         if self._load_error is not None:
@@ -108,7 +98,6 @@ class SttService:
         try:
             import sherpa_onnx
 
-            hotwords_file = self._prepare_hotword_file(hotword_snapshot)
             logger.info("Loading Sherpa-ONNX Zipformer from %s", self.stt_dir)
             self._engine = sherpa_onnx.OfflineRecognizer.from_transducer(
                 encoder=str(self._files.encoder),
@@ -118,10 +107,8 @@ class SttService:
                 num_threads=int(os.getenv("JACHIN_STT_THREADS", "2")),
                 sample_rate=16000,
                 feature_dim=80,
-                decoding_method="modified_beam_search" if hotwords_file else "greedy_search",
+                decoding_method="greedy_search",
                 max_active_paths=int(os.getenv("JACHIN_STT_MAX_ACTIVE_PATHS", "4")),
-                hotwords_file=str(hotwords_file) if hotwords_file else "",
-                hotwords_score=float(os.getenv("JACHIN_STT_HOTWORDS_SCORE", "4.0")),
                 modeling_unit="bpe" if self._files.bpe_vocab else "cjkchar",
                 bpe_vocab=str(self._files.bpe_vocab or ""),
                 provider=os.getenv("JACHIN_STT_PROVIDER", "cpu"),
@@ -138,8 +125,7 @@ class SttService:
         if not self.ready:
             return SttResult(text="", confidence=0.0, duration_ms=duration_ms, language="zh")
 
-        hotword_snapshot = self._hotwords.snapshot()
-        engine = self._load_engine(hotword_snapshot)
+        engine = self._load_engine()
         if engine is None:
             return SttResult(
                 text=f"【STT错误】模型未加载: {self._load_error or 'unknown'}",
@@ -175,34 +161,11 @@ class SttService:
             confidence=confidence,
             duration_ms=duration_ms,
             language="zh",
-            hotword_count=hotword_snapshot.count,
-            hotword_status="applied" if hotword_snapshot.words else "not_configured",
-            hotword_sources=tuple(hotword_snapshot.sources),
-            understanding={},
+            hotword_count=0,
+            hotword_status="disabled_local_sherpa",
+            hotword_sources=(),
+            understanding={"local_hotwords": "disabled"},
         )
-
-    def _prepare_hotword_file(self, snapshot: HotwordSnapshot) -> Path | None:
-        signature = self._snapshot_signature(snapshot)
-        if not signature:
-            self._hotword_file = None
-            self._hotword_signature = ()
-            return None
-        if self._hotword_file and self._hotword_file.is_file() and signature == self._hotword_signature:
-            return self._hotword_file
-        path = Path(tempfile.gettempdir()) / "jachin_sherpa_hotwords.txt"
-        lines = [f"{word} :{self._format_hotword_weight(weight)}" for word, weight in sorted(snapshot.words.items())]
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        self._hotword_file = path
-        self._hotword_signature = signature
-        return path
-
-    @staticmethod
-    def _snapshot_signature(snapshot: HotwordSnapshot) -> tuple[tuple[str, int], ...]:
-        return tuple(sorted(snapshot.words.items()))
-
-    @staticmethod
-    def _format_hotword_weight(weight: int) -> str:
-        return str(max(1, min(100, int(weight or 1))))
 
     @staticmethod
     def _result_confidence(text: str) -> float:
