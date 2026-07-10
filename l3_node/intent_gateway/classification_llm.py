@@ -1,4 +1,4 @@
-﻿"""
+"""
 §6.1 小模型 JSON 路由扩写（可选）：在严格超时内产出 routing_utterance 候选，失败则保持原文。
 """
 from __future__ import annotations
@@ -235,7 +235,7 @@ async def infer_domain_experts_async(
 ) -> list[str]:
     """
     小模型 JSON：推断 1–3 个最适合处理当前任务的资深专家身份；简单闲聊返回空列表。
-    失败或超时返回 []（不阻断主 ReAct）。
+    失败或超时返回 []（不阻断主 RoleExecutionAgent）。
     """
     from l3_node.intent_gateway.config import get_intent_gateway_config
     from l3_node.intent_gateway.model_resolve import get_classification_model_litellm_id
@@ -275,7 +275,7 @@ async def infer_domain_experts_async(
         {"role": "user", "content": user_block},
     ]
     model = get_classification_model_litellm_id()
-    # 与主 ReAct 隔离：此处仅为「专家标签」补判，messages 全是纯文本；不消费 OpenAI 多模态块，
+    # 与主 RoleExecutionAgent 隔离：此处仅为「专家标签」补判，messages 全是纯文本；不消费 OpenAI 多模态块，
     # 也不修改 run_agent / WebSocket 传入的 attachments 与 _user_llm_content。
     logger.info(
         "[IntentGateway] domain_experts 补判使用 %s（纯文本两轮 JSON）；不影响主链路图片/文档结构",

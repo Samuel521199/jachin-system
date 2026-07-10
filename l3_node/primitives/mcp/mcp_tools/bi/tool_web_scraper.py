@@ -1,4 +1,4 @@
-﻿"""
+"""
 通用网页抓取器 — mcp:atom_web_scraper
 
 契约: docs/bi_daily_report/01_PARALLEL_DEVELOPMENT_GUIDE.md

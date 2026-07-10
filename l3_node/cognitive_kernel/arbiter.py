@@ -1,4 +1,4 @@
-"""Arbiter for ReviewSummary -> DecisionContract -> WorkOrder planning."""
+﻿"""Arbiter for ReviewSummary -> DecisionContract -> WorkOrder planning."""
 
 from __future__ import annotations
 
@@ -83,7 +83,7 @@ def build_work_order_from_decision(contract: DecisionContract, summary: ReviewSu
         return None
     role_agent = _executor_role(contract.selected_roles)
     tool = contract.tool_policy.allowed_tools[0]
-    action_input = _action_input_for(summary, tool)
+    work_order_input = _work_order_input_for(summary, tool)
     work_order = WorkOrder(
         work_order_id=_new_id("work"),
         decision_id=contract.decision_id,
@@ -91,7 +91,7 @@ def build_work_order_from_decision(contract: DecisionContract, summary: ReviewSu
         task=_task_text(summary),
         inputs={
             "tool": tool,
-            "action_input": action_input,
+            "work_order_input": work_order_input,
             "intent": summary.top_intent,
             "target": summary.target,
             "review_session_id": summary.review_session_id,
@@ -179,7 +179,7 @@ def _task_text(summary: ReviewSummary) -> str:
     return summary.top_intent or summary.task_type
 
 
-def _action_input_for(summary: ReviewSummary, tool: str) -> str:
+def _work_order_input_for(summary: ReviewSummary, tool: str) -> str:
     target = summary.target or {}
     if tool == "mcp:windows_lark_send_message":
         recipients = target.get("recipients") if isinstance(target.get("recipients"), list) else []

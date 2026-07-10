@@ -34,9 +34,9 @@ def temp_plugin_dirs():
     """创建临时插件目录"""
     plugins_dir = tempfile.mkdtemp(prefix="jachin_plugins_")
     skills_repo_dir = tempfile.mkdtemp(prefix="jachin_skills_")
-    
+
     yield Path(plugins_dir), Path(skills_repo_dir)
-    
+
     # 清理
     shutil.rmtree(plugins_dir, ignore_errors=True)
     shutil.rmtree(skills_repo_dir, ignore_errors=True)
@@ -65,7 +65,7 @@ def intent_planner(plugin_manager):
 def create_test_skill(skill_id: str, skills_repo_dir: Path, bundled: bool = True):
     """
     创建测试技能
-    
+
     Args:
         skill_id: 技能 ID
         skills_repo_dir: 技能仓库目录
@@ -76,7 +76,7 @@ def create_test_skill(skill_id: str, skills_repo_dir: Path, bundled: bool = True
     else:
         skill_dir = skills_repo_dir / skill_id
     skill_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # 创建 manifest.yaml
     manifest = {
         "id": skill_id,
@@ -95,11 +95,11 @@ def create_test_skill(skill_id: str, skills_repo_dir: Path, bundled: bool = True
         "requirements": [],
         "runtime": {"type": "ray", "python_version": "3.10", "resources": {}}
     }
-    
+
     manifest_file = skill_dir / "manifest.yaml"
     with open(manifest_file, "w", encoding="utf-8") as f:
         yaml.dump(manifest, f, allow_unicode=True)
-    
+
     # 创建 main.py
     main_file = skill_dir / "main.py"
     main_content = '''"""
@@ -148,7 +148,7 @@ async def execute(capability: str, params: Dict[str, Any]) -> Dict[str, Any]:
 '''
     with open(main_file, "w", encoding="utf-8") as f:
         f.write(main_content)
-    
+
     return skill_dir
 
 
@@ -162,28 +162,28 @@ async def test_natural_language_to_plugin_execution(
 ):
     """测试自然语言到插件执行的完整流程"""
     plugins_dir, skills_repo_dir = temp_plugin_dirs
-    
+
     # 创建测试技能
     create_test_skill("com.jachin.sys-monitor", skills_repo_dir, bundled=True)
-    
+
     # 使用 Mock LLM - 直接替换 intent_planner 的 factory
     mock_llm = create_intent_planning_mock()
     mock_provider = type('MockProvider', (), {
         'create_provider': lambda self, provider_type: mock_llm
     })()
     intent_planner.factory = mock_provider
-    
+
     # 1. 自然语言查询
     user_query = "查看系统状态"
-    
+
     # 2. 意图规划
     plan = await intent_planner.plan(user_query)
-    
+
     assert plan is not None
     assert plan.plugin_id == "com.jachin.sys-monitor"
     assert plan.method_name == "get_performance_snapshot"
     assert plan.confidence > 0.5
-    
+
     # 3. 插件执行
     payload_bytes = json.dumps(plan.parameters).encode('utf-8')
     result = await plugin_executor.invoke_plugin(
@@ -192,11 +192,11 @@ async def test_natural_language_to_plugin_execution(
         payload=payload_bytes,
         trace_id="e2e-test-001"
     )
-    
+
     # 4. 验证结果
     assert result["status_code"] == 200
     assert result["ui_render_schema"] is not None
-    
+
     # 5. 验证 SDUI Schema
     ui_schema = json.loads(result["ui_render_schema"])
     assert ui_schema["type"] == "AdaptiveCard"
@@ -212,10 +212,10 @@ async def test_error_handling_low_confidence(
 ):
     """测试低置信度错误处理"""
     plugins_dir, skills_repo_dir = temp_plugin_dirs
-    
+
     # 创建测试技能（至少需要一个技能来获取能力列表）
     create_test_skill("com.jachin.sys-monitor", skills_repo_dir, bundled=True)
-    
+
     # Mock LLM 返回低置信度 - 直接替换 intent_planner 的 factory
     mock_llm = type('MockLLM', (), {
         'chat': AsyncMock(return_value=json.dumps({
@@ -226,15 +226,15 @@ async def test_error_handling_low_confidence(
             "reasoning": "Uncertain match"
         }))
     })()
-    
+
     mock_provider = type('MockProvider', (), {
         'create_provider': lambda self, provider_type: mock_llm
     })()
     intent_planner.factory = mock_provider
-    
+
     # 规划（应该返回 None）
     plan = await intent_planner.plan("一些模糊的查询")
-    
+
     assert plan is None or plan.confidence < 0.5
 
 
@@ -247,23 +247,23 @@ async def test_error_handling_llm_failure(
 ):
     """测试 LLM 失败的错误处理"""
     plugins_dir, skills_repo_dir = temp_plugin_dirs
-    
+
     # 创建测试技能（至少需要一个技能来获取能力列表）
     create_test_skill("com.jachin.sys-monitor", skills_repo_dir, bundled=True)
-    
+
     # Mock LLM 抛出异常 - 直接替换 intent_planner 的 factory
     mock_llm = type('MockLLM', (), {
         'chat': AsyncMock(side_effect=Exception("LLM API error"))
     })()
-    
+
     mock_provider = type('MockProvider', (), {
         'create_provider': lambda self, provider_type: mock_llm
     })()
     intent_planner.factory = mock_provider
-    
+
     # 规划（应该优雅处理错误）
     plan = await intent_planner.plan("查看系统状态")
-    
+
     # 应该返回 None，而不是抛出异常
     assert plan is None
 
@@ -278,28 +278,28 @@ async def test_performance_benchmark(
 ):
     """性能基准测试"""
     import time
-    
+
     plugins_dir, skills_repo_dir = temp_plugin_dirs
-    
+
     # 创建测试技能
     create_test_skill("com.jachin.sys-monitor", skills_repo_dir, bundled=True)
-    
+
     # 使用 Mock LLM（避免实际 API 调用）- 直接替换 intent_planner 的 factory
     from tests.mocks.mock_llm import create_intent_planning_mock
     mock_llm = create_intent_planning_mock()
-    
+
     mock_provider = type('MockProvider', (), {
         'create_provider': lambda self, provider_type: mock_llm
     })()
     intent_planner.factory = mock_provider
-    
+
     # 测量端到端延迟
     start_time = time.time()
-    
+
     # 1. 意图规划
     plan = await intent_planner.plan("查看系统状态")
     assert plan is not None
-    
+
     # 2. 插件执行
     payload_bytes = json.dumps(plan.parameters).encode('utf-8')
     result = await plugin_executor.invoke_plugin(
@@ -308,16 +308,16 @@ async def test_performance_benchmark(
         payload=payload_bytes,
         trace_id="perf-benchmark"
     )
-    
+
     end_time = time.time()
     total_time = end_time - start_time
-    
+
     # 验证结果
     assert result["status_code"] == 200
-    
+
     # 性能断言（应该在 5 秒内完成）
     assert total_time < 5.0, f"End-to-end execution took {total_time:.2f}s, expected < 5.0s"
-    
+
     print(f"End-to-end performance:")
     print(f"  Total time: {total_time:.2f}s")
     print(f"  Intent planning: ~0.1s (mock)")

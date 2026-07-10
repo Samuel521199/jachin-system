@@ -53,7 +53,7 @@ def sync_task_plan_on_run_start() -> None:
 
 
 def schedule_dag_auto_plan(user_input: str, *, run_id: str, delegate_depth: int = 0) -> None:
-    """复杂意图时后台触发 TaskDAG Planner（不阻塞主 ReAct）。"""
+    """复杂意图时后台触发 TaskDAG Planner（不阻塞主 RoleExecutionAgent）。"""
     if delegate_depth != 0:
         return
     intent = (user_input or "").strip()
@@ -214,9 +214,9 @@ def try_auto_record_experience_run(
     save_run_success_episode(user_intent, final_answer, tools_used)
 
 
-def touch_global_registry_if_needed(run_id: str, *, react_iteration: int = 0) -> None:
+def touch_global_registry_if_needed(run_id: str, *, role_execution_iteration: int = 0) -> None:
     """长 run 每 N 轮续期 Redis 任务键（默认每 5 轮）。"""
-    if react_iteration <= 0 or react_iteration % 5 != 4:
+    if role_execution_iteration <= 0 or role_execution_iteration % 5 != 4:
         return
     try:
         from l3_node.global_registry_redis import redis_touch_enabled, touch_task_redis

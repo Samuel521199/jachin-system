@@ -17,20 +17,20 @@ class QwenModel(str, Enum):
     QWEN_MAX = "qwen-max"
     QWEN_FLASH = "qwen-flash"
     QWEN_CODER = "qwen-coder"
-    
+
     # 视觉模型
     QWEN_VL = "qwen-vl"
     QWEN_VL_MAX = "qwen-vl-max"
     QWEN_VL_PLUS = "qwen-vl-plus"
-    
+
     # 全模态模型
     QWEN_OMNI = "qwen-omni"
     QWEN3_OMNI = "qwen3-omni"
-    
+
     # 音频模型
     QWEN_AUDIO = "qwen-audio"
     QWEN3_OMNI_CAPTIONER = "qwen3-omni-captioner"
-    
+
     # 其他
     QVQ = "qvq"
     TEXT_EMBEDDING_V2 = "text-embedding-v2"
@@ -80,7 +80,7 @@ MODEL_CAPABILITIES: Dict[QwenModel, ModelCapabilities] = {
         supports_text=True,
         supports_stream=True,
     ),
-    
+
     # 视觉模型
     QwenModel.QWEN_VL: ModelCapabilities(
         supports_text=True,
@@ -100,7 +100,7 @@ MODEL_CAPABILITIES: Dict[QwenModel, ModelCapabilities] = {
         supports_image=True,
         requires_stream=True,
     ),
-    
+
     # 全模态模型
     QwenModel.QWEN_OMNI: ModelCapabilities(
         supports_text=True,
@@ -120,7 +120,7 @@ MODEL_CAPABILITIES: Dict[QwenModel, ModelCapabilities] = {
         supports_tool_call=True,
         requires_stream=True,
     ),
-    
+
     # 音频模型
     QwenModel.QWEN_AUDIO: ModelCapabilities(
         supports_text=True,
@@ -132,7 +132,7 @@ MODEL_CAPABILITIES: Dict[QwenModel, ModelCapabilities] = {
         supports_stream=True,
         supports_audio=True,
     ),
-    
+
     # 其他
     QwenModel.QVQ: ModelCapabilities(
         supports_text=True,
@@ -140,7 +140,7 @@ MODEL_CAPABILITIES: Dict[QwenModel, ModelCapabilities] = {
         supports_image=True,
         requires_stream=True,
     ),
-    
+
     # 嵌入模型
     QwenModel.TEXT_EMBEDDING_V2: ModelCapabilities(
         supports_text=True,
@@ -152,10 +152,10 @@ MODEL_CAPABILITIES: Dict[QwenModel, ModelCapabilities] = {
 def get_model_capabilities(model: str) -> ModelCapabilities:
     """
     获取模型能力
-    
+
     Args:
         model: 模型名称
-        
+
     Returns:
         ModelCapabilities对象
     """
@@ -170,10 +170,10 @@ def get_model_capabilities(model: str) -> ModelCapabilities:
 def is_stream_required(model: str) -> bool:
     """
     检查模型是否仅支持流式输出
-    
+
     Args:
         model: 模型名称
-        
+
     Returns:
         是否仅支持流式
     """
@@ -184,11 +184,11 @@ def is_stream_required(model: str) -> bool:
 def supports_modality(model: str, modality: str) -> bool:
     """
     检查模型是否支持某种模态
-    
+
     Args:
         model: 模型名称
         modality: 模态类型（image, video, audio等）
-        
+
     Returns:
         是否支持
     """

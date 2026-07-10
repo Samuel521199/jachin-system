@@ -78,10 +78,10 @@ async def parse_intent(
 ):
     """
     解析用户意图（调试用）
-    
+
     Args:
         user_input: 用户输入
-    
+
     Returns:
         Dict: 解析后的意图
     """
@@ -112,47 +112,47 @@ async def invoke_plugin(
 ):
     """
     调用插件（通用接口）
-    
+
     支持两种模式：
     1. 直接调用：提供 plugin_id 和 method_name
     2. 智能规划：提供 user_query，自动匹配插件和方法
-    
+
     支持调用 .jsp 插件和 bundled skills
-    
+
     Args:
         request: 插件调用请求
         executor: 插件执行器
         planner: 意图规划器
-    
+
     Returns:
         PluginInvokeResponse: 插件调用结果（包含 SDUI Schema）
     """
     import json
     import base64
-    
+
     monitor = get_performance_monitor()
     start_time = time.time()
-    
+
     try:
         plugin_id = request.plugin_id
         method_name = request.method_name
-        
+
         # 如果提供了 user_query，使用意图规划器自动匹配
         if request.user_query and (not plugin_id or not method_name):
             logger.info(f"Planning execution for query: {request.user_query}")
-            
+
             # 监控意图规划性能
             planning_start = time.time()
             plan = await planner.plan(request.user_query)
             planning_duration = time.time() - planning_start
-            
+
             monitor.record(
                 "intent.planning",
                 planning_duration,
                 success=plan is not None,
                 tags={"user_query": request.user_query[:50]}  # 限制长度
             )
-            
+
             if plan:
                 plugin_id = plan.plugin_id
                 method_name = plan.method_name
@@ -169,17 +169,17 @@ async def invoke_plugin(
                     status_code=404,
                     detail=f"Could not find a matching plugin for query: {request.user_query}"
                 )
-        
+
         # 验证必需字段
         if not plugin_id or not method_name:
             raise HTTPException(
                 status_code=400,
                 detail="Either provide (plugin_id, method_name) or user_query"
             )
-        
+
         # 准备 payload
         payload_bytes = json.dumps(request.payload or {}).encode('utf-8') if request.payload else b'{}'
-        
+
         # 调用插件执行器
         result = await executor.invoke_plugin(
             plugin_id=plugin_id,
@@ -187,7 +187,7 @@ async def invoke_plugin(
             payload=payload_bytes,
             trace_id=request.trace_id
         )
-        
+
         # 解析 payload（如果是 JSON）
         payload_dict = None
         if result.get("payload"):
@@ -196,12 +196,12 @@ async def invoke_plugin(
             except (json.JSONDecodeError, UnicodeDecodeError):
                 # 如果不是 JSON，返回 base64 编码
                 payload_dict = {"raw": base64.b64encode(result["payload"]).decode('utf-8')}
-        
+
         # 处理 data_payload（如果有）
         data_payload_b64 = None
         if result.get("data_payload"):
             data_payload_b64 = base64.b64encode(result["data_payload"]).decode('utf-8')
-        
+
         # 构建技能链（供 SkillChainView 展示）
         metadata = dict(result.get("metadata") or {})
         if "chain" not in metadata and plugin_id and method_name:
@@ -211,7 +211,7 @@ async def invoke_plugin(
                 {"id": "2", "label": f"调用: {plugin_id}.{method_name}", "type": "skill"},
                 {"id": "3", "label": "完成" if not result.get("error_message") else "结束", "type": "done"},
             ]
-        
+
         return PluginInvokeResponse(
             status_code=result.get("status_code", 200),
             error_message=result.get("error_message"),
@@ -221,7 +221,7 @@ async def invoke_plugin(
             trace_id=result.get("trace_id") or request.trace_id,
             metadata=metadata
         )
-        
+
     except Exception as e:
         logger.error(f"Failed to invoke plugin: {e}", exc_info=True)
         raise HTTPException(

@@ -1,4 +1,4 @@
-﻿"""PMO v7 mirror import 单元测试。"""
+"""PMO v7 mirror import 单元测试。"""
 from __future__ import annotations
 
 import json

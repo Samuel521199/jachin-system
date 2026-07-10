@@ -756,4 +756,3 @@ def stop_scheduler() -> dict[str, Any]:
 
 def scheduler_status() -> dict[str, Any]:
     return {"active": bool(_scheduler_started and _scheduler is not None)}
-

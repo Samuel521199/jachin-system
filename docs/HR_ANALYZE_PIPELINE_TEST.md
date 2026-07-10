@@ -4,10 +4,10 @@
 
 **典型问题**：报告里出现与当前岗位无关的人设（例如误成「云边架构师」）时，优先排查：
 
-1. **`jd.json` 里 `jd_full` 为空或过短** — Wasm 侧可能回退到内置/缓存 JD。  
-2. **`target_role` 长期为默认 `backend_engineer`** — 与「Python 工程师」等岗位不一致时，可在 `jd.json` 增加 `analyzer_target_role`（见下）或通过测试脚本的启发规则传入。  
-3. **分析的是缓存目录** — 确认 `pending`、`result` 与 `jd.json` 在同一职位根目录下。  
-4. **`result/*_analysis.md` 内容长期不变、日志里 `ndjson_lines=0`** — 多半是 **`~/.jachin/l3_skill_cache/hr-analyzer4/main.wasm` 过旧**（体积明显小于仓库 `l3_node/primitives/tools/wasm_bundled/hr-analyzer4/main.wasm`）。旧版不按 NDJSON 批量落盘，新一次分析不会覆盖 `{stem}_analysis.md`。处理：删掉缓存目录里的 `hr-analyzer4` 后由 L2 重拉，或**用本仓库最新代码**（开发模式下已优先使用仓库内 Wasm）。  
+1. **`jd.json` 里 `jd_full` 为空或过短** — Wasm 侧可能回退到内置/缓存 JD。
+2. **`target_role` 长期为默认 `backend_engineer`** — 与「Python 工程师」等岗位不一致时，可在 `jd.json` 增加 `analyzer_target_role`（见下）或通过测试脚本的启发规则传入。
+3. **分析的是缓存目录** — 确认 `pending`、`result` 与 `jd.json` 在同一职位根目录下。
+4. **`result/*_analysis.md` 内容长期不变、日志里 `ndjson_lines=0`** — 多半是 **`~/.jachin/l3_skill_cache/hr-analyzer4/main.wasm` 过旧**（体积明显小于仓库 `l3_node/primitives/tools/wasm_bundled/hr-analyzer4/main.wasm`）。旧版不按 NDJSON 批量落盘，新一次分析不会覆盖 `{stem}_analysis.md`。处理：删掉缓存目录里的 `hr-analyzer4` 后由 L2 重拉，或**用本仓库最新代码**（开发模式下已优先使用仓库内 Wasm）。
 
 ---
 
@@ -45,7 +45,7 @@ python scripts/test_hr_analyze_jd_pipeline.py --job-root "..." --forbid-substr "
 
 **前置**：
 
-- 已配置 DashScope（`DASHSCOPE_API_KEY_*` 或通用 `DASHSCOPE_API_KEY`，见 `docs/DASHSCOPE_REGIONAL_KEYS.md`）或 `OPENAI_API_KEY`（与现有 `test_analyze_pdf_leaderboard.py` 相同）。  
+- 已配置 DashScope（`DASHSCOPE_API_KEY_*` 或通用 `DASHSCOPE_API_KEY`，见 `docs/DASHSCOPE_REGIONAL_KEYS.md`）或 `OPENAI_API_KEY`（与现有 `test_analyze_pdf_leaderboard.py` 相同）。
 - 建议开发联调时：`JACHIN_DEV_HR_FIRST=1`，`JACHIN_APP_ROOT` 指向本仓库根，确保用仓库内最新 HR 插件与透析镜 Wasm。
 
 ---
@@ -68,7 +68,7 @@ python scripts/test_hr_analyze_jd_pipeline.py --job-root "..." --forbid-substr "
 
 ## 相关代码
 
-- `skills_repo/plugin/com.jachin.hr.recruitment/tools/hr_analyze_resume.py` — MCP 入口，`jd_template` 必填。  
-- `skills_repo/plugin/com.jachin.hr.recruitment/hr_analysis_persist.py` — `{stem}_analysis.md` 批量落盘（覆盖写）。  
-- `l3_node/primitives/tools/loader.py` — 透析镜持久化前合并调用方 `output_dir`，保证写入 `{职位}/result/` 而非仅默认 `hr_analysis`。  
+- `skills_repo/plugin/com.jachin.hr.recruitment/tools/hr_analyze_resume.py` — MCP 入口，`jd_template` 必填。
+- `skills_repo/plugin/com.jachin.hr.recruitment/hr_analysis_persist.py` — `{stem}_analysis.md` 批量落盘（覆盖写）。
+- `l3_node/primitives/tools/loader.py` — 透析镜持久化前合并调用方 `output_dir`，保证写入 `{职位}/result/` 而非仅默认 `hr_analysis`。
 - `scripts/test_analyze_pdf_leaderboard.py` — 另一套基于 `plugin/data` 的 PDF + 排行榜测试。

@@ -1,4 +1,4 @@
-﻿"""PMO core:db_query / core:db_write 单元测试。"""
+"""PMO core:db_query / core:db_write 单元测试。"""
 from __future__ import annotations
 
 import os

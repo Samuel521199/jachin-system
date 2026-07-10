@@ -34,12 +34,12 @@ useEffect(() => {
 
   // 查找输入
   const input = stateMachine.find((input) => input.name === "isThinking");
-  
+
   // 设置布尔值
   if (input && "value" in input) {
     (input as any).value = true;
   }
-  
+
   // 触发触发器
   if (input && "fire" in input) {
     (input as any).fire();

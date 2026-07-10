@@ -1,4 +1,4 @@
-﻿"""
+"""
 IM 消息分发 — 收到消息后调用 Agent 并回传
 
 与具体通道解耦：dispatcher 只负责「执行 + 回复」逻辑，
@@ -790,7 +790,7 @@ def _do_agent_work(
         if reply and cid:
             _out = str(reply).strip()
             try:
-                from l3_node.react_ui_sanitize import sanitize_final_answer_for_lark_im
+                from l3_node.role_output_sanitize import sanitize_final_answer_for_lark_im
 
                 _out = sanitize_final_answer_for_lark_im(_out)  # UI 脱敏 + 去 Markdown 加粗
             except Exception:

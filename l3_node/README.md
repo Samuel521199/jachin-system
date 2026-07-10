@@ -1,6 +1,6 @@
 # L3 Cognitive Kernel Runtime
 
-`l3_node` is the local runtime for Jachin. The active architecture is the
+`l3_node` is the local runtime for Jachin. Its architecture is the
 Memory-first Cognitive Kernel:
 
 - input envelope
@@ -12,9 +12,11 @@ Memory-first Cognitive Kernel:
 - verification and recovery
 - turn closure and evidence ledger
 
-The historic text ReAct loop still exists as a compatibility transport inside
-`agent_core.py`, but it is no longer the architecture boundary. New business
-logic must live in Skill/MCP packages or in focused Role Agent adapters.
+All external-world actions must pass through `DecisionContract -> WorkOrder ->
+RoleExecutor -> Verification`. Text reasoning is only an input protocol handled
+by `RoleExecutionAgent`; it is not allowed to execute tools directly. New
+business logic must live in Skill/MCP packages or in focused Role Agent
+adapters.
 
 Source of truth:
 

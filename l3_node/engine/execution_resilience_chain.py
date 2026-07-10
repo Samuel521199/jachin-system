@@ -105,7 +105,7 @@ async def _on_execution_brief(ctx: Any) -> None:
 
 def pop_strategy_inject_message(ctx: Any) -> dict[str, str] | None:
     """
-    若策略链已推进且尚未注入本轮 ReAct，返回一条 user 消息并清除 pending 标记。
+    若策略链已推进且尚未注入本轮 RoleExecutionAgent，返回一条 user 消息并清除 pending 标记。
     由 agent_core 每轮 LLM 前调用（需 JACHIN_RESILIENCE_STRATEGY_CHAIN=1）。
     """
     if not strategy_chain_enabled():

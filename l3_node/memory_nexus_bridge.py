@@ -1,4 +1,4 @@
-"""
+﻿"""
 Memory Nexus（SQLite + FastEmbed / MemPalace）与 L3 宿主之间的薄桥接：L0 统帅 Persona（Core_Profile）、
 L1 唤醒块、深度检索展示、回合末异步提交、技能矩阵同步与动态工具检索。
 
@@ -150,7 +150,7 @@ async def async_build_l1_system_memory_block(
 
 
 def format_deep_search_matches_for_agent(res: dict[str, Any]) -> str:
-    """将 deep_search 结果格式化为可供 Observation 展示的纯文本。"""
+    """将 deep_search 结果格式化为可供 Verification evidence 展示的纯文本。"""
     if not res.get("ok"):
         err = res.get("error") or "unknown"
         return f"[memory_nexus] 检索失败（底层 error 字段）: {err}"

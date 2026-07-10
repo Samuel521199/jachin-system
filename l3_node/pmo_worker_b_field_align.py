@@ -2,7 +2,7 @@
 Worker B：各视图字段启动对齐 + 按 source_view 查询前提示（SSOT）。
 
 FanOut 启动 Worker B 时从 pmo_views_meta 读取 columns_json，生成【字段对齐·B-x】块注入任务体；
-core:db_query 对 B 相关视图在 Observation hints 中附带同视图对齐摘要，减少模型「猜字段」轮次。
+core:db_query 对 B 相关视图在 Verification evidence hints 中附带同视图对齐摘要，减少模型「猜字段」轮次。
 """
 from __future__ import annotations
 

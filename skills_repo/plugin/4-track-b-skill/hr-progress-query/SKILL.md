@@ -32,4 +32,4 @@ tools:
 
 ## 输出
 
-- 任务完成时输出：Final Answer: 并附带进度摘要。
+- 任务完成时输出：User-facing result: 并附带进度摘要。

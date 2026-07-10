@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class SwarmScheduler:
     """
     蜂群调度器 - 根据任务 compute 需求选择目标节点
-    
+
     当 capability.compute == gpu_heavy 时，优先将任务发给带 GPU 的 Worker。
     否则发给 Primary 或任意可用 Worker。
     """
@@ -29,11 +29,11 @@ class SwarmScheduler:
     ) -> Optional[NodeInfo]:
         """
         为任务选择目标节点
-        
+
         Args:
             compute_tag: cpu_light | cpu_medium | gpu_heavy
             trust_zone: 信任域过滤（可选）
-        
+
         Returns:
             选中的节点，None 表示使用默认（Primary）
         """
@@ -54,7 +54,7 @@ class SwarmScheduler:
     ) -> Dict[str, Any]:
         """
         获取任务放置提示（供 Ray TaskScheduler 使用）
-        
+
         Returns:
             {"num_gpus": 0|1, "node_id": "..."} 等
         """

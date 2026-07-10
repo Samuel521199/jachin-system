@@ -1,6 +1,6 @@
 # 安全锁四项风险与治理（实现说明）
 
-本文对应「上下文坍塌、密钥悖论、不可撤销、规则冲突」四类问题，与 **当前仓库实现** 对齐。  
+本文对应「上下文坍塌、密钥悖论、不可撤销、规则冲突」四类问题，与 **当前仓库实现** 对齐。
 总索引：[JACHIN_SAFETY_LOCK.md](./JACHIN_SAFETY_LOCK.md) · [JACHIN_SAFETY_LOCK_LEARNING.md](./JACHIN_SAFETY_LOCK_LEARNING.md)
 
 ---
@@ -15,7 +15,7 @@
    - `~/.jachin/safety_lock/db_safety_lock.md`
    - `~/.jachin/safety_lock/shell_safety_lock.md`
 2. **短引 pin**：任意意图可挂载极短 `~/.jachin/safety_lock/pin.md`（建议 &lt;2k 字符）。
-3. **未命中域**：仅注入全局 `JACHIN_SAFETY_LOCK.md` 的 **头段**（默认最多约 2048 字符，可由 `nexus_config.safety_lock.legacy_global_head_chars` 调为 0 关闭）。
+3. **未命中域**：仅注入全局 `JACHIN_SAFETY_LOCK.md` 的 **头段**（默认最多约 2048 字符，可由 `nexus_config.safety_lock.archived_global_head_chars` 调为 0 关闭）。
 4. **总预算**：`inject_max_total_chars`（默认 8192，上限硬帽 64k）；**全量模式** `full_inject` / `JACHIN_SAFETY_LOCK_FULL_INJECT=1` 时合并全局+工作区 MD，但仍 **≤32k 字符级** 截断，禁止 40 万级灌入。
 
 ```mermaid
@@ -35,14 +35,14 @@ flowchart LR
 
 ## 漏洞二：追加密钥 → 提示词注入悖论
 
-**问题**：若要求模型在 Action Input 中带 `append_secret`，则密钥必然进入模型上下文，易被诱导滥用。
+**问题**：若要求模型在 tool input 中带 `append_secret`，则密钥必然进入模型上下文，易被诱导滥用。
 
 **治理（已实现）**：
 
 1. **废弃**「模型携带 append_secret/token 写正式 MD」的授权模型；`append_verified_fact` **忽略** token 字段（仅兼容旧客户端）。
 2. **默认待审批**：`learn_enabled` 且未设 `direct_append_to_md` 时，`core:safety_lock_append` 只写 `~/.jachin/safety_lock/pending/<id>.json`。
-3. **管理员密钥仅进程外**：`JACHIN_SAFETY_LOCK_ADMIN_TOKEN` 只在 **本机 shell** 使用，通过  
-   `python -m l3_node.jachin_safety_lock_admin approve <pending_id>` 刷入正式 MD。  
+3. **管理员密钥仅进程外**：`JACHIN_SAFETY_LOCK_ADMIN_TOKEN` 只在 **本机 shell** 使用，通过
+   `python -m l3_node.jachin_safety_lock_admin approve <pending_id>` 刷入正式 MD。
    **不提供** `core:safety_lock_approve` 给 Agent 工具列表，避免模型代批。
 
 ```mermaid
@@ -95,7 +95,7 @@ sequenceDiagram
 | `full_inject` / env `JACHIN_SAFETY_LOCK_FULL_INJECT` | 全量合并注入（仍截断至 ≤32k 级） |
 | `inject_max_total_chars` | 默认注入总字符预算 |
 | `inject_per_domain_chars` | 单域文件上限 |
-| `legacy_global_head_chars` | 未命中域时全局头段长度；`0` 关闭 |
+| `archived_global_head_chars` | 未命中域时全局头段长度；`0` 关闭 |
 
 ---
 
@@ -106,5 +106,5 @@ sequenceDiagram
 | `l3_node/routing/output_format_signals.py` | `heuristic_safety_lock_domains` |
 | `l3_node/jachin_safety_lock.py` | 注入、pending、approve/remove、maintenance |
 | `l3_node/jachin_safety_lock_admin.py` | CLI |
-| `l3_node/agent_core.py` | `_build_system_prompt(..., safety_lock_user_text=...)` |
+| `l3_node/agent_core.py` | `kernel prompt composer(..., safety_lock_user_text=...)` |
 | `core/native_tools.py` | append / list_pending / remove |

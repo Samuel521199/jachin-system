@@ -1,6 +1,6 @@
 ﻿"""
 多模态读图轮次的工具策略：避免 mcp:fetch / 联网检索 与「看用户上传的图」任务冲突，
-防止会话历史里的 URL、Observation 正文反客为主污染视觉输出。
+防止会话历史里的 URL、Verification evidence 正文反客为主污染视觉输出。
 """
 from __future__ import annotations
 

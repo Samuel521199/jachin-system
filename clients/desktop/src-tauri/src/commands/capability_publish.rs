@@ -861,6 +861,7 @@ fn read_package_info(
         if kind == "model" {
             validate_model_package_files(dir, &value, &mut problems);
         }
+        validate_recovery_playbook_manifest(&value, &mut problems);
         if value
             .get("version")
             .and_then(Value::as_str)
@@ -946,6 +947,160 @@ fn read_package_info(
         l1_package_url: None,
         problems,
     })
+}
+
+fn validate_recovery_playbook_manifest(manifest: &Value, problems: &mut Vec<String>) {
+    let Some(playbook) = manifest.get("recovery_playbook") else {
+        return;
+    };
+    let Some(playbook_obj) = playbook.as_object() else {
+        problems.push("recovery_playbook must be an object".to_string());
+        return;
+    };
+    let Some(targets) = playbook_obj.get("targets").and_then(Value::as_array) else {
+        problems.push("recovery_playbook.targets must be a non-empty array".to_string());
+        return;
+    };
+    if targets.is_empty() {
+        problems.push("recovery_playbook.targets must be a non-empty array".to_string());
+        return;
+    }
+
+    for (target_index, target) in targets.iter().enumerate() {
+        let prefix = format!("recovery_playbook.targets[{target_index}]");
+        let Some(target_obj) = target.as_object() else {
+            problems.push(format!("{prefix} must be an object"));
+            continue;
+        };
+        if !json_non_empty_string(target_obj.get("role_agent").or_else(|| target_obj.get("role"))) {
+            problems.push(format!("{prefix}.role_agent must be a non-empty string"));
+        }
+        if let Some(tools) = target_obj
+            .get("tools")
+            .or_else(|| target_obj.get("tool_patterns"))
+        {
+            validate_non_empty_string_array(
+                tools,
+                &format!("{prefix}.tools"),
+                true,
+                problems,
+            );
+        }
+        if let Some(max_attempts) = target_obj.get("max_attempts") {
+            if !json_int_in_range(max_attempts, 1, 8) {
+                problems.push(format!("{prefix}.max_attempts must be an integer from 1 to 8"));
+            }
+        }
+
+        let Some(steps) = target_obj.get("steps").and_then(Value::as_array) else {
+            problems.push(format!("{prefix}.steps must be a non-empty array"));
+            continue;
+        };
+        if steps.is_empty() {
+            problems.push(format!("{prefix}.steps must be a non-empty array"));
+            continue;
+        }
+        for (step_index, step) in steps.iter().enumerate() {
+            validate_recovery_step(step, &format!("{prefix}.steps[{step_index}]"), problems);
+        }
+    }
+}
+
+fn validate_recovery_step(step: &Value, prefix: &str, problems: &mut Vec<String>) {
+    let Some(step_obj) = step.as_object() else {
+        problems.push(format!("{prefix} must be an object"));
+        return;
+    };
+    if !json_non_empty_string(step_obj.get("strategy")) {
+        problems.push(format!("{prefix}.strategy must be a non-empty string"));
+    }
+    if !json_non_empty_string(step_obj.get("tool")) {
+        problems.push(format!(
+            "{prefix}.tool must be a non-empty string, use '$same' to retry the same tool"
+        ));
+    }
+    if let Some(priority) = step_obj.get("priority") {
+        if !json_int_in_range(priority, 0, 1000) {
+            problems.push(format!("{prefix}.priority must be an integer from 0 to 1000"));
+        }
+    }
+    if let Some(rationale) = step_obj.get("rationale") {
+        if !rationale.is_string() {
+            problems.push(format!("{prefix}.rationale must be a string when provided"));
+        }
+    }
+    if step_obj.contains_key("action_patch") && step_obj.contains_key("action_template") {
+        problems.push(format!(
+            "{prefix} cannot define both action_patch and action_template"
+        ));
+    }
+    for key in ["action_patch", "action_template"] {
+        if let Some(value) = step_obj.get(key) {
+            if !value.is_object() {
+                problems.push(format!("{prefix}.{key} must be an object when provided"));
+            }
+        }
+    }
+    if let Some(when) = step_obj.get("when") {
+        validate_recovery_when(when, &format!("{prefix}.when"), problems);
+    }
+}
+
+fn validate_recovery_when(when: &Value, prefix: &str, problems: &mut Vec<String>) {
+    let Some(when_obj) = when.as_object() else {
+        problems.push(format!("{prefix} must be an object when provided"));
+        return;
+    };
+    for key in ["failure_any", "failure_all", "tool_not_contains"] {
+        if let Some(value) = when_obj.get(key) {
+            validate_non_empty_string_array(
+                value,
+                &format!("{prefix}.{key}"),
+                false,
+                problems,
+            );
+        }
+    }
+    if let Some(after_attempt) = when_obj.get("after_attempt") {
+        if !json_int_in_range(after_attempt, 1, 8) {
+            problems.push(format!("{prefix}.after_attempt must be an integer from 1 to 8"));
+        }
+    }
+}
+
+fn validate_non_empty_string_array(
+    value: &Value,
+    path: &str,
+    require_non_empty: bool,
+    problems: &mut Vec<String>,
+) {
+    let Some(items) = value.as_array() else {
+        problems.push(format!("{path} must be a string array"));
+        return;
+    };
+    if require_non_empty && items.is_empty() {
+        problems.push(format!("{path} must be a non-empty string array"));
+        return;
+    }
+    for (index, item) in items.iter().enumerate() {
+        if !json_non_empty_string(Some(item)) {
+            problems.push(format!("{path}[{index}] must be a non-empty string"));
+        }
+    }
+}
+
+fn json_non_empty_string(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_str)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn json_int_in_range(value: &Value, min: i64, max: i64) -> bool {
+    value
+        .as_i64()
+        .map(|n| n >= min && n <= max)
+        .unwrap_or(false)
 }
 
 fn validate_model_package_files(dir: &Path, manifest: &Value, problems: &mut Vec<String>) {

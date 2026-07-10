@@ -1,4 +1,4 @@
-﻿"""
+"""
 PMO — 飞书多维表记录变更事件（drive.file.bitable_record_changed_v1）
 
 长连接接收 Lark 推送；收到后刷新防抖会话，由 debounce scheduler 在 idle 后分析推送。

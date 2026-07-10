@@ -1,4 +1,4 @@
-# MCP / Skill Independence Boundary
+﻿# MCP / Skill Independence Boundary
 
 Jachin L3 should boot with a small OS-assistant core and load business
 capabilities as independent L1/L2-distributed packages.
@@ -31,7 +31,7 @@ Development override:
   packages directly from the repo.
 - `JACHIN_DEV_LOAD_BUSINESS_CAPABILITY_PACKAGES=1` loads business packages
   directly from the repo.
-- `JACHIN_BUILD_WITH_BUSINESS_PACKAGES=1` builds legacy/dev sidecars that embed
+- `JACHIN_BUILD_WITH_BUSINESS_PACKAGES=1` builds archived/dev sidecars that embed
   business imports. Default sidecar builds keep those imports out.
 
 These flags are for local development only. Production/L3 standalone machines

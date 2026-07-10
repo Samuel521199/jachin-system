@@ -2,7 +2,7 @@
 run_agent ExecutionBrief 路径的 Level 3 轻量自愈（路线图 · 无人值守 P2）
 
 在顶层 run 以 ``[ExecutionBrief]`` 结束时，用 Experience RAG 检索相似成功案例，
-可选飞书通知，并将诊断摘要写入会话热注入队列供**下一轮** ReAct 合并理解。
+可选飞书通知，并将诊断摘要写入会话热注入队列供**下一轮** RoleExecutionAgent 合并理解。
 
 环境变量
 --------

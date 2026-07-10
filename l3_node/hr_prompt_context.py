@@ -95,4 +95,3 @@ def _one_job_digest_line(job_name: str, max_chars: int) -> str:
         return s[:max_chars] + ("…" if len(s) > max_chars else "")
     except Exception as e:
         return f"{job_name}（摘要失败:{e})"
-

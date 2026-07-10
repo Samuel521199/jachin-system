@@ -38,9 +38,9 @@ def temp_plugin_dirs():
     """创建临时插件目录"""
     plugins_dir = tempfile.mkdtemp(prefix="jachin_plugins_")
     skills_repo_dir = tempfile.mkdtemp(prefix="jachin_skills_")
-    
+
     yield Path(plugins_dir), Path(skills_repo_dir)
-    
+
     # 清理
     shutil.rmtree(plugins_dir, ignore_errors=True)
     shutil.rmtree(skills_repo_dir, ignore_errors=True)
@@ -88,19 +88,19 @@ def create_test_plugin(
 ) -> Path:
     """
     创建测试插件
-    
+
     Args:
         plugin_id: 插件 ID
         skills_repo_dir: 技能仓库目录
         permissions: 权限列表
         has_stream_method: 是否包含流式方法
-        
+
     Returns:
         插件目录路径
     """
     plugin_dir = skills_repo_dir / plugin_id
     plugin_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # 创建 manifest.yaml
     manifest = {
         "id": plugin_id,
@@ -120,12 +120,12 @@ def create_test_plugin(
         },
         "requirements": []
     }
-    
+
     manifest_file = plugin_dir / "manifest.yaml"
     import yaml
     with open(manifest_file, 'w', encoding='utf-8') as f:
         yaml.dump(manifest, f, allow_unicode=True)
-    
+
     # 创建 main.py
     main_py_content = f'''
 import ray
@@ -136,7 +136,7 @@ class PluginActor:
     def __init__(self, plugin_id: str, manifest: dict):
         self.plugin_id = plugin_id
         self.manifest = manifest
-    
+
     def hello(self, payload: Dict[str, Any], trace_id: str = None) -> Dict[str, Any]:
         """简单的 hello 方法"""
         name = payload.get("name", "World")
@@ -153,7 +153,7 @@ class PluginActor:
                 ]
             }}
         }}
-    
+
     def process_data(self, payload: Dict[str, Any], trace_id: str = None) -> Dict[str, Any]:
         """处理数据方法"""
         data = payload.get("data", {{}})
@@ -163,7 +163,7 @@ class PluginActor:
             "data": result
         }}
 '''
-    
+
     if has_stream_method:
         main_py_content += '''
     def process_data_stream(self, payload: Dict[str, Any], trace_id: str = None):
@@ -176,11 +176,11 @@ class PluginActor:
                 "done": i == len(data) - 1
             }
 '''
-    
+
     main_py_file = plugin_dir / "main.py"
     with open(main_py_file, 'w', encoding='utf-8') as f:
         f.write(main_py_content)
-    
+
     return plugin_dir
 
 
@@ -189,20 +189,20 @@ class PluginActor:
 async def test_plugin_installation(plugin_manager, temp_plugin_dirs):
     """测试插件安装"""
     plugins_dir, skills_repo_dir = temp_plugin_dirs
-    
+
     plugin_id = "com.test.simple-plugin"
     plugin_dir = create_test_plugin(plugin_id, skills_repo_dir)
-    
+
     # 安装插件（简化：直接复制目录内容到插件目录）
     # 注意：实际安装需要创建 .jsp 文件并解压，这里简化测试
     installed_dir = plugins_dir / plugin_id
     installed_dir.mkdir(parents=True, exist_ok=True)
     shutil.copytree(plugin_dir, installed_dir, dirs_exist_ok=True)
-    
+
     # 验证插件已安装（通过直接读取 manifest.yaml）
     manifest_file = installed_dir / "manifest.yaml"
     assert manifest_file.exists()
-    
+
     # 使用 PluginManager 读取 manifest
     # 注意：PluginManager.get_plugin_manifest 可能需要从 skills_repo 读取
     # 这里我们直接验证文件存在
@@ -222,13 +222,13 @@ async def test_invoke_plugin_success(
 ):
     """测试成功调用插件"""
     plugins_dir, skills_repo_dir = temp_plugin_dirs
-    
+
     plugin_id = "com.test.hello-plugin"
     plugin_dir = create_test_plugin(plugin_id, skills_repo_dir)
-    
+
     # 注意：插件已经在 skills_repo_dir 中创建
     # PluginManager.get_plugin_manifest 现在会从文件系统读取 manifest.yaml
-    
+
     # 调用插件
     payload = json.dumps({"name": "Test User"}).encode('utf-8')
     result = await plugin_executor.invoke_plugin(
@@ -237,12 +237,12 @@ async def test_invoke_plugin_success(
         payload=payload,
         trace_id="test-trace-001"
     )
-    
+
     # 验证结果
     assert result["status_code"] == 200
     assert "payload" in result
     assert "ui_render_schema" in result
-    
+
     # 解析 payload
     response_data = json.loads(result["payload"].decode('utf-8'))
     assert response_data["message"] == "Hello, Test User!"
@@ -257,7 +257,7 @@ async def test_invoke_plugin_not_found(plugin_executor):
         payload=b"{}",
         trace_id="test-trace-002"
     )
-    
+
     assert result["status_code"] == 404
     assert "not found" in result["error_message"].lower()
 
@@ -272,7 +272,7 @@ async def test_permission_enforcement(
 ):
     """测试权限验证"""
     plugins_dir, skills_repo_dir = temp_plugin_dirs
-    
+
     # 创建没有 file.write 权限的插件
     plugin_id = "com.test.no-file-write-plugin"
     plugin_dir = create_test_plugin(
@@ -280,12 +280,12 @@ async def test_permission_enforcement(
         skills_repo_dir,
         permissions=[{"scope": "file.read"}]  # 只有读取权限
     )
-    
+
     # 安装插件
     installed_dir = plugins_dir / plugin_id
     installed_dir.mkdir(parents=True, exist_ok=True)
     shutil.copytree(plugin_dir, installed_dir, dirs_exist_ok=True)
-    
+
     # 调用需要 file.write 权限的方法（根据方法名推断）
     payload = json.dumps({"data": "test"}).encode('utf-8')
     result = await plugin_executor.invoke_plugin(
@@ -294,7 +294,7 @@ async def test_permission_enforcement(
         payload=payload,
         trace_id="test-trace-003"
     )
-    
+
     # 应该返回 403 错误
     assert result["status_code"] == 403
     assert "permission" in result["error_message"].lower()
@@ -310,7 +310,7 @@ async def test_stream_plugin(
 ):
     """测试流式插件调用"""
     plugins_dir, skills_repo_dir = temp_plugin_dirs
-    
+
     # 创建有流式方法的插件
     plugin_id = "com.test.stream-plugin"
     plugin_dir = create_test_plugin(
@@ -318,29 +318,29 @@ async def test_stream_plugin(
         skills_repo_dir,
         has_stream_method=True
     )
-    
+
     # 安装插件
     installed_dir = plugins_dir / plugin_id
     installed_dir.mkdir(parents=True, exist_ok=True)
     shutil.copytree(plugin_dir, installed_dir, dirs_exist_ok=True)
-    
+
     # 调用流式方法
     payload = json.dumps({"data": [1, 2, 3, 4, 5]}).encode('utf-8')
-    
+
     # 注意：这里我们直接测试 plugin_executor，而不是 gateway
     # Gateway 的 StreamPlugin 测试需要 gRPC 上下文，更复杂
-    
+
     # 获取 Actor
     manifest = plugin_manager.get_plugin_manifest(plugin_id)
     actor_handle = await plugin_executor._get_or_create_plugin_actor(plugin_id, manifest)
-    
+
     assert actor_handle is not None
-    
+
     # 调用流式方法
     payload_dict = json.loads(payload.decode('utf-8'))
     stream_method = getattr(actor_handle, "process_data_stream")
     result_refs = stream_method.remote(payload_dict, trace_id="test-trace-004")
-    
+
     # 收集流式结果
     chunks = []
     try:
@@ -357,7 +357,7 @@ async def test_stream_plugin(
             chunks.append(result)
     except Exception as e:
         pytest.fail(f"Stream plugin failed: {e}")
-    
+
     # 验证结果
     assert len(chunks) > 0
 
@@ -372,27 +372,27 @@ async def test_actor_lifecycle(
 ):
     """测试 Actor 生命周期管理"""
     plugins_dir, skills_repo_dir = temp_plugin_dirs
-    
+
     plugin_id = "com.test.lifecycle-plugin"
     plugin_dir = create_test_plugin(plugin_id, skills_repo_dir)
-    
+
     # 安装插件
     installed_dir = plugins_dir / plugin_id
     installed_dir.mkdir(parents=True, exist_ok=True)
     shutil.copytree(plugin_dir, installed_dir, dirs_exist_ok=True)
-    
+
     # 第一次调用（创建 Actor）
     manifest = plugin_manager.get_plugin_manifest(plugin_id)
     actor1 = await plugin_executor._get_or_create_plugin_actor(plugin_id, manifest)
     assert actor1 is not None
-    
+
     # 第二次调用（应该复用同一个 Actor）
     actor2 = await plugin_executor._get_or_create_plugin_actor(plugin_id, manifest)
     assert actor2 is actor1  # 应该是同一个 Actor
-    
+
     # 清理
     await plugin_executor.cleanup()
-    
+
     # 验证 Actor 已清理
     assert plugin_id not in plugin_executor.plugin_actors
 

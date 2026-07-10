@@ -1,10 +1,10 @@
-﻿"""PMO：禁止分支 A 在试错阶段推送半成品 Lark 卡片。"""
+"""PMO：禁止分支 A 在试错阶段推送半成品 Lark 卡片。"""
 from __future__ import annotations
 
 import json
 from unittest.mock import patch
 
-from l3_node.agent_core import _pmo_branch_a_blocked_premature_lark_observation
+from l3_node.pmo_agent_policy import _pmo_branch_a_blocked_premature_lark_observation
 from l3_node.engine.hooks_pipeline import PipelineContext
 
 

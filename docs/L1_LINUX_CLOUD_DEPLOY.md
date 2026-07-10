@@ -102,7 +102,7 @@ cd jachin-l1-linux-amd64-v*
 
 ## 5. 数据库与迁移
 
-1. 在服务器或托管 RDS 上准备 PostgreSQL，得到 `DATABASE_URL`，例如：  
+1. 在服务器或托管 RDS 上准备 PostgreSQL，得到 `DATABASE_URL`，例如：
    `postgres://user:pass@127.0.0.1:5432/jachin_nexus`
 
 2. **首次部署**需执行 Drizzle 迁移。任选其一：
@@ -226,8 +226,8 @@ sudo -u postgres psql -c "CREATE DATABASE jachin_nexus OWNER jachin;"
 
 - `DATABASE_URL` 主机名写 **`host.docker.internal`**（compose 已配 `extra_hosts: host-gateway`）。
 - Postgres 需监听来自 Docker 网桥的连接，例如在 `postgresql.conf`：`listen_addresses = '*'` 或至少包含宿主机在 `docker0` 上的地址。
-- 在 `pg_hba.conf` 增加一行允许 Docker 网段（常见为 `172.17.0.0/16`，以 `docker network inspect bridge` 为准），例如：  
-  `host all all 172.17.0.0/16 scram-sha-256`  
+- 在 `pg_hba.conf` 增加一行允许 Docker 网段（常见为 `172.17.0.0/16`，以 `docker network inspect bridge` 为准），例如：
+  `host all all 172.17.0.0/16 scram-sha-256`
   然后 `sudo systemctl reload postgresql`。
 
 **方式 B — `network_mode: host`（更简单，少配 pg_hba）**
@@ -361,11 +361,11 @@ npm run db:init-store
 
 L1 使用 **`nexus-host`（宿主机网络、3000）** 时，L2 容器在 bridge 网络内需通过 **`host.docker.internal:3000`** 访问 Nexus（`docker/compose.l2.runtime.yml` 已加 `extra_hosts`）。
 
-1. **本机构建**（仓库根）：`docker build --platform linux/amd64 -f deploy/Dockerfile.l2 -t jachin-l2:latest .`  
-2. **导出**：`docker save jachin-l2:latest -o jachin-l2-latest.tar`（勿再套一层外层 tar）  
-3. **上传**：`.\scripts\scp-l2-docker-artifacts-to-server.ps1` 或手动放到服务器 **`/opt/jachin-l2/`**  
-4. **服务器**：`docker load -i jachin-l2-latest.tar`，`docker compose -f compose.l2.runtime.yml pull redis`，`docker compose -f compose.l2.runtime.yml up -d`（或 `deploy/l2-ecs-bundle/server-l2-up.sh`）  
-5. **安全组**：放行 **TCP 18888**；`l2.env` 中 **`BRAIN_BASE_URL`** 改为公网可访问的 L2 地址（如 `http://47.86.39.173:18888`）。  
+1. **本机构建**（仓库根）：`docker build --platform linux/amd64 -f deploy/Dockerfile.l2 -t jachin-l2:latest .`
+2. **导出**：`docker save jachin-l2:latest -o jachin-l2-latest.tar`（勿再套一层外层 tar）
+3. **上传**：`.\scripts\scp-l2-docker-artifacts-to-server.ps1` 或手动放到服务器 **`/opt/jachin-l2/`**
+4. **服务器**：`docker load -i jachin-l2-latest.tar`，`docker compose -f compose.l2.runtime.yml pull redis`，`docker compose -f compose.l2.runtime.yml up -d`（或 `deploy/l2-ecs-bundle/server-l2-up.sh`）
+5. **安全组**：放行 **TCP 18888**；`l2.env` 中 **`BRAIN_BASE_URL`** 改为公网可访问的 L2 地址（如 `http://47.86.39.173:18888`）。
 
 L3 默认通过 L1 Profile 直连当前 L1 地址；L2 仅作为可选企业桥接扩展，不再是 L1 部署的必需步骤。
 
@@ -378,5 +378,5 @@ L3 默认通过 L1 Profile 直连当前 L1 地址；L2 仅作为可选企业桥�
 1. **启动无样式**：确认已复制 `.next/static` 到包内 `.next/static`（打包脚本已处理）。
 2. **数据库连接失败**：检查 `DATABASE_URL`、PostgreSQL 监听、`pg_hba.conf`、安全组。
 3. **先看日志**：`logs/l1-boot.log` 是否已打印「即将检查 .env…」；若无，说明 `start.sh` 未执行或权限不足。
-4. **本机 `docker build` 拉 `node` 超时 / `dockerproxy.com` TLS 失败**：Docker Desktop → **Settings → Docker Engine**，检查 `registry-mirrors`；去掉不可用源或改用可用镜像。也可不显式配镜像，直接用构建参数：  
+4. **本机 `docker build` 拉 `node` 超时 / `dockerproxy.com` TLS 失败**：Docker Desktop → **Settings → Docker Engine**，检查 `registry-mirrors`；去掉不可用源或改用可用镜像。也可不显式配镜像，直接用构建参数：
    `docker build --build-arg NODE_IMAGE=docker.m.daocloud.io/library/node:20-bookworm-slim ...`（见 `docker/l1-nexus.Dockerfile` 头部注释）。

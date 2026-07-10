@@ -1,4 +1,4 @@
-﻿"""Lark 群机器人 Incoming Webhook URL 校验（区分 chat_id oc_xxx）。"""
+"""Lark 群机器人 Incoming Webhook URL 校验（区分 chat_id oc_xxx）。"""
 from __future__ import annotations
 
 import re

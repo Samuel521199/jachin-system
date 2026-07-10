@@ -51,7 +51,7 @@ class ChatResponse(BaseModel):
 async def chat_endpoint(request: ChatRequest):
     """
     聊天接口
-    
+
     这是核心逻辑：
     1. 这里未来会加入：检索 LanceDB / 生物学记忆上下文
     2. 这里未来会加入：查询 Dapr 状态
@@ -59,10 +59,10 @@ async def chat_endpoint(request: ChatRequest):
     """
     if not llm:
         return ChatResponse(reply="Error: LLM Provider is not available. Please check configuration.")
-    
+
     # 调用大模型
     response = await llm.chat(request.message)
-    
+
     return ChatResponse(reply=response)
 
 

@@ -44,17 +44,17 @@ OBSOLETE RULE CLARIFICATION: any older line that says project briefings sent to 
 
 Examples:
 
-- User: "使用计算机帮忙计算 66*8+9-4" -> Action: `mcp:windows_calculator_calculate`, Action Input: `{"expression":"66*8+9-4","expected":"533"}`
-- User: "打开记事本写下这段话并保存到桌面" -> Action: `mcp:windows_notepad_save_text`
-- User: "打开 Lark/飞书" -> Action: `mcp:windows_open_app`, Action Input: `{"app_name":"lark"}`
-- User: "在 Lark 里给 Vivian 和 Samuel 发 你好" -> Action: `mcp:windows_lark_send_message`, Action Input: `{"recipients_json":"[\"Vivian\",\"Samuel\"]","message":"你好"}`
-- User: "总结测试备注冒烟草稿今天的消息" -> Action: `mcp:windows_lark_read_recent_messages`, Action Input: `{"target":"测试备注冒烟草稿","pages":3}`
-- User: "查 Vivian 最近一周聊天记录并总结" -> Action: `mcp:windows_lark_read_history`, Action Input: `{"target":"Vivian","days":7,"max_pages":18}`
-- User: "打开 P28 AI项目进度 多维表格" -> Action: `mcp:windows_lark_open_bitable`, Action Input: `{"table_name":"P28 AI项目进度"}`
-- User: "找桌面上的 xlsx 文件" -> Action: `mcp:windows_file_find`, Action Input: `{"root":"C:\\Users\\...\\Desktop","pattern":"*.xlsx"}`
-- User: "把 A.txt 复制到 Documents" -> Action: `mcp:windows_file_copy`
-- User: "删除这个临时文件" -> Action: `mcp:windows_file_delete_with_confirm`; if Observation says `confirmation_required`, ask the user to confirm unless bypass is configured.
-- User: "帮我确认这个弹窗" -> Action: `mcp:windows_popup_action`, Action Input: `{"action":"confirm"}`
-- User: "在某个 App 里点登录" -> first Action: `mcp:uia_snapshot`, then click by accessible name if available.
+- User: "使用计算机帮忙计算 66*8+9-4" -> WorkOrder tool: `mcp:windows_calculator_calculate`, input: `{"expression":"66*8+9-4","expected":"533"}`
+- User: "打开记事本写下这段话并保存到桌面" -> WorkOrder tool: `mcp:windows_notepad_save_text`
+- User: "打开 Lark/飞书" -> WorkOrder tool: `mcp:windows_open_app`, input: `{"app_name":"lark"}`
+- User: "在 Lark 里给 Vivian 和 Samuel 发 你好" -> WorkOrder tool: `mcp:windows_lark_send_message`, input: `{"recipients_json":"[\"Vivian\",\"Samuel\"]","message":"你好"}`
+- User: "总结测试备注冒烟草稿今天的消息" -> WorkOrder tool: `mcp:windows_lark_read_recent_messages`, input: `{"target":"测试备注冒烟草稿","pages":3}`
+- User: "查 Vivian 最近一周聊天记录并总结" -> WorkOrder tool: `mcp:windows_lark_read_history`, input: `{"target":"Vivian","days":7,"max_pages":18}`
+- User: "打开 P28 AI项目进度 多维表格" -> WorkOrder tool: `mcp:windows_lark_open_bitable`, input: `{"table_name":"P28 AI项目进度"}`
+- User: "找桌面上的 xlsx 文件" -> WorkOrder tool: `mcp:windows_file_find`, input: `{"root":"C:\\Users\\...\\Desktop","pattern":"*.xlsx"}`
+- User: "把 A.txt 复制到 Documents" -> WorkOrder tool: `mcp:windows_file_copy`
+- User: "删除这个临时文件" -> WorkOrder tool: `mcp:windows_file_delete_with_confirm`; if verification/evidence says `confirmation_required`, ask the user to confirm unless bypass is configured.
+- User: "帮我确认这个弹窗" -> WorkOrder tool: `mcp:windows_popup_action`, input: `{"action":"confirm"}`
+- User: "在某个 App 里点登录" -> first Tool call: `mcp:uia_snapshot`, then click by accessible name if available.
 
 <!-- PROMPT_INJECT_OS_ASSISTANT_END -->

@@ -1,4 +1,4 @@
-﻿# HUD 临时对话窗口样式审计
+# HUD 临时对话窗口样式审计
 
 > **当前已知状态（截至最近一次验证）**：
 > - 窗口透明通道：✅ 已打通（可透出桌面）
@@ -173,7 +173,7 @@ div.h-full.w-full.p-2            ← 外层容器，四周留 p-2 边距
 
 ### 2.2 ⚠️ WebView2 对 `backdrop-filter` 的渲染与系统原生不同
 
-Windows 上的 Tauri 使用 WebView2（基于 Chromium）渲染 `backdrop-filter`。  
+Windows 上的 Tauri 使用 WebView2（基于 Chromium）渲染 `backdrop-filter`。
 WebView2 的 `backdrop-filter: blur()` 模糊的是**WebView 内部其他元素或自身背景**，而不是操作系统级别的窗口合成层。
 
 这意味着：
@@ -197,8 +197,8 @@ WebView2 的 `backdrop-filter: blur()` 模糊的是**WebView 内部其他元素�
 
 ### 2.4 外层 `p-2` 让面板看起来仍是"网页卡片"
 
-`p-2` 使面板四周离窗口物理边缘有约 8px 间隙。  
-在极客 HUD 视觉里，内容应贴近物理边缘，强调"无框终端"感。  
+`p-2` 使面板四周离窗口物理边缘有约 8px 间隙。
+在极客 HUD 视觉里，内容应贴近物理边缘，强调"无框终端"感。
 保留 `p-2` 会让视觉重心落在"卡片边界"上，而不是内容本身。
 
 ---
@@ -207,7 +207,7 @@ WebView2 的 `backdrop-filter: blur()` 模糊的是**WebView 内部其他元素�
 
 ### 优先级 1：提升 backdrop-blur 强度（立竿见影）
 
-**当前** → `backdrop-blur-md`（12px）  
+**当前** → `backdrop-blur-md`（12px）
 **目标** → `backdrop-blur-xl`（24px）或 `backdrop-blur-2xl`（40px）
 
 同步调整遮罩：
@@ -301,5 +301,5 @@ WebView2 的 `backdrop-filter: blur()` 模糊的是**WebView 内部其他元素�
 
 ## 六、文档维护说明
 
-本文档记录"HUD 临时对话窗"的样式层级现状与改进分析。  
+本文档记录"HUD 临时对话窗"的样式层级现状与改进分析。
 如果代码发生变更（尤其是主容器 class、globals.css 透明规则、tauri.conf.json 窗口配置），请同步更新第一部分"当前样式结构"中的对应表格。

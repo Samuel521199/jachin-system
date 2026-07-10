@@ -350,8 +350,8 @@ def user_message_content_has_openai_image(content: Any) -> bool:
     return False
 
 
-def l3_react_full_messages_need_vision_model(full_messages: list[dict[str, Any]] | None) -> bool:
-    """任一条 user 消息含 OpenAI 图片块则本轮 ReAct 应使用多模态（VL）模型。"""
+def l3_role_execution_full_messages_need_vision_model(full_messages: list[dict[str, Any]] | None) -> bool:
+    """任一条 user 消息含 OpenAI 图片块则本轮 RoleExecutor 应使用多模态（VL）模型。"""
     if not full_messages:
         return False
     for m in full_messages:
@@ -383,7 +383,7 @@ def litellm_model_supports_openai_multimodal_chat(model: str) -> bool:
         return True
     if "qwen-vl" in m or "qwen2-vl" in m or "qwen2.5-vl" in m or "qwen3-vl" in m:
         return True
-    # 通义 3.5 主推理模型在兼容模式下按 OpenAI 多模态 Chat 消费 image_url（与 ReAct 多模态路由一致）
+    # 通义 3.5 主推理模型在兼容模式下按 OpenAI 多模态 Chat 消费 image_url（与 RoleExecutor 多模态路由一致）
     if "qwen3.5-plus" in m:
         return True
     return False
@@ -402,8 +402,8 @@ def dashscope_vl_should_omit_openai_tools_for_multimodal(
     可正常读图（见 ``scripts/test_dashscope_vision_smoke.py``），**带 tools 时仍会丢图**，故改为：
     凡 ``dashscope/*`` 且 ``messages`` 中已有 OpenAI 图片块，即省略 ``tools``（除非环境显式关闭）。
 
-    为 true 时，调用方应**不传** ``tools`` / ``tool_choice``，仅依赖 system 内 ReAct 工具说明输出
-    Thought/Action（与 ``JACHIN_REACT_STREAM_DISABLE_TOOLS`` 行为一致）。
+    为 true 时，调用方应**不传** ``tools`` / ``tool_choice``，仅依赖 system 内 RoleExecutor 工具说明输出
+    WorkOrder suggestion（与 ``JACHIN_ROLE_EXECUTION_STREAM_DISABLE_TOOLS`` 行为一致）。
 
     设 ``JACHIN_DASHSCOPE_VL_KEEPS_TOOLS=1`` 可关闭此规避（用于供应商修复后验证）。
     """
@@ -412,7 +412,7 @@ def dashscope_vl_should_omit_openai_tools_for_multimodal(
     ml = (model or "").strip().lower()
     if not ml.startswith("dashscope/"):
         return False
-    return l3_react_full_messages_need_vision_model(messages)
+    return l3_role_execution_full_messages_need_vision_model(messages)
 
 
 def vision_safe_litellm_fallback_models(
@@ -446,16 +446,16 @@ def vision_safe_litellm_fallback_models(
     return out
 
 
-def l3_react_should_use_complex_model(
+def l3_role_execution_should_use_complex_model(
     *,
     delegate_depth: int,
-    react_iteration: int,
+    role_execution_iteration: int,
     full_messages: list[dict[str, Any]],
     tools_count: int,
     force_complex: bool = False,
 ) -> bool:
     """
-    L3 ReAct 主循环：是否改用 LLM_COMPLEX_MODEL（qwen-max）。
+    L3 RoleExecutor 主循环：是否改用 LLM_COMPLEX_MODEL（qwen-max）。
     可通过 JACHIN_LLM_COMPLEX_DISABLE=1 关闭；阈值见环境变量注释。
     """
     if os.environ.get("JACHIN_LLM_COMPLEX_DISABLE", "").strip().lower() in ("1", "true", "yes"):
@@ -465,10 +465,10 @@ def l3_react_should_use_complex_model(
     if delegate_depth and delegate_depth > 0:
         return True
     try:
-        min_iter = int(os.environ.get("JACHIN_LLM_COMPLEX_MIN_REACT_ITER", "8"))
+        min_iter = int(os.environ.get("JACHIN_LLM_COMPLEX_MIN_ROLE_EXECUTION_ITER", "8"))
     except ValueError:
         min_iter = 8
-    if react_iteration >= min_iter:
+    if role_execution_iteration >= min_iter:
         return True
     try:
         # L3 常合并 20+ MCP；28 会导致几乎每轮强制 qwen-max，压过主模型与「编程首轮→coder」
@@ -508,7 +508,7 @@ _CODING_INTENT_USER_RE = re.compile(
 
 
 def _last_substantive_user_snippet(full_messages: list[dict[str, Any]]) -> str:
-    """跳过 Observation 追问问句，取最近一条像「用户原任务」的 user 文本。"""
+    """跳过 Verification evidence 追问问句，取最近一条像「用户原任务」的 user 文本。"""
     for m in reversed(full_messages or []):
         if (m.get("role") or "").strip() != "user":
             continue
@@ -522,16 +522,16 @@ def _last_substantive_user_snippet(full_messages: list[dict[str, Any]]) -> str:
     return ""
 
 
-def should_prime_l3_react_coder_mode(
+def should_prime_l3_role_execution_coder_mode(
     *,
-    react_iteration: int,
+    role_execution_iteration: int,
     full_messages: list[dict[str, Any]],
 ) -> bool:
     """
-    ReAct 首轮（及尚未写过工作区时）：用户话明显是编程/脚本/监控类任务时，优先走编码模型。
+    RoleExecutor 首轮（及尚未写过工作区时）：用户话明显是编程/脚本/监控类任务时，优先走编码模型。
     与「fs_write/apply_patch 之后才切 coder」互补，避免 tools 数量误触 complex 后整轮用 qwen-max 写代码。
     """
-    if int(react_iteration or 0) != 0:
+    if int(role_execution_iteration or 0) != 0:
         return False
     snip = _last_substantive_user_snippet(full_messages)
     if len(snip) < 14:

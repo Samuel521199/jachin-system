@@ -1,10 +1,10 @@
-﻿"""PMO 03 主轴 fs_read：平面表分两段读入 LLM。"""
+"""PMO 03 主轴 fs_read：平面表分两段读入 LLM。"""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
 
-from l3_node.agent_core import (
+from l3_node.pmo_agent_policy import (
     PMO_03_VIEW_ID,
     _pmo_03_get_chunks_read,
     _pmo_maybe_chunk_03_fs_read_observation,

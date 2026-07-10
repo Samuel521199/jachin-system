@@ -1,4 +1,4 @@
-﻿"""pmo_personnel_format 可读输出（GFM 表 + 【姓名】）。"""
+"""pmo_personnel_format 可读输出（GFM 表 + 【姓名】）。"""
 from __future__ import annotations
 
 from l3_node.tools.pmo_personnel_format import format_personnel_report_text

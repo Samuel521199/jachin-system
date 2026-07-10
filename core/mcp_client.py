@@ -620,7 +620,7 @@ class MCPServerInstance:
                                 )
                 if image_urls:
                     logger.info(
-                        "[MCP] call_tool 含 %d 张图片 server_id=%s name=%s → 多模态 Observation 信封",
+                        "[MCP] call_tool 含 %d 张图片 server_id=%s name=%s → 多模态 Verification evidence 信封",
                         len(image_urls),
                         self.server_id,
                         name,
@@ -634,7 +634,7 @@ class MCPServerInstance:
             return "[无输出]"
         except Exception as e:
             logger.exception("[MCP] call_tool 异常 server_id=%s name=%s err=%s", self.server_id, name, e)
-            # 禁止向上抛出：海外网络/站点封禁时子进程或传输层异常会击穿 ReAct，导致进程静默退出
+            # 禁止向上抛出：海外网络/站点封禁时子进程或传输层异常会击穿 RoleExecutionAgent，导致进程静默退出
             return (
                 f"[MCP 工具错误] {type(e).__name__}: {e}\n"
                 "（若访问境内站点，海外 IP 可能被拒绝、重置连接或长时间挂起；请换网络或稍后重试。）"
@@ -887,7 +887,7 @@ class MCPManager:
             and (c.get("id") or c.get("name") or "unknown") not in self._instances
         ]
         if pending:
-            # 失败重试时可能每轮 ReAct 都进入；详情见下方 warning；此处用 debug 降噪
+            # 失败重试时可能每轮 RoleExecutionAgent 都进入；详情见下方 warning；此处用 debug 降噪
             logger.debug("[MCP] 尝试连接 %d 个尚未就绪的 stdio Server（配置共 %d 条）", len(pending), len(servers))
         _instances_before = len(self._instances)
         # 按 server_id 去重后并发连接，避免多个 npx stdio 顺序阻塞（总墙钟≈最慢一个）

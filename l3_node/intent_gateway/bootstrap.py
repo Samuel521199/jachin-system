@@ -91,7 +91,7 @@ def _match_slot_demo_restart(bundle: Any, _ctx: dict[str, Any]) -> bool:
 
 
 async def _handle_slot_demo_defer(_bundle: Any, _ctx: dict[str, Any]) -> Optional[str]:
-    """槽位齐后交给 ReAct，不在此短路。"""
+    """槽位齐后交给 RoleExecutionAgent，不在此短路。"""
     return None
 
 
@@ -172,7 +172,7 @@ def ensure_default_intent_registry() -> None:
                 "hint": "IPv4 点分十进制",
             },
         ],
-        defer_to_react_on_success=True,
+        defer_to_role_execution_on_success=True,
     )
     reg.register_preflight(
         "core.docker_cleanup_gated",
@@ -196,7 +196,7 @@ def ensure_default_intent_registry() -> None:
                 "hint": "主机名、IP 或本机",
             },
         ],
-        defer_to_react_on_success=True,
+        defer_to_role_execution_on_success=True,
     )
     if _bi_capability_available():
         reg.register_preflight(

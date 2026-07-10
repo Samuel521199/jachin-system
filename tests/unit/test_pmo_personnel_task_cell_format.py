@@ -41,7 +41,7 @@ def test_format_tasks_cell_no_etc_when_many_tasks():
     assert cell.count("<br>") == 5
 
 
-def test_normalize_legacy_semicolon_cell_multiline():
+def test_normalize_archived_semicolon_cell_multiline():
     raw = (
         "【P1】**在线奖励-弹窗** · 开发中；"
         "【P0】**Laro GO** · 🔵 按时完成"

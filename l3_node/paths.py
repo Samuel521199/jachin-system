@@ -1,4 +1,4 @@
-﻿"""
+"""
 L3 路径解析：支持 PyInstaller 打包与开发模式
 
 PyInstaller 时 __file__ 指向 _MEIPASS 临时目录，skills_repo 不在其中。

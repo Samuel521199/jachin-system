@@ -1,7 +1,7 @@
 """
-智能化阶段 B：execution_mode（react | planned | strict）与计划卡轻量校验；
+智能化阶段 B：execution_mode（role_execution | planned | strict）与计划卡轻量校验；
 可选 **brainstorm 卡**、**strict 下硬只读 verify 轮** 工具白名单；
-**force_universal_planning_chain**：react 下也强制计划卡（及可选 brainstorm）门禁。
+**force_universal_planning_chain**：role_execution 下也强制计划卡（及可选 brainstorm）门禁。
 
 计划卡格式（assistant 消息内 JSON 对象，可置于 ```json 代码块）：
 {
@@ -54,11 +54,11 @@ def load_intelligence_b_config() -> dict[str, Any]:
 
 
 def get_execution_mode() -> str:
-    """react | planned | strict"""
+    """role_execution | planned | strict"""
     cfg = load_intelligence_b_config()
-    m = str(cfg.get("execution_mode", "react") or "react").lower().strip()
-    if m not in ("react", "planned", "strict"):
-        return "react"
+    m = str(cfg.get("execution_mode", "role_execution") or "role_execution").lower().strip()
+    if m not in ("role_execution", "planned", "strict"):
+        return "role_execution"
     return m
 
 
@@ -90,7 +90,7 @@ def get_force_task_plan_file() -> bool:
 
 def get_force_universal_planning_chain() -> bool:
     """
-    若为 True：即使在 **react** 模式下也强制 **计划卡**（及可选 brainstorm 卡）门禁，
+    若为 True：即使在 **role_execution** 模式下也强制 **计划卡**（及可选 brainstorm 卡）门禁，
     与 planned/strict 相同校验逻辑（见 agent_core 计划门）。
     """
     return bool(load_intelligence_b_config().get("force_universal_planning_chain", False))

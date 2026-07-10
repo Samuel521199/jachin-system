@@ -1,5 +1,5 @@
-﻿"""
-PMO INIT 确定性路径：拉表 + mirror_import，**零 ReAct**。
+"""
+PMO INIT 确定性路径：拉表 + mirror_import，**零 RoleExecutionAgent**。
 
 拉表阶段将飞书 API 记录（JSON）落盘为 ``pmo_lark_pull/*.md``（GFM 表）及可选 ``*.records.json``，
 供后续 ``core:pmo_mirror_import`` 与宿主/模型检索。
@@ -218,7 +218,7 @@ def run_pmo_pull_markdown() -> dict[str, Any]:
 def run_pmo_init_direct(*, skip_pull: bool = False) -> dict[str, Any]:
     """
     确定性 INIT：sync_bi_project_context → run_mirror_import。
-    不经过 ReAct / LLM。
+    不经过 RoleExecutionAgent / LLM。
     """
     out: dict[str, Any] = {"status": "error", "steps": []}
 

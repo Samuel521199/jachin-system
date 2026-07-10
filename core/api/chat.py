@@ -49,16 +49,16 @@ try:
     provider_kwargs = {
         "model": settings.LLM_MODEL,
     }
-    
+
     # 传递 API key（如果可用，优先用户保存的覆盖）
     api_key = get_effective_qwen_api_key()
     if api_key:
         provider_kwargs["api_key"] = api_key
-    
+
     # 传递地域配置（如果使用 qwen-v2；与 JACHIN_ACTIVE_REGION / QWEN_REGION 对齐）
     if settings.LLM_PROVIDER == "qwen-v2":
         provider_kwargs["region"] = effective_qwen_region_from_env()
-    
+
     llm_provider = LLMProviderFactory.create_provider(
         provider_type=settings.LLM_PROVIDER,
         **provider_kwargs
@@ -73,7 +73,7 @@ except Exception as e:
 async def chat(request: ChatRequest):
     """
     聊天接口
-    
+
     接收用户消息，调用 LLM 模型生成回复。
     """
     if not llm_provider:
@@ -81,21 +81,21 @@ async def chat(request: ChatRequest):
             status_code=503,
             detail="LLM provider is not available. Please check configuration."
         )
-    
+
     try:
         # Convert Pydantic models to dict format
         messages = [
             {"role": msg.role, "content": msg.content}
             for msg in request.messages
         ]
-        
+
         # Prepare kwargs for LLM call
         kwargs = {}
         if request.temperature is not None:
             kwargs["temperature"] = request.temperature
         if request.max_tokens is not None:
             kwargs["max_tokens"] = request.max_tokens
-        
+
         # Call LLM
         if request.stream:
             # Streaming response (future implementation)
@@ -120,7 +120,7 @@ async def chat(request: ChatRequest):
                 model=model_info.get("model", settings.LLM_MODEL),
                 usage=None
             )
-    
+
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -138,7 +138,7 @@ async def chat_health():
             "QWEN_API_KEY": "Set" if settings.QWEN_API_KEY else "Not set",
             "DASHSCOPE_API_KEY": "Set" if settings.DASHSCOPE_API_KEY else "Not set",
         }
-        
+
         return {
             "status": "unavailable",
             "provider": settings.LLM_PROVIDER,
@@ -151,7 +151,7 @@ async def chat_health():
                 "config_llm_model": settings.LLM_MODEL,
             }
         }
-    
+
     try:
         health = await llm_provider.health_check()
         return {
@@ -182,7 +182,7 @@ class SimpleChatResponse(BaseModel):
 async def chat_simple(request: SimpleChatRequest):
     """
     简化的聊天接口（兼容 MVP 版本）
-    
+
     接收格式: {"message": "你好"}
     返回格式: {"reply": "..."}
     """
@@ -191,14 +191,14 @@ async def chat_simple(request: SimpleChatRequest):
             status_code=503,
             detail="LLM provider is not available. Please check configuration."
         )
-    
+
     try:
         if not request.message:
             raise HTTPException(status_code=400, detail="'message' field is required")
-        
+
         # 转换为标准消息格式
         messages = [{"role": "user", "content": request.message}]
-        
+
         # 调用 LLM
         response_text = await llm_provider.chat(messages)
         # 更新上下文 Token 估算
@@ -210,7 +210,7 @@ async def chat_simple(request: SimpleChatRequest):
         except Exception:
             pass
         return SimpleChatResponse(reply=response_text)
-    
+
     except HTTPException:
         raise
     except Exception as e:

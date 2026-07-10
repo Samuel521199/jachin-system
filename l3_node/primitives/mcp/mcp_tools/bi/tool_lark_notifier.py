@@ -1,4 +1,4 @@
-﻿"""
+"""
 飞书推送工具 — mcp:atom_lark_notifier
 
 契约: docs/bi_daily_report/01_PARALLEL_DEVELOPMENT_GUIDE.md

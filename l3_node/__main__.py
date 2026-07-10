@@ -1,4 +1,4 @@
-﻿"""
+"""
 L3 节点独立运行入口
 
 用法:
@@ -17,7 +17,7 @@ L3 节点独立运行入口
   JACHIN_L3_CONSOLE: Windows 下是否弹出独立控制台。1/true 强制开启；0/false 强制关闭。
     未设置时：PyInstaller 打包 exe 默认开启（便于目标机看日志）；源码运行默认关闭。
   JACHIN_EXEC_TRACE_STDERR: 0/false/off 关闭 [JachinExec] 执行里程碑的 stderr 同步打印（默认开启，便于 PowerShell 排障）。
-  JACHIN_L3_DEEP_LOG: 0/false/off 关闭「深度执行日志」logger（jachin.deep）：默认开启，将 ReAct/LLM 轨迹、模型输出、
+  JACHIN_L3_DEEP_LOG: 0/false/off 关闭「深度执行日志」logger（jachin.deep）：默认开启，将 RoleExecutionAgent/LLM 轨迹、模型输出、
     工具入参/出参、耗时等写入 PowerShell、~/.jachin/l3_debug.log 与全息 SSE（分片推送）。
   JACHIN_L3_DEEP_LOG_FULL_PAYLOAD: 1/true 时恢复「全量请求体」深度日志（完整 messages 块 + tools 名称列表长文、大段 RESPONSE text）；
     未设置则仅记录条数/各 role 长度/tools 数与名称哈希等摘要（推荐桌面/打包，避免同步写日志阻塞）。
@@ -29,7 +29,7 @@ L3 节点独立运行入口
   LOG_LEVEL: 根 logger 级别（默认 INFO）。设为 WARNING 时可压低第三方库噪音。
   JACHIN_LOG_LEVEL: 可选，显式指定 Jachin 自有 logger（l3_node、core）级别；未设置且 LOG_LEVEL≥WARNING 时默认 INFO，
     以便控制台与 l3_debug.log 仍能看到 [L3 Agent] 等 INFO 行。
-  JACHIN_REACT_STREAM_DISABLE_TOOLS: 设为 1/true/yes 时，流式/非流式 ReAct 不向 API 传 tools[]（回退为仅 system 文本工具说明）。
+  JACHIN_ROLE_EXECUTION_STREAM_DISABLE_TOOLS: 设为 1/true/yes 时，流式/非流式 RoleExecutionAgent 不向 API 传 tools[]（回退为仅 system 文本工具说明）。
   JACHIN_HOME_DOTENV_OVERRIDE_PROJECT: 1/true/yes 时，合并 $JACHIN_HOME/.env（或 ~/.jachin/.env）覆盖项目 .env 中同名键；默认 false（仅补全项目未设置的键，如 TAVILY_API_KEY）。
   JACHIN_L3_DEBUG_PRINT_ENV: 启动时打印当前进程全部环境变量（dotenv 合并后）。设为 1/true/yes 为键名排序 + 敏感值脱敏；
     设为 raw/full/all/2 则打印明文（勿外传日志）。未设置或 0/false 则关闭。

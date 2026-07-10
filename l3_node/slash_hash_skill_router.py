@@ -223,8 +223,8 @@ def build_pmo_user_message_for_tail(tail: str, action_key: str) -> str:
         f"{base}\n\n"
         f"【用户通过 #*# 显式触发 · 追问】{t}\n"
         "交付须通过 **mcp:atom_lark_notifier** 推送飞书 **消息卡片**（原生表格 + 翻页），"
-        "**禁止**仅在 Final Answer 里贴整段 Markdown 战报代替推送；"
-        "**禁止**在 Final Answer 向用户提及「监控群」或任何 oc_ chat_id。"
+        "**禁止**仅在 User-facing result 里贴整段 Markdown 战报代替推送；"
+        "**禁止**在 User-facing result 向用户提及「监控群」或任何 oc_ chat_id。"
     )
 
 
@@ -257,7 +257,7 @@ def augment_gateway_inject_for_slash_hash_skill(user_input: str, existing_inject
     if not tail:
         inject_parts.append(
             f"【#*# · 技能显式呼叫】用户使用了前缀 {pfx_label}，但未在其后写明具体诉求。\n"
-            f"请用 Final Answer **友善追问**：请用户在 {pfx_label} 后面用一两句话描述想调用的能力或任务目标；"
+            f"请用 User-facing result **友善追问**：请用户在 {pfx_label} 后面用一两句话描述想调用的能力或任务目标；"
             "并简述本仓库技能的典型用途（可参考下方清单标题），**不要捏造**已成功执行某 Skill。"
         )
     else:
@@ -268,12 +268,12 @@ def augment_gateway_inject_for_slash_hash_skill(user_input: str, existing_inject
             f"「{tail}」\n"
             "你必须完成的步骤：\n"
             "1) 仔细阅读下方清单中每一项的 **id / name / description**，根据与上文原文的**语义相符度**选出**至多一项**最合适的技能；\n"
-            "2) 若**没有**任一技能与诉求合理匹配：**不要编造执行结果**，在 Final Answer 中如实说明「当前仓库已扫描的技能中无合适匹配」"
+            "2) 若**没有**任一技能与诉求合理匹配：**不要编造执行结果**，在 User-facing result 中如实说明「当前仓库已扫描的技能中无合适匹配」"
             "，并可按需用 2～5 句话概括清单里各技能的定位，便于用户改述或换前缀重试；\n"
-            "3) 若选中了某项：先用 **core:fs_read** 读取该技能的 `SKILL.md` 文件的**绝对路径**（见清单中的 path），再严格按其 SOP 与可用工具链编排 Action直至交付；"
+            "3) 若选中了某项：先用 **core:fs_read** 读取该技能的 `SKILL.md` 文件的**绝对路径**（见清单中的 path），再严格按其 SOP 与可用工具链编排 WorkOrder 直至交付；"
             "**禁止**仅凭记忆臆造 SKILL 正文。\n"
             "4) 若选中 **pmo-copilot** 且任务为宏观看板/项目进度：**必须**调用 **mcp:atom_lark_notifier**（或 **core:pmo_macro_dashboard_push**）推送飞书卡片，"
-            "**禁止**把三表 Markdown 整段写在 Final Answer 里冒充已推送。\n"
+            "**禁止**把三表 Markdown 整段写在 User-facing result 里冒充已推送。\n"
         )
 
     if cats:

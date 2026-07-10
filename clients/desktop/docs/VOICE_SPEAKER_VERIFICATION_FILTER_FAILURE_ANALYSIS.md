@@ -1,6 +1,6 @@
-﻿# 声纹主人轨提取失效 — 深度问题分析
+# 声纹主人轨提取失效 — 深度问题分析
 
-> **状态**：分析稿（仅分析，不改代码）  
+> **状态**：分析稿（仅分析，不改代码）
 > **关联**：`VOICE_SPEAKER_VERIFICATION_PROPOSAL.md`、`scripts/test_speaker_verification.py`、`voice_server/services/sv_service.py`
 
 ---

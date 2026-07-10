@@ -259,7 +259,7 @@ print(info["capabilities"])
 
 3. **API Key**: 确保API Key有足够的权限和配额。
 
-4. **模型选择**: 
+4. **模型选择**:
    - 简单对话：`qwen-turbo` 或 `qwen-flash`
    - 复杂任务：`qwen-plus` 或 `qwen-max`
    - 视觉任务：`qwen-vl-max`

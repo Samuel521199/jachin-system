@@ -1,7 +1,7 @@
-﻿"""📊 需求进度全览 6 列 + 优先级排序 + 加粗规则。"""
+"""📊 需求进度全览 6 列 + 优先级排序 + 加粗规则。"""
 from __future__ import annotations
 
-from l3_node.agent_core import _PMO_MD_SECTION_DEMAND
+from l3_node.pmo_agent_policy import _PMO_MD_SECTION_DEMAND
 from l3_node.pmo_report_format import (
     PMO_DEMAND_TABLE_HEADERS,
     epic_priority_sort_key,

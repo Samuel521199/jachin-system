@@ -1,4 +1,4 @@
-﻿"""SubAgent role 规格解析（字符串或 inline dict）。"""
+"""SubAgent role 规格解析（字符串或 inline dict）。"""
 from __future__ import annotations
 
 from typing import Any

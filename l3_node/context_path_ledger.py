@@ -1,4 +1,4 @@
-"""Context path 账本：path_key × 最近 ReAct 轮次，供 prefetch 滑窗拦截。"""
+"""Context path 账本：path_key × 最近 RoleExecutionAgent 轮次，供 prefetch 滑窗拦截。"""
 from __future__ import annotations
 
 from typing import Any
@@ -9,13 +9,13 @@ def _ledger(meta: dict[str, Any]) -> dict[str, int]:
     if not isinstance(raw, dict):
         raw = {}
         meta["_context_path_ledger"] = raw
-    return raw  # path_key -> last_seen_react_iteration
+    return raw  # path_key -> last_seen_role_execution_iteration
 
 
 def should_block_prefetch_path(
     meta: dict[str, Any],
     path_key: str,
-    current_react_iteration: int,
+    current_role_execution_iteration: int,
     iteration_window: int,
 ) -> bool:
     """
@@ -25,7 +25,7 @@ def should_block_prefetch_path(
     """
     if not path_key:
         return False
-    if current_react_iteration <= 0:
+    if current_role_execution_iteration <= 0:
         return False
     led = _ledger(meta)
     last = led.get(path_key)
@@ -33,7 +33,7 @@ def should_block_prefetch_path(
         return False
     try:
         li = int(last)
-        cur = int(current_react_iteration)
+        cur = int(current_role_execution_iteration)
     except (TypeError, ValueError):
         return False
     if li == cur:
@@ -41,12 +41,12 @@ def should_block_prefetch_path(
     return (cur - li) <= int(iteration_window)
 
 
-def touch_prefetch_path_iteration(meta: dict[str, Any], path_key: str, current_react_iteration: int) -> None:
-    if not path_key or current_react_iteration <= 0:
+def touch_prefetch_path_iteration(meta: dict[str, Any], path_key: str, current_role_execution_iteration: int) -> None:
+    if not path_key or current_role_execution_iteration <= 0:
         return
     led = _ledger(meta)
-    led[path_key] = int(current_react_iteration)
+    led[path_key] = int(current_role_execution_iteration)
 
 
-def touch_tool_read_path_iteration(meta: dict[str, Any], path_key: str, current_react_iteration: int) -> None:
-    touch_prefetch_path_iteration(meta, path_key, current_react_iteration)
+def touch_tool_read_path_iteration(meta: dict[str, Any], path_key: str, current_role_execution_iteration: int) -> None:
+    touch_prefetch_path_iteration(meta, path_key, current_role_execution_iteration)

@@ -1,4 +1,4 @@
-﻿"""
+"""
 IM 通道配置 — 从 ~/.jachin/config/im_channels.yaml 加载
 
 支持打包后修改，Lark/Telegram 等同维度配置。

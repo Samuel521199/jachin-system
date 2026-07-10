@@ -18,7 +18,7 @@ async def test_llm_provider():
     print("=" * 50)
     print("测试 1: LLM Provider 初始化")
     print("=" * 50)
-    
+
     try:
         from core.brain.llm.factory import LLMProviderFactory
         from core.config import settings
@@ -32,28 +32,28 @@ async def test_llm_provider():
             or settings.DASHSCOPE_API_KEY
             or settings.QWEN_AI_API_KEY
         )
-        
+
         if not api_key:
             print("❌ API Key 未设置")
             print("   请设置环境变量: QWEN_API_KEY, DASHSCOPE_API_KEY, 或 QWEN_AI_API_KEY")
             return False
-        
+
         print(f"✅ API Key 已设置 (长度: {len(api_key)})")
-        
+
         # 创建 Provider
         provider = LLMProviderFactory.create_provider(
             provider_type=settings.LLM_PROVIDER,
             model=settings.LLM_MODEL
         )
-        
+
         print(f"✅ Provider 创建成功: {type(provider).__name__}")
-        
+
         # 获取模型信息
         model_info = provider.get_model_info()
         print(f"✅ 模型信息: {model_info}")
-        
+
         return True
-        
+
     except Exception as e:
         print(f"❌ 错误: {e}")
         import traceback
@@ -66,7 +66,7 @@ async def test_chat():
     print("\n" + "=" * 50)
     print("测试 2: 聊天功能")
     print("=" * 50)
-    
+
     try:
         from core.brain.llm.factory import LLMProviderFactory
         from core.config import settings
@@ -75,19 +75,19 @@ async def test_chat():
             provider_type=settings.LLM_PROVIDER,
             model=settings.LLM_MODEL
         )
-        
+
         messages = [
             {"role": "user", "content": "你好，请用一句话介绍你自己"}
         ]
-        
+
         print("发送消息:", messages[0]["content"])
         print("等待响应...")
-        
+
         response = await provider.chat(messages)
-        
+
         print(f"✅ 收到响应: {response[:100]}...")
         return True
-        
+
     except Exception as e:
         print(f"❌ 错误: {e}")
         import traceback
@@ -100,7 +100,7 @@ async def test_health_check():
     print("\n" + "=" * 50)
     print("测试 3: 健康检查")
     print("=" * 50)
-    
+
     try:
         from core.brain.llm.factory import LLMProviderFactory
         from core.config import settings
@@ -109,16 +109,16 @@ async def test_health_check():
             provider_type=settings.LLM_PROVIDER,
             model=settings.LLM_MODEL
         )
-        
+
         health = await provider.health_check()
-        
+
         if health:
             print("✅ 健康检查通过")
         else:
             print("⚠️  健康检查失败")
-        
+
         return health
-        
+
     except Exception as e:
         print(f"❌ 错误: {e}")
         import traceback
@@ -131,7 +131,7 @@ async def test_config():
     print("\n" + "=" * 50)
     print("测试 4: 配置加载")
     print("=" * 50)
-    
+
     try:
         from core.config import settings
 
@@ -141,9 +141,9 @@ async def test_config():
         print(f"✅ Debug Mode: {settings.DEBUG}")
         print(f"✅ LanceDB path: {settings.LANCEDB_PATH}")
         print(f"✅ Redis URL: {settings.REDIS_URL}")
-        
+
         return True
-        
+
     except Exception as e:
         print(f"❌ 错误: {e}")
         import traceback
@@ -154,34 +154,34 @@ async def test_config():
 async def main():
     """运行所有测试"""
     print("\n" + "🚀 MVP 功能测试" + "\n")
-    
+
     results = []
-    
+
     # 测试配置
     results.append(await test_config())
-    
+
     # 测试 Provider
     results.append(await test_llm_provider())
-    
+
     # 测试健康检查
     results.append(await test_health_check())
-    
+
     # 测试聊天（可选，需要 API Key）
     try:
         results.append(await test_chat())
     except Exception as e:
         print(f"\n⚠️  聊天测试跳过: {e}")
-    
+
     # 总结
     print("\n" + "=" * 50)
     print("测试总结")
     print("=" * 50)
-    
+
     passed = sum(results)
     total = len(results)
-    
+
     print(f"通过: {passed}/{total}")
-    
+
     if passed == total:
         print("✅ 所有测试通过！MVP 功能正常")
         return 0

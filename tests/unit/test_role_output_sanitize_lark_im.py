@@ -1,4 +1,4 @@
-﻿from l3_node.react_ui_sanitize import sanitize_final_answer_for_lark_im, sanitize_user_visible_answer
+from l3_node.role_output_sanitize import sanitize_final_answer_for_lark_im, sanitize_user_visible_answer
 
 
 def test_lark_im_strips_markdown_bold_markers():
@@ -20,10 +20,10 @@ def test_user_visible_answer_strips_monitor_group_all_channels() -> None:
     assert "oc_" not in out
 
 
-def test_lark_im_still_strips_react_scaffolding():
-    raw = "Thought: 分析中\nFinal Answer: **结论** 如下"
+def test_lark_im_still_strips_role_execution_scaffolding():
+    raw = "Reasoning note: 分析中\nUser-facing result: **结论** 如下"
     out = sanitize_final_answer_for_lark_im(raw)
-    assert "Thought:" not in out
-    assert "Final Answer:" not in out
+    assert "Reasoning note:" not in out
+    assert "User-facing result:" not in out
     assert "**" not in out
     assert "结论" in out

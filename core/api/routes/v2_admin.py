@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus V2 - L2 控制面管理 API（内部/Admin）
 
 用于创建子账号、向保险箱写入 API Key。
@@ -406,7 +406,7 @@ async def admin_workspace_members(
 ) -> dict[str, Any]:
     """
     从 L1 拉取当前 nexus_config.tenant_id 对应工作区的成员列表（服务端密钥）。
-    Legacy optional L2 admin endpoint; packaged L3 does not require this pairing path.
+    Archived optional L2 admin endpoint; packaged L3 does not require this pairing path.
     """
     import os
 

@@ -1,4 +1,4 @@
-﻿"""Unit tests for PMO sprint epic report (case study SSOT)."""
+"""Unit tests for PMO sprint epic report (case study SSOT)."""
 from __future__ import annotations
 
 import json

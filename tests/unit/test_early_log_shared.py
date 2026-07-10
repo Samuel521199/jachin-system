@@ -1,4 +1,4 @@
-﻿"""early_log 共享路径与 truncate 策略。"""
+"""early_log 共享路径与 truncate 策略。"""
 from __future__ import annotations
 
 from pathlib import Path

@@ -1,6 +1,6 @@
 """Intent Orchestrator and HIDCA guardrails.
 
-This layer sits above mission parsing and below ReAct.  It turns a raw
+This layer sits above mission parsing and below RoleExecutionAgent.  It turns a raw
 utterance into an evidence-bearing routing decision, then physically narrows
 the tool/context surface before the model sees it.
 """
@@ -72,7 +72,7 @@ class IntentFrame:
     explicit_signals: list[str] = field(default_factory=list)
     side_effect_level: str = "none"
     confidence: float = 0.0
-    route_policy: str = "react_fallback"
+    route_policy: str = "role_execution_fallback"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -371,7 +371,7 @@ def analyze_intent(
         explicit_signals=signals,
         side_effect_level=_side_effect_for_task(intent.task_type),
         confidence=float(intent.confidence or 0.0),
-        route_policy="execute" if route.ok and intent.confidence >= 0.72 else ("clarify" if intent.missing_slots else "react_fallback"),
+        route_policy="execute" if route.ok and intent.confidence >= 0.72 else ("clarify" if intent.missing_slots else "role_execution_fallback"),
     )
     hidca_domain = _hidca_domain_for_frame(frame)
     if hidca_domain == HIDCA_OS_CONTROL and any(str(x.get("entity") or "").lower() == "lark" for x in forbidden):
@@ -435,7 +435,7 @@ async def analyze_intent_async(
         explicit_signals=signals,
         side_effect_level=_side_effect_for_task(intent.task_type),
         confidence=float(intent.confidence or 0.0),
-        route_policy="execute" if route.ok and intent.confidence >= 0.72 else ("clarify" if intent.missing_slots else "react_fallback"),
+        route_policy="execute" if route.ok and intent.confidence >= 0.72 else ("clarify" if intent.missing_slots else "role_execution_fallback"),
     )
     hidca_domain = _hidca_domain_for_frame(frame)
     if hidca_domain == HIDCA_OS_CONTROL and any(str(x.get("entity") or "").lower() == "lark" for x in forbidden):
@@ -543,7 +543,7 @@ def prune_tools_for_hidca(
             continue
         pruned.append(tool)
     if not pruned and tools:
-        # Never strand ReAct with an empty pool for unknown domains.
+        # Never strand RoleExecutionAgent with an empty pool for unknown domains.
         pruned = list(tools)
     meta = {
         "semantic_router_domain": hidca_domain,
@@ -598,17 +598,17 @@ def format_hidca_prompt_block(decision: RoutingDecision) -> str:
 
 def check_tool_consistency(
     tool_id: str,
-    action_input: str,
+    work_order_input: str,
     decision: RoutingDecision | None,
 ) -> dict[str, Any] | None:
-    """Return a routing violation when a ReAct tool call conflicts with IO."""
+    """Return a routing violation when a RoleExecutionAgent tool call conflicts with IO."""
     if decision is None:
         return None
     hidca_domain = str(decision.hidca.get("semantic_router_domain") or HIDCA_UNKNOWN)
     if hidca_domain != HIDCA_OS_CONTROL:
         return None
     tid = str(tool_id or "").strip()
-    inp = str(action_input or "")
+    inp = str(work_order_input or "")
     lower_blob = f"{tid}\n{inp}".lower()
     forbidden_entities = {
         str(x.get("entity") or "").lower()

@@ -1,4 +1,4 @@
-"""
+﻿"""
 BI 每日战报 — 专属定时调度器（L3 进程内 APScheduler，不依赖 HR）。
 
 支持可配置的 cron（每天固定时间）和 interval（每 N 分钟/小时）；loop 模式走独立后台线程。
@@ -39,10 +39,10 @@ def _bi_scheduler_audit_log_path() -> Path:
     return Path.home() / ".jachin" / "client_volumes" / "bi_data" / "logs" / "bi_scheduler_audit.log"
 
 
-_LEGACY_HR_SKIP_MARKER = "SKIP HR 包未找到"
+_ARCHIVED_HR_SKIP_MARKER = "SKIP HR 包未找到"
 
 
-def _strip_legacy_audit_log_once() -> None:
+def _strip_archived_audit_log_once() -> None:
     """
     旧版依赖 HR 的调度会在日志里写 SKIP HR；与当前 BI 专属调度无关。
     若文件中仍含该标记，则裁剪为从首条「BI 专属调度」记录起保留，否则整文件清空为一条说明。
@@ -53,7 +53,7 @@ def _strip_legacy_audit_log_once() -> None:
         if not p.exists() or p.stat().st_size == 0:
             return
         text = p.read_text(encoding="utf-8", errors="replace")
-        if _LEGACY_HR_SKIP_MARKER not in text:
+        if _ARCHIVED_HR_SKIP_MARKER not in text:
             return
         lines = text.splitlines()
         cut: int | None = None
@@ -68,12 +68,12 @@ def _strip_legacy_audit_log_once() -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
         if cut is not None:
             kept = lines[cut:]
-            notice = f"{ts} | AUDIT_LEGACY_STRIPPED removed_lines={cut} reason=old_HR_coupled_scheduler"
+            notice = f"{ts} | AUDIT_ARCHIVED_STRIPPED removed_lines={cut} reason=old_HR_coupled_scheduler"
             new_text = notice + "\n" + "\n".join(kept) + ("\n" if kept else "")
             p.write_text(new_text, encoding="utf-8")
         else:
             p.write_text(
-                f"{ts} | AUDIT_LEGACY_CLEARED reason=log_only_contained_HR_skip\n",
+                f"{ts} | AUDIT_ARCHIVED_CLEARED reason=log_only_contained_HR_skip\n",
                 encoding="utf-8",
             )
     except Exception:
@@ -272,7 +272,7 @@ def register_bi_daily_report_job() -> bool:
     Returns:
         True 表示注册成功或 loop 模式已启动；False 表示关闭、调度器不可用或失败
     """
-    _strip_legacy_audit_log_once()
+    _strip_archived_audit_log_once()
     _scheduler_audit_log("register_bi_daily_report_job() called (BI dedicated scheduler)")
     yaml_hit = next((p for p in _bi_daily_report_yaml_candidates() if p.exists()), None)
     overlay_hits = [p for p in _bi_scheduler_overlay_candidates() if p.exists()]

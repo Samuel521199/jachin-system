@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """Verification Agent 角色与 VERDICT 解析。"""
 from __future__ import annotations
 

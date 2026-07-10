@@ -20,20 +20,20 @@ logger = logging.getLogger(__name__)
 class Telemetry:
     """
     硬件探针 (Hardware Abstraction Layer)
-    
+
     提供系统硬件和性能监控功能
     """
-    
+
     def __init__(self):
         """初始化探针"""
         self._cache: Dict[str, Any] = {}
         self._cache_ttl = 5.0  # 缓存时间（秒）
         self._last_update: Optional[datetime] = None
-    
+
     def get_cpu_info(self) -> Dict[str, Any]:
         """
         获取 CPU 信息
-        
+
         Returns:
             Dict: CPU 信息
         """
@@ -41,7 +41,7 @@ class Telemetry:
             cpu_count_physical = psutil.cpu_count(logical=False)
             cpu_count_logical = psutil.cpu_count(logical=True)
             cpu_freq = psutil.cpu_freq()
-            
+
             return {
                 "physical_cores": cpu_count_physical or 0,
                 "logical_cores": cpu_count_logical or 0,
@@ -53,18 +53,18 @@ class Telemetry:
         except Exception as e:
             logger.error(f"Failed to get CPU info: {e}")
             return {}
-    
+
     def get_memory_info(self) -> Dict[str, Any]:
         """
         获取内存信息
-        
+
         Returns:
             Dict: 内存信息
         """
         try:
             mem = psutil.virtual_memory()
             swap = psutil.swap_memory()
-            
+
             return {
                 "total_bytes": mem.total,
                 "available_bytes": mem.available,
@@ -77,25 +77,25 @@ class Telemetry:
         except Exception as e:
             logger.error(f"Failed to get memory info: {e}")
             return {}
-    
+
     def get_disk_info(self) -> Dict[str, Any]:
         """
         获取磁盘信息
-        
+
         Returns:
             Dict: 磁盘信息
         """
         try:
             disk = psutil.disk_usage('/')
             disk_io = psutil.disk_io_counters()
-            
+
             result = {
                 "total_bytes": disk.total,
                 "used_bytes": disk.used,
                 "free_bytes": disk.free,
                 "percent": disk.percent,
             }
-            
+
             if disk_io:
                 result.update({
                     "read_bytes": disk_io.read_bytes,
@@ -103,16 +103,16 @@ class Telemetry:
                     "read_count": disk_io.read_count,
                     "write_count": disk_io.write_count,
                 })
-            
+
             return result
         except Exception as e:
             logger.error(f"Failed to get disk info: {e}")
             return {}
-    
+
     def get_temperature_info(self) -> Dict[str, Any]:
         """
         获取温度信息（如果可用）
-        
+
         Returns:
             Dict: 温度信息
         """
@@ -120,7 +120,7 @@ class Telemetry:
             temps = psutil.sensors_temperatures()
             if not temps:
                 return {}
-            
+
             result = {}
             for name, entries in temps.items():
                 if entries:
@@ -130,23 +130,23 @@ class Telemetry:
                         "high": entries[0].high,
                         "critical": entries[0].critical if hasattr(entries[0], 'critical') else None,
                     }
-            
+
             return result
         except Exception as e:
             logger.debug(f"Temperature info not available: {e}")
             return {}
-    
+
     def get_performance_snapshot(self) -> Dict[str, Any]:
         """
         获取性能快照
-        
+
         Returns:
             Dict: 完整的性能快照
         """
         try:
             cpu_percent = psutil.cpu_percent(interval=0.1)
             cpu_per_core = psutil.cpu_percent(interval=0.1, percpu=True)
-            
+
             return {
                 "timestamp": datetime.now().isoformat(),
                 "cpu": {
@@ -167,11 +167,11 @@ class Telemetry:
         except Exception as e:
             logger.error(f"Failed to get performance snapshot: {e}")
             return {}
-    
+
     def get_system_info(self) -> Dict[str, Any]:
         """
         获取系统基本信息
-        
+
         Returns:
             Dict: 系统信息
         """
@@ -193,7 +193,7 @@ _telemetry_instance: Optional[Telemetry] = None
 def get_telemetry() -> Telemetry:
     """
     获取全局探针实例（单例模式）
-    
+
     Returns:
         Telemetry: 探针实例
     """

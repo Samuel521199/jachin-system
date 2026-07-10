@@ -1,8 +1,8 @@
-﻿# 陪伴态回复无语音播报 — 深度问题分析
+# 陪伴态回复无语音播报 — 深度问题分析
 
-> **状态**：分析稿（仅分析，不改代码）  
-> **问题定义**：陪伴态（Orb/HUD）有文本回复，但用户听不到语音播报。  
-> **目标**：给出可执行的根因树、排查路径、日志判读标准和修复优先级。  
+> **状态**：分析稿（仅分析，不改代码）
+> **问题定义**：陪伴态（Orb/HUD）有文本回复，但用户听不到语音播报。
+> **目标**：给出可执行的根因树、排查路径、日志判读标准和修复优先级。
 > **关联文档**：`VOICE_INTENT_ROUTING_AND_TASK_ORCHESTRATION.md`、`VOICE_BARGE_IN_AND_WAKE_ACK.md`、`HUD_IO_DUPLICATION_QUICK_ANALYSIS.md`
 
 ---
@@ -141,7 +141,7 @@ await a.play();
 if (this.preferNativePlayback || this.autoplayPrimed || this.playing) return;
 ```
 
-因为 `preferNativePlayback = true`，**`primeAutoplay` 永远不会在 native 模式下运行**。  
+因为 `preferNativePlayback = true`，**`primeAutoplay` 永远不会在 native 模式下运行**。
 一旦 native 播放失败回退到 WebView，WebView 的自动播放限制从未被解锁，`audio.play()` 就会被浏览器拦截 → 静音。
 
 #### 典型后果
@@ -159,7 +159,7 @@ if (this.preferNativePlayback || this.autoplayPrimed || this.playing) return;
 - 或频繁出现 `playback.enqueue_skip_stale` / `orchestrator.tts_skip_stale`
 
 #### 机制
-`bargeIn()` 调用后会执行 `bumpGeneration()`（代次 +1），此时正在进行的合成任务代次就"过期"了。  
+`bargeIn()` 调用后会执行 `bumpGeneration()`（代次 +1），此时正在进行的合成任务代次就"过期"了。
 如果"进入新会话"和"上一轮语音合成返回"几乎同时发生（差几十毫秒），代次就会失配，音频被丢弃。
 
 #### 关联
@@ -199,7 +199,7 @@ const blob = useMandarinNeuralVoice
   : await synthesizeByJvs(speakable, ttsVoice, sessionId);  // 走本地 JVS
 ```
 
-如果 `ttsVoice` 配置为 `zh-CN-XiaoxiaoNeural` 这类格式，**直接绕过 JVS 走 L2 云端**。  
+如果 `ttsVoice` 配置为 `zh-CN-XiaoxiaoNeural` 这类格式，**直接绕过 JVS 走 L2 云端**。
 这本身不是 bug，但如果：
 - 你以为在用 JVS，日志里却没有 `jvs.*` 相关条目；
 - 或者 L2 网络不可达；
@@ -216,7 +216,7 @@ const blob = useMandarinNeuralVoice
 - 日志中 `orchestrator.tts_skip_unspeakable` 频率高
 
 #### 机制
-`prepareSentenceForTts` 会过滤 Markdown 语法、emoji、代码块、纯符号段等。  
+`prepareSentenceForTts` 会过滤 Markdown 语法、emoji、代码块、纯符号段等。
 如果某轮 AI 输出主要是代码或表格，可能没有任何一句话能被合成，整轮静音。
 
 ---
@@ -253,7 +253,7 @@ const blob = useMandarinNeuralVoice
 
 ### 步骤一：找日志文件
 
-**主日志**：`%USERPROFILE%\.jachin\jachin_debug\voice_companion.log`  
+**主日志**：`%USERPROFILE%\.jachin\jachin_debug\voice_companion.log`
 **辅助日志**：`%USERPROFILE%\.jachin\jachin_debug\voice_chat.log`
 
 ### 步骤二：看一次完整播报是否有以下全部关键词

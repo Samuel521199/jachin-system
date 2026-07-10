@@ -1,8 +1,8 @@
 # JMP 规范 (Jachin Module Protocol)
 
-**版本**: 2.0  
-**状态**: 规范草案  
-**定位**: Layer 1 与 Layer 2 之间的智慧分发标准  
+**版本**: 2.0
+**状态**: 规范草案
+**定位**: Layer 1 与 Layer 2 之间的智慧分发标准
 **升级说明**: 详见 [MICROKERNEL_ECOSYSTEM_UPGRADE.md](./MICROKERNEL_ECOSYSTEM_UPGRADE.md)
 
 ---
@@ -117,7 +117,7 @@ JMP 是 Jachin 生态的「宪法」。Layer 2 从 Layer 1 下载的必须是一
   "compatibility": {
     "os": ["linux", "k8s"],
     "min_core_version": "1.2.0",
-    "conflicts_with": ["legacy-audio-input"]
+    "conflicts_with": ["archived-audio-input"]
   },
   "resource_footprint": {
     "ram_estimate_mb": 256,

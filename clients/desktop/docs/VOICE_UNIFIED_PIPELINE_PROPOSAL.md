@@ -1,7 +1,7 @@
 # 桌面语音统一链路方案（大窗 PTT × 陪伴唤醒）
 
-> **目的**：一条 Voice Core、多种 UX Profile；桌面不再依赖 L2 voice API；声纹与意图路由作为可选增强层。  
-> **状态**：**U1–U6 主路径已落地**；含 **PTT 流式 STT（Raw TCP 优先）**、**逗号/顿号级 TTS 触发**、**JVS 会话可抢占取消**（2026-06）  
+> **目的**：一条 Voice Core、多种 UX Profile；桌面不再依赖 L2 voice API；声纹与意图路由作为可选增强层。
+> **状态**：**U1–U6 主路径已落地**；含 **PTT 流式 STT（Raw TCP 优先）**、**逗号/顿号级 TTS 触发**、**JVS 会话可抢占取消**（2026-06）
 > **关联**：`VOICE_MODULE_HUMAN_GUIDE.md`（人话链路）、`VOICE_WAKE_ARCHITECTURE.md`、`VOICE_INTENT_ROUTING_AND_TASK_ORCHESTRATION.md`、`VOICE_SPEAKER_VERIFICATION_PROPOSAL.md`
 
 ---
@@ -234,9 +234,9 @@ VAD 截句完成 → [S2 filter_owner_track] → STT(主人轨 WAV)
 
 ## 10. 不需要做的事（仍然成立）
 
-- ❌ 不要让 L3 听麦克风  
-- ❌ 不要在大窗 PTT 加「我在」  
-- ❌ 不要恢复 L2 voice 作为桌面隐形兜底  
+- ❌ 不要让 L3 听麦克风
+- ❌ 不要在大窗 PTT 加「我在」
+- ❌ 不要恢复 L2 voice 作为桌面隐形兜底
 - ❌ 不要为 PTT 单独维护第二套 STT/TTS 管道
 
 ---

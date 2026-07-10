@@ -1,4 +1,4 @@
-﻿"""pmo_import_json_loose 单元测试。"""
+"""pmo_import_json_loose 单元测试。"""
 from __future__ import annotations
 
 import unittest

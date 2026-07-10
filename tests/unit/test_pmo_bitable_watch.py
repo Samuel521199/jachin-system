@@ -1,4 +1,4 @@
-﻿"""PMO bitable watch：diff 与防抖状态机（无网络）。"""
+"""PMO bitable watch：diff 与防抖状态机（无网络）。"""
 from __future__ import annotations
 
 from l3_node.tools.pmo_bitable_watch import (

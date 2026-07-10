@@ -1,6 +1,6 @@
 """PMO Copilot agent policy and guards.
 
-This module intentionally keeps PMO business-specific ReAct guards out of
+This module intentionally keeps PMO business-specific RoleExecutionAgent guards out of
 ``agent_core.py``.  The core agent calls the wrapper functions below; the PMO
 skill/runtime package can own and evolve these rules independently.
 """
@@ -136,9 +136,9 @@ def _pmo_notifier_markdown_section_format_examples(missing: list[str]) -> str:
 
 def _pmo_extract_sql_from_tool_inp(inp: str) -> str:
     try:
-        from l3_node.tools.pmo_db_tools import parse_db_query_action_input
+        from l3_node.tools.pmo_db_tools import parse_db_query_work_order_input
 
-        return str(parse_db_query_action_input(inp).get("sql") or "")
+        return str(parse_db_query_work_order_input(inp).get("sql") or "")
     except Exception:
         return str(inp or "")
 
@@ -157,7 +157,7 @@ def _pmo_extract_thought_from_assistant(response: str) -> str:
             if idx >= 0:
                 return text[idx + len(line.split(":", 1)[0]) + 1 :].strip()
             return stripped.split(":", 1)[1].strip()
-    m = re.search(r"Thought:\s*(.+)", text, re.I | re.S)
+    m = re.search(r"Reasoning note:\s*(.+)", text, re.I | re.S)
     return m.group(1).strip() if m else ""
 
 
@@ -176,7 +176,7 @@ def _pmo_thought_has_gfm_draft(thought: str) -> bool:
 
 
 def _pmo_extract_gfm_draft_fingerprint(text: str) -> str:
-    """Thought 中 GFM 数据行指纹，用于检测机械复制上轮草稿。"""
+    """Reasoning trace 中 GFM 数据行指纹，用于检测机械复制上轮草稿。"""
     data_lines: list[str] = []
     for ln in str(text or "").splitlines():
         stripped = ln.strip()
@@ -206,7 +206,7 @@ def _pmo_markdown_fix_supplemental_remaining(ctx: PipelineContext) -> int:
 
 
 def _pmo_assistant_thought_has_all_three_tables(assistant_response: str) -> bool:
-    """仅用于组装轮门禁：检查 Thought 是否已含三张 GFM 表（不提取、不拼装内容）。"""
+    """仅用于组装轮门禁：检查 Reasoning trace 是否已含三张 GFM 表（不提取、不拼装内容）。"""
     thought = _pmo_extract_thought_from_assistant(assistant_response)
     source = thought or str(assistant_response or "")
     if not source:
@@ -219,7 +219,7 @@ def _pmo_assistant_thought_has_all_three_tables(assistant_response: str) -> bool
 
 
 def _pmo_assembly_phase(ctx: PipelineContext) -> str | None:
-    """组装轮状态：writing=只写 Thought；ready=可推送 markdown。"""
+    """组装轮状态：writing=只写 Reasoning trace；ready=可推送 markdown。"""
     phase = ctx.metadata.get("_pmo_assembly_phase")
     if phase in ("writing", "ready"):
         return str(phase)
@@ -247,7 +247,7 @@ def _pmo_sync_assembly_phase_from_thought(ctx: PipelineContext, assistant_respon
 def _pmo_markdown_incomplete_system_nudge(
     ctx: PipelineContext, observation: str, tool: str, missing: list[str] | None = None
 ) -> str:
-    """markdown_incomplete 时在 Observation 后追加系统校验提示（不解析 Thought 代劳组装）。"""
+    """markdown_incomplete 时在 Verification evidence 后追加系统校验提示（不解析 Reasoning trace 代劳组装）。"""
     if not _pmo_lark_push_guard_channel_active(ctx):
         return ""
     if _pmo_canonical_tool_id(tool) != "atom_lark_notifier":
@@ -267,8 +267,8 @@ def _pmo_markdown_incomplete_system_nudge(
     return (
         "\n\n【系统校验 · PMO 战报组装】\n"
         f"你的 `markdown_content` 缺少：{missing_txt}。\n"
-        "**宿主不会**从 Thought 自动提取或拼装 markdown；你必须亲自动手完成渲染。\n"
-        "请立刻翻阅你前 10 轮对话中的 **Thought 历史与 Observation**，"
+        "**宿主不会**从 Reasoning trace 自动提取或拼装 markdown；你必须亲自动手完成渲染。\n"
+        "请立刻翻阅你前 10 轮对话中的 **Reasoning trace 历史与 Verification evidence**，"
         "把其中已写的 GFM 草稿数据完整整理为三张表："
         "「📊 需求进度全览」「👥 人员任务矩阵」「📦 版本发布需求映射」，"
         "每表须含 `| 列 |` 表头与至少 1 行数据（缺口用 ⚠️ 占位）。\n"
@@ -316,7 +316,7 @@ def _pmo_analysis_incomplete_recovery_hint(
     missing_txt = "、".join(missing_probes) if missing_probes else "无"
     if qn >= PMO_BRANCH_A_MIN_DB_QUERIES:
         return (
-            f"你已执行 {qn} 次 db_query，分析 Observation 应已在上下文中。"
+            f"你已执行 {qn} 次 db_query，分析 Verification evidence 应已在上下文中。"
             f"❌ **禁止从 Step1 重跑七步**；请仅补跑缺失探针：{missing_txt}，"
             "或直接进入 §1.4 三表组装后再推送。"
         )
@@ -342,20 +342,20 @@ def _pmo_notifier_no_rerun_analysis_hint(ctx: PipelineContext) -> str:
         return ""
     return (
         "❌ **禁止重跑 Step 1–7 的 core:db_query**。"
-        "已完成的分析 Observation 仍然有效；"
+        "已完成的分析 Verification evidence 仍然有效；"
         "请直接基于已有结果组装 §1.4 三表 markdown_content 后再推送。"
     )
 
 
-def _pmo_markdown_action_input_hint() -> str:
+def _pmo_markdown_work_order_input_hint() -> str:
     return (
-        "📋 注意：`markdown_content` 是 Action Input JSON 参数字段，"
-        "Thought 里的表格草稿 **不会自动传入** notifier；"
+        "📋 注意：`markdown_content` 是 tool input JSON 参数字段，"
+        "Reasoning trace 里的表格草稿 **不会自动传入** notifier；"
         "须将完整 GFM 三表文本 **全文写入** `markdown_content`。"
     )
 
 
-def _pmo_append_react_budget_warning(
+def _pmo_append_role_execution_budget_warning(
     ctx: PipelineContext,
     observation: str,
     *,
@@ -519,7 +519,7 @@ def _pmo_branch_a_blocked_premature_lark_observation(inp: str, ctx: PipelineCont
                     "error": "pmo_duplicate_delivery_blocked",
                     "msg": (
                         "【宿主拦截】该群本轮已成功推送过完整战报，禁止重复发送。"
-                        "请输出 ≤3 句 Final Answer 确认已推送（**禁止**向用户提及监控群或 oc_ chat_id）。"
+                        "请输出 ≤3 句 User-facing result 确认已推送（**禁止**向用户提及监控群或 oc_ chat_id）。"
                     ),
                 },
                 ensure_ascii=False,
@@ -553,7 +553,7 @@ def _pmo_branch_a_blocked_premature_lark_observation(inp: str, ctx: PipelineCont
                 "须同时含「📊 需求进度全览」「👥 人员任务矩阵」「📦 版本发布需求映射」"
                 "及各自 GFM 表格（| 列 |）。",
                 "即使 Version Goal 等字段在原表全空，也须在 📦 区块建占位 GFM 表并写 ⚠️ 数据待补，禁止只写一行文字。",
-                _pmo_markdown_action_input_hint(),
+                _pmo_markdown_work_order_input_hint(),
             ])
             fix_phase = _pmo_markdown_fix_phase(ctx)
             if fix_phase == "supplemental":
@@ -562,7 +562,7 @@ def _pmo_branch_a_blocked_premature_lark_observation(inp: str, ctx: PipelineCont
                     f"📝 **补缺模式**（剩余 {remaining}/{PMO_MARKDOWN_FIX_SUPPLEMENTAL_MAX} 次补缺 SQL）："
                     "允许 COUNT+GROUP BY 聚合、json_each 人员明细、Step6b LIKE 核对、LIMIT≤20；"
                     "❌ 禁止 Step1 地图 / Step2 LIMIT 1 样本重跑。"
-                    "优先将 Thought 草稿全文写入 markdown_content 再推送。"
+                    "优先将 Reasoning trace 草稿全文写入 markdown_content 再推送。"
                 )
                 probes = _pmo_ensure_analysis_probes(ctx)
                 if any("📊" in m for m in missing) and not probes.get("status"):
@@ -572,7 +572,7 @@ def _pmo_branch_a_blocked_premature_lark_observation(inp: str, ctx: PipelineCont
             elif fix_phase == "final":
                 msg_parts.append(
                     "⛔ **最终整合阶段**：禁止 core:db_query；"
-                    "请基于已有 Observation 补写完整 GFM 三表 markdown_content 后重新推送。"
+                    "请基于已有 Verification evidence 补写完整 GFM 三表 markdown_content 后重新推送。"
                 )
             if prev_preview:
                 msg_parts.append(
@@ -648,7 +648,7 @@ def _pmo_branch_a_blocked_premature_lark_observation(inp: str, ctx: PipelineCont
                     "【宿主拦截】本条 **未发往飞书**（避免试错过程中打扰用户）。"
                     "`markdown_content` 须 **同时包含** SKILL §1.4 三张核心区块：「📊 需求进度全览」「👥 人员任务矩阵」"
                     "「📦 版本发布需求映射」；缺一不可时禁止推送。"
-                    "请根据本轮 `atom_bi_project_context` 的 Observation，从 `files[]` 或目录内 `00_SYNC_MANIFEST.json` 取得**确切文件名**"
+                    "请根据本轮 `atom_bi_project_context` 的 Verification evidence，从 `files[]` 或目录内 `00_SYNC_MANIFEST.json` 取得**确切文件名**"
                     "后再 `mcp:read_file` / `core:fs_read`（注意常见坑：`03_...md` **不是** `3_...md`）。"
                     "读全并重算后 **一次性**调用 `atom_lark_notifier`。"
                     "需求进度表中须写入 `vewpI8lyYw` **全部**符合条件的一级大需求（非仅四条），分页由原生表 `native_table_page_size` 承担。"
@@ -871,7 +871,7 @@ def _lark_notifier_observation_suggests_success(observation_full: str) -> bool:
 
 
 def _pmo_final_answer_falsely_claims_lark_sent(ans: str) -> bool:
-    """Final Answer 口头声称已发飞书/群，用于拦截未调 notifier 的幻觉。"""
+    """User-facing result 口头声称已发飞书/群，用于拦截未调 notifier 的幻觉。"""
     s = str(ans or "").strip()
     if not s:
         return False
@@ -937,7 +937,7 @@ def _reject_pmo_branch_a_analysis_incomplete_delivery_guard(
     via: str,
 ) -> bool:
     """
-    v7 DB 仅分析：禁止在未双群 notifier 成功时以 Final Answer 输出战报摘要或声称已推送。
+    v7 DB 仅分析：禁止在未双群 notifier 成功时以 User-facing result 输出战报摘要或声称已推送。
     """
     if not _pmo_lark_push_guard_channel_active(ctx):
         return False
@@ -957,8 +957,8 @@ def _reject_pmo_branch_a_analysis_incomplete_delivery_guard(
     missing = _pmo_branch_a_missing_probes(ctx)
     chats_ok = ctx.metadata.get("_pmo_notifier_chats_success") or []
     logger.warning(
-        "[L3 Agent][PMO 分析交付] trace=%s via=%s 未完成双群推送却 Final Answer 收工 probes=%s chats=%s",
-        str(ctx.metadata.get("_react_step_trace") or ""),
+        "[L3 Agent][PMO 分析交付] trace=%s via=%s 未完成双群推送却 User-facing result 收工 probes=%s chats=%s",
+        str(ctx.metadata.get("_role_execution_step_trace") or ""),
         via,
         missing,
         chats_ok,
@@ -969,13 +969,13 @@ def _reject_pmo_branch_a_analysis_incomplete_delivery_guard(
         "content": (
             "【系统校验·PMO·v7 仅分析】你尚未完成全部投递目标的 `mcp:atom_lark_notifier` 成功推送"
             f"（须送达：{_pmo_delivery_targets_user_hint(ctx)}；当前已成功群：{chats_ok or '无'}），"
-            "禁止用 Final Answer 输出战报摘要或声称已推送。\n"
+            "禁止用 User-facing result 输出战报摘要或声称已推送。\n"
             f"探针/交叉分析缺口：{('、'.join(missing) if missing else '无')}。\n"
-            "请继续 ReAct（勿写 Final Answer）：\n"
+            "请继续 RoleExecutionAgent（勿写 User-facing result）：\n"
             "① 按 SKILL §1.2.1 七步框架补完 db_query（≤10 次）；\n"
             "② 组装 §1.4 三表 markdown_content；\n"
-            f"③ 对每个投递目标各调用一次 atom_lark_notifier（{_pmo_delivery_targets_user_hint(ctx)}），各须 Observation success；\n"
-            "④ 全部目标 success 后才可 ≤3 句 Final Answer 确认。"
+            f"③ 对每个投递目标各调用一次 atom_lark_notifier（{_pmo_delivery_targets_user_hint(ctx)}），各须 Verification evidence success；\n"
+            "④ 全部目标 success 后才可 ≤3 句 User-facing result 确认。"
         ),
     })
     return True
@@ -990,7 +990,7 @@ def _reject_pmo_branch_a_force_push_exit_guard(
     via: str,
 ) -> bool:
     """
-    v7 仅分析：双群推送未成功时，禁止以任何措辞（含「数据质量差」「无法分析」）直接 Final Answer 退出。
+    v7 仅分析：双群推送未成功时，禁止以任何措辞（含「数据质量差」「无法分析」）直接 User-facing result 退出。
     """
     if not _pmo_lark_push_guard_channel_active(ctx):
         return False
@@ -1012,8 +1012,8 @@ def _reject_pmo_branch_a_force_push_exit_guard(
     qn = int(ctx.metadata.get("_pmo_db_query_count") or 0)
     missing = _pmo_branch_a_missing_probes(ctx)
     logger.warning(
-        "[L3 Agent][PMO 强制推送] trace=%s via=%s 未推送却 Final Answer 退出 db_query=%s chats=%s",
-        str(ctx.metadata.get("_react_step_trace") or ""),
+        "[L3 Agent][PMO 强制推送] trace=%s via=%s 未推送却 User-facing result 退出 db_query=%s chats=%s",
+        str(ctx.metadata.get("_role_execution_step_trace") or ""),
         via,
         qn,
         chats_ok,
@@ -1023,17 +1023,17 @@ def _reject_pmo_branch_a_force_push_exit_guard(
         "role": "user",
         "content": (
             "【系统校验·PMO·v7 仅分析】无论分析结果质量如何，分支 A **必须先尝试** "
-            f"`mcp:atom_lark_notifier` 推送到全部投递目标（{_pmo_delivery_targets_user_hint(ctx)}）后才能 Final Answer。\n"
+            f"`mcp:atom_lark_notifier` 推送到全部投递目标（{_pmo_delivery_targets_user_hint(ctx)}）后才能 User-facing result。\n"
             f"当前 db_query={qn}/{PMO_BRANCH_A_MIN_DB_QUERIES}；"
             f"已成功群：{chats_ok or '无（一次都未推送）'}。\n"
             f"探针缺口：{('、'.join(missing) if missing else '无')}。\n"
             "数据有缺口时须在战报中写 ⚠️ 占位行，**禁止**以「数据质量差」「无法形成洞察」为由跳过推送。\n"
             "字段名写错导致 null 时须修正 SQL，不得归因为数据源问题。\n"
-            "请继续 ReAct（勿写 Final Answer）：\n"
+            "请继续 RoleExecutionAgent（勿写 User-facing result）：\n"
             "① 补完缺失探针（Step3 须 json_each；Step5 须 GROUP BY；Step6a+6b 跨视图；Step7 须 COUNT 聚合）；\n"
             "② 组装 §1.4 三表 markdown_content（含 ⚠️ 占位行）；\n"
             f"③ 对每个投递目标各 atom_lark_notifier（{_pmo_delivery_targets_user_hint(ctx)}）；\n"
-            "④ 全部目标 success 后才可 ≤3 句 Final Answer 确认。"
+            "④ 全部目标 success 后才可 ≤3 句 User-facing result 确认。"
         ),
     })
     return True
@@ -1048,7 +1048,7 @@ def _reject_pmo_false_lark_sent_guard(
     via: str,
 ) -> bool:
     """
-    PMO 场景：禁止未调用 atom_lark_notifier 成功却在 Final Answer 中声称已推送飞书。
+    PMO 场景：禁止未调用 atom_lark_notifier 成功却在 User-facing result 中声称已推送飞书。
     返回 True 表示已注入 user 纠偏消息，外层须 continue。
     """
     if not _pmo_lark_push_guard_channel_active(ctx):
@@ -1067,32 +1067,32 @@ def _reject_pmo_false_lark_sent_guard(
     if n >= 4:
         logger.warning(
             "[L3 Agent][PMO 飞书校验] trace=%s via=%s 纠偏已达 %s 次，停止拦截",
-            str(ctx.metadata.get("_react_step_trace") or ""),
+            str(ctx.metadata.get("_role_execution_step_trace") or ""),
             via,
             n,
         )
         return False
     ctx.metadata["_pmo_false_lark_sent_guard_count"] = n + 1
     logger.warning(
-        "[L3 Agent][PMO 飞书校验] trace=%s via=%s Final Answer 声称已发飞书但未记录 notifier 成功，已注入纠偏",
-        str(ctx.metadata.get("_react_step_trace") or ""),
+        "[L3 Agent][PMO 飞书校验] trace=%s via=%s User-facing result 声称已发飞书但未记录 notifier 成功，已注入纠偏",
+        str(ctx.metadata.get("_role_execution_step_trace") or ""),
         via,
     )
     messages.append({"role": "assistant", "content": response})
     messages.append({
         "role": "user",
         "content": (
-            "【系统校验·PMO】你的 Final Answer 声称已通过飞书/群发报送，但本轮 **尚未**出现 "
-            "`mcp:atom_lark_notifier` 的成功 Observation（应含 `\"status\": \"success\"` 或「飞书已送达」）。\n"
+            "【系统校验·PMO】你的 User-facing result 声称已通过飞书/群发报送，但本轮 **尚未**出现 "
+            "`mcp:atom_lark_notifier` 的成功 Verification evidence（应含 `\"status\": \"success\"` 或「飞书已送达」）。\n"
             "**禁止**在未调用该工具的情况下声称已推送。\n"
-            "请立即输出 ReAct（勿写 Final Answer）：\n"
-            "Thought: …\n"
-            "Action: mcp:atom_lark_notifier\n"
-            "Action Input: JSON，须含 `markdown_content`（§1.4 战报全文）、`title`、`chat_id`；**禁止** `webhook_url`。\n"
+            "请立即输出 RoleExecutionAgent（勿写 User-facing result）：\n"
+            "Reasoning note: …\n"
+            "WorkOrder: mcp:atom_lark_notifier\n"
+            "tool input: JSON，须含 `markdown_content`（§1.4 战报全文）、`title`、`chat_id`；**禁止** `webhook_url`。\n"
             f"**SKILL §1.3 投递目标**：{', '.join(_pmo_required_delivery_chat_ids(ctx)) or _pmo_delivery_targets_user_hint(ctx)}；"
-            "须对每个目标各调用一次 notifier（IM API），或一次 `core:pmo_macro_dashboard_push` 且 Observation 显示全部 success。\n"
-            "（v7 仅分析：全部目标 success 后才可 Final Answer 确认送达。）\n"
-            "若尚未拉表，可先 `mcp:atom_bi_project_context` 再发 notifier；若任一推送失败须在 Final Answer **如实**写明 error，不得写全部已成功。"
+            "须对每个目标各调用一次 notifier（IM API），或一次 `core:pmo_macro_dashboard_push` 且 Verification evidence 显示全部 success。\n"
+            "（v7 仅分析：全部目标 success 后才可 User-facing result 确认送达。）\n"
+            "若尚未拉表，可先 `mcp:atom_bi_project_context` 再发 notifier；若任一推送失败须在 User-facing result **如实**写明 error，不得写全部已成功。"
         ),
     })
     return True
@@ -1151,7 +1151,7 @@ def _pmo_user_intent_suggests_branch_a_macro(user_text: str) -> bool:
 
 
 def _pmo_branch_a_requires_bi_pull(ctx: PipelineContext) -> bool:
-    """分支 A（宏观看板）链路：须先调用 atom_bi_project_context，禁止只用 Final Answer 交代「下一步」。"""
+    """分支 A（宏观看板）链路：须先调用 atom_bi_project_context，禁止只用 User-facing result 交代「下一步」。"""
     if not _pmo_lark_push_guard_channel_active(ctx):
         return False
     if ctx.metadata.get("pmo_db_ready"):
@@ -1165,14 +1165,20 @@ def _pmo_branch_a_requires_bi_pull(ctx: PipelineContext) -> bool:
     return _pmo_user_intent_suggests_branch_a_macro(ut)
 
 
-MAX_PMO_REACT_ITERATIONS = 32
+MAX_PMO_ROLE_EXECUTION_ITERATIONS = 38
 PMO_BRANCH_A_MIN_DB_QUERIES = 10
 PMO_MARKDOWN_FIX_SUPPLEMENTAL_MAX = 3
+PMO_03_VIEW_ID = "vewpI8lyYw"
 PMO_BRANCH_A_PERSONNEL_SSOT_VIEW = "vewCz1FFJi"
+PMO_BRANCH_A_REQUIRED_VIEW_IDS = frozenset({
+    "vew8TxMcSh",
+    PMO_03_VIEW_ID,
+    PMO_BRANCH_A_PERSONNEL_SSOT_VIEW,
+})
 PMO_BRANCH_A_CROSS_MIN_VIEW_COUNT = 3
 PMO_BRANCH_A_REQUIRED_CROSS_VIEWS = frozenset({
-    "vewpI8lyYw",
-    "vewCz1FFJi",
+    PMO_03_VIEW_ID,
+    PMO_BRANCH_A_PERSONNEL_SSOT_VIEW,
 })
 PMO_BRANCH_A_PRODUCT_VIEW_ALTS = frozenset({"vew8TxMcSh", "vewL9Mofgd"})
 
@@ -1195,6 +1201,228 @@ def _pmo_analysis_only_mode(ctx: PipelineContext) -> bool:
     return _pmo_db_analysis_mode(ctx) and bool(ctx.metadata.get("pmo_analysis_only"))
 
 
+def _pmo_observation_channel_boost_from_metadata(meta: dict[str, Any] | None) -> bool:
+    """PMO channels keep full fs_read observations for report assembly."""
+
+    m = meta or {}
+    ch = str(m.get("_implicit_channel") or "").strip()
+    if ch == "pmo_copilot_cli":
+        return True
+    return bool(m.get("_pmo_bi_project_context_ok") or m.get("pmo_init_mode") or m.get("pmo_db_ready"))
+
+
+def _pmo_view_ids_from_bi_observation(observation: str) -> set[str]:
+    """Extract Lark Bitable view ids from BI context observations."""
+
+    text = str(observation or "")
+    files: list[str] = []
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict) and isinstance(obj.get("files"), list):
+            files = [str(x or "") for x in obj.get("files") or []]
+    except Exception:
+        pass
+    hay = "\n".join(files) if files else text
+    return set(re.findall(r"vew[A-Za-z0-9]+", hay))
+
+
+def _pmo_init_required_views_from_bi(ctx: PipelineContext, observation: str) -> set[str]:
+    ids = _pmo_view_ids_from_bi_observation(observation)
+    if ids:
+        ctx.metadata["_pmo_required_view_ids"] = sorted(ids)
+    return ids
+
+
+def _pmo_maybe_record_fs_read_view(ctx: PipelineContext, inp: str, observation: str) -> None:
+    ids = _pmo_view_ids_from_bi_observation(inp)
+    if not ids:
+        ids = _pmo_view_ids_from_bi_observation(observation)
+    if not ids:
+        return
+    read = [str(x) for x in (ctx.metadata.get("_pmo_files_read") or [])]
+    for vid in sorted(ids):
+        if vid not in read:
+            read.append(vid)
+        if vid == PMO_03_VIEW_ID:
+            ctx.metadata["_pmo_vewpI8lyYw_fs_read_ok_count"] = int(
+                ctx.metadata.get("_pmo_vewpI8lyYw_fs_read_ok_count") or 0
+            ) + 1
+    ctx.metadata["_pmo_files_read"] = read
+
+
+def _pmo_delivery_read_checklist_met(ctx: PipelineContext) -> bool:
+    required = set(str(x) for x in (ctx.metadata.get("_pmo_required_view_ids") or PMO_BRANCH_A_REQUIRED_VIEW_IDS))
+    read = set(str(x) for x in (ctx.metadata.get("_pmo_files_read") or []))
+    if not required.issubset(read):
+        return False
+    return int(ctx.metadata.get("_pmo_vewpI8lyYw_fs_read_ok_count") or 0) >= 3
+
+
+def _reject_pmo_branch_a_incomplete_delivery_guard(
+    ctx: PipelineContext,
+    messages: list[dict[str, Any]],
+    response: str,
+    ans: str,
+    *,
+    via: str = "",
+) -> bool:
+    """Block premature PMO final answers until required views and push evidence exist."""
+
+    if ctx.metadata.get("_pmo_atom_lark_notify_ok"):
+        return False
+    if not (
+        ctx.metadata.get("_pmo_bi_project_context_ok")
+        or ctx.metadata.get("_implicit_channel") == "pmo_copilot_cli"
+        or ctx.metadata.get("pmo_db_ready")
+    ):
+        return False
+    if _pmo_delivery_read_checklist_met(ctx):
+        return False
+    text = str(ans or response or "")
+    looks_final = "User-facing result" in str(response or "") or text.strip().startswith("{") or "pmo_table_notes" in text
+    if not looks_final:
+        return False
+    messages.append({"role": "assistant", "content": response})
+    messages.append(
+        {
+            "role": "user",
+            "content": (
+                "[PMO_TABLE_NOTES_JSON] PMO delivery is incomplete. "
+                "Read all required views and verify the 03 view chunks before final answer or Lark delivery."
+            ),
+        }
+    )
+    ctx.metadata["_pmo_incomplete_delivery_guard_blocked"] = True
+    if via:
+        ctx.metadata["_pmo_incomplete_delivery_guard_via"] = via
+    return True
+
+
+def _pmo_03_get_chunks_read(meta: dict[str, Any] | None) -> list[int]:
+    vals = (meta or {}).get("_pmo_03_chunks_read") or []
+    out: list[int] = []
+    for v in vals:
+        try:
+            out.append(int(v))
+        except Exception:
+            pass
+    return sorted(set(out))
+
+
+def _pmo_03_table_rows(md: str) -> list[str]:
+    return [line for line in str(md or "").splitlines() if re.match(r"^\|\s*row-\d+\s*\|", line)]
+
+
+def _pmo_slice_03_markdown_for_llm(
+    md: str,
+    *,
+    chunk_no: int,
+    start_row: int,
+    end_row: int,
+    chunk_total: int,
+    include_preamble: bool,
+) -> str:
+    rows = _pmo_03_table_rows(md)
+    selected = rows[max(0, start_row) : max(0, end_row)]
+    header = ""
+    if include_preamble:
+        lines = str(md or "").splitlines()
+        pre: list[str] = []
+        for line in lines:
+            if re.match(r"^\|\s*row-\d+\s*\|", line):
+                break
+            pre.append(line)
+        header = "\n".join(pre).strip()
+    title = f"[PMO 03] 绗?{chunk_no}/{chunk_total} 娈? / 第 {chunk_no}/{chunk_total} 段"
+    continuation = "缁 / 续读" if chunk_no > 1 else ""
+    parts = [title]
+    if continuation:
+        parts.append(continuation)
+    if header:
+        parts.append(header)
+    parts.append("\n".join(selected))
+    return "\n\n".join(p for p in parts if p).strip()
+
+
+def _pmo_maybe_chunk_03_fs_read_observation(observation: str, inp: str, ctx: PipelineContext) -> str:
+    if PMO_03_VIEW_ID not in str(inp or ""):
+        return observation
+    rows = _pmo_03_table_rows(observation)
+    if len(rows) <= 1000:
+        ctx.metadata["_pmo_03_chunks_read"] = [1]
+        return observation
+    read = _pmo_03_get_chunks_read(ctx.metadata)
+    if 1 not in read:
+        ctx.metadata["_pmo_03_chunks_read"] = sorted(set(read + [1]))
+        return _pmo_slice_03_markdown_for_llm(
+            observation,
+            chunk_no=1,
+            start_row=0,
+            end_row=1000,
+            chunk_total=2,
+            include_preamble=True,
+        )
+    if 2 not in read:
+        ctx.metadata["_pmo_03_chunks_read"] = sorted(set(read + [2]))
+        return _pmo_slice_03_markdown_for_llm(
+            observation,
+            chunk_no=2,
+            start_row=1000,
+            end_row=len(rows),
+            chunk_total=2,
+            include_preamble=False,
+        )
+    return "[PMO 03] 鍧囧凡璇昏繃 / 均已读过"
+
+
+def _pmo_staging_path_from_inp(inp: str) -> str:
+    try:
+        obj = json.loads(inp) if str(inp or "").strip().startswith("{") else {}
+    except Exception:
+        obj = {}
+    path = ""
+    if isinstance(obj, dict):
+        path = str(obj.get("file_path") or obj.get("path") or "")
+    return path.replace("\\", "/")
+
+
+def _pmo_init_track_staging_io(ctx: PipelineContext, tool: str, inp: str, observation: str) -> None:
+    path = _pmo_staging_path_from_inp(inp)
+    canon = _pmo_canonical_tool_id(tool)
+    pending = [str(x) for x in (ctx.metadata.get("_pmo_init_staging_pending") or [])]
+    if canon == "fs_write" and "pmo_staging/" in path:
+        if path not in pending:
+            pending.append(path)
+    elif canon in ("pmo_import_json", "pmo_mirror_import"):
+        if path:
+            pending = [x for x in pending if x != path]
+        else:
+            pending = []
+    ctx.metadata["_pmo_init_staging_pending"] = pending
+
+
+def _pmo_init_blocked_stacked_staging_write(tool: str, inp: str, ctx: PipelineContext) -> str | None:
+    if not (ctx.metadata.get("pmo_init_mode") or ctx.metadata.get("pmo_init")):
+        return None
+    if _pmo_canonical_tool_id(tool) != "fs_write":
+        return None
+    path = _pmo_staging_path_from_inp(inp)
+    if "pmo_staging/" not in path:
+        return None
+    pending = [str(x) for x in (ctx.metadata.get("_pmo_init_staging_pending") or [])]
+    if pending:
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "pmo_init_stacked_staging_write_blocked",
+                "pending": pending,
+                "msg": "Import the existing PMO staging file before writing another staging file.",
+            },
+            ensure_ascii=False,
+        )
+    return None
+
+
 def _pmo_init_mode(ctx: PipelineContext) -> bool:
     return bool(ctx.metadata.get("pmo_init"))
 
@@ -1215,7 +1443,7 @@ def _pmo_blocked_analysis_tools_during_init(tool: str, ctx: PipelineContext) -> 
                     "【宿主拦截 · INIT 模式】当前为 **镜像入库**，禁止 core:db_query 交叉分析。"
                     "请仅调用 core:pmo_mirror_import 完成入库；"
                     "若 mirror_import 超时，请重试 mirror_import 或使用 "
-                    "`python scripts/run_pmo_copilot_skill.py --init`（确定性零 ReAct 路径）。"
+                    "`python scripts/run_pmo_copilot_skill.py --init`（确定性零 RoleExecutionAgent 路径）。"
                 ),
             },
             ensure_ascii=False,
@@ -1325,7 +1553,7 @@ def _pmo_ensure_analysis_probes(ctx: PipelineContext) -> dict[str, bool]:
 
 def _pmo_parse_tool_observation_json(observation: str) -> dict[str, Any] | None:
     """
-    从 Observation 解析工具 JSON；忽略 context_prefetch 等后缀 Markdown。
+    从 Verification evidence 解析工具 JSON；忽略 context_prefetch 等后缀 Markdown。
     build_prefetch_attachment 会在工具 JSON 后追加「【relevant_context_prefetch】…」，
     若对整段 json.loads 会失败，导致 macro_dashboard_push 双群 success 无法被宿主识别。
     """
@@ -1399,7 +1627,7 @@ def _pmo_macro_dashboard_push_timeout_blocks_notifier(ctx: PipelineContext) -> s
 
 
 def _pmo_track_macro_dashboard_push_success(ctx: PipelineContext, observation: str) -> None:
-    """macro_dashboard_push 双群成功 → 等同 notifier 双群送达，允许 Final Answer 收工。"""
+    """macro_dashboard_push 双群成功 → 等同 notifier 双群送达，允许 User-facing result 收工。"""
     _pmo_track_macro_dashboard_push_observation(ctx, observation)
     if not _pmo_macro_dashboard_push_succeeded(observation, ctx):
         return
@@ -1430,7 +1658,7 @@ def _pmo_append_macro_dashboard_delivery_hint(observation: str) -> str:
     return (
         f"{observation.rstrip()}\n\n"
         "【宿主·PMO】`core:pmo_macro_dashboard_push` 已完成内部双收件送达。"
-        "请 **立即** 输出 ≤3 句 Final Answer（可引用 message_id）；"
+        "请 **立即** 输出 ≤3 句 User-facing result（可引用 message_id）；"
         "**禁止**向用户提及「监控群」或任何 `oc_` chat_id，仅写「战报已推送至飞书/请在本群查看卡片」。"
         "**禁止**再调用任何工具。"
     )
@@ -1542,7 +1770,7 @@ def _pmo_track_db_query_sql(ctx: PipelineContext, tool_id: str, inp: str) -> Non
 def _pmo_append_draft_gfm_hint_after_db_query(
     ctx: PipelineContext, assistant_response: str, observation: str
 ) -> str:
-    """db_query 后检查 Thought 是否含 GFM 草稿行，缺失或重复则注入纠正提示。"""
+    """db_query 后检查 Reasoning trace 是否含 GFM 草稿行，缺失或重复则注入纠正提示。"""
     if not _pmo_db_analysis_mode(ctx) or _pmo_branch_a_delivery_complete(ctx):
         return observation
     _pmo_sync_assembly_phase_from_thought(ctx, assistant_response)
@@ -1552,8 +1780,8 @@ def _pmo_append_draft_gfm_hint_after_db_query(
     thought = _pmo_extract_thought_from_assistant(assistant_response) or str(assistant_response or "")
     if not _pmo_assistant_has_gfm_draft(assistant_response):
         hints.append(
-            "⚠️ **草稿提醒**：上一步 Thought 未包含 GFM 表格行（须含 `|` 分隔符，禁止写「待填充」）。"
-            "请在本步 Thought **开头**补写上一步对应表的至少 1 行 GFM 草稿"
+            "⚠️ **草稿提醒**：上一步 Reasoning trace 未包含 GFM 表格行（须含 `|` 分隔符，禁止写「待填充」）。"
+            "请在本步 Reasoning trace **开头**补写上一步对应表的至少 1 行 GFM 草稿"
             "（📊 Step4/5 · 👥 Step3 · 📦 Step7），再继续下一步。"
         )
     else:
@@ -1562,8 +1790,8 @@ def _pmo_append_draft_gfm_hint_after_db_query(
             last_fp = str(ctx.metadata.get("_pmo_last_gfm_draft_fingerprint") or "")
             if last_fp and fp == last_fp:
                 hints.append(
-                    "⚠️ **草稿重复**：本轮 Thought 的 GFM 草稿内容与上轮完全相同。"
-                    "请基于本步 Observation **追加至少 1 行新数据**（禁止复制旧行）；"
+                    "⚠️ **草稿重复**：本轮 Reasoning trace 的 GFM 草稿内容与上轮完全相同。"
+                    "请基于本步 Verification evidence **追加至少 1 行新数据**（禁止复制旧行）；"
                     "Step5 应写状态汇总行（如 `| 🔴 延期 | N 条 |`），Step4 写 Epic 行，Step7 写 Version Goal 行。"
                 )
             ctx.metadata["_pmo_last_gfm_draft_fingerprint"] = fp
@@ -1638,8 +1866,8 @@ def _pmo_branch_a_blocked_force_assembly_round(
                     "status": "error",
                     "error": "pmo_assembly_round_notifier_blocked",
                     "msg": (
-                        "【宿主拦截 · 组装轮】Thought 三表 GFM 预览 **已就绪**。"
-                        "本轮禁止推送；下一轮请将 Thought 中的完整 GFM 三表"
+                        "【宿主拦截 · 组装轮】Reasoning trace 三表 GFM 预览 **已就绪**。"
+                        "本轮禁止推送；下一轮请将 Reasoning trace 中的完整 GFM 三表"
                         " **全文复制** 到 atom_lark_notifier.markdown_content 后再调用推送。"
                     ),
                 },
@@ -1650,8 +1878,8 @@ def _pmo_branch_a_blocked_force_assembly_round(
                 "status": "error",
                 "error": "pmo_assembly_round_notifier_blocked",
                 "msg": (
-                    "【宿主拦截 · 组装轮】禁止推送：Thought 中尚未含完整三张 GFM 表。"
-                    "请翻阅前 10 轮 Thought/Observation，在本轮 Thought 写出"
+                    "【宿主拦截 · 组装轮】禁止推送：Reasoning trace 中尚未含完整三张 GFM 表。"
+                    "请翻阅前 10 轮 Reasoning trace/Verification evidence，在本轮 Reasoning trace 写出"
                     "📊/👥/📦 三表完整预览（各含 | 表头与数据行），本轮不要调用 notifier。"
                 ),
             },
@@ -1664,9 +1892,9 @@ def _pmo_branch_a_blocked_force_assembly_round(
                 "error": "pmo_force_assembly_round_blocked",
                 "msg": (
                     "【宿主拦截 · 组装轮】§1.2.1 七步探针 **已完成**，禁止 core:db_query。"
-                    "请在本轮 **仅** 于 Thought 中写出 §1.4 完整三表 GFM 预览"
+                    "请在本轮 **仅** 于 Reasoning trace 中写出 §1.4 完整三表 GFM 预览"
                     "（📊 需求进度全览 + 👥 人员任务矩阵 + 📦 版本发布需求映射，各含 | 表格）。"
-                    "❌ 本轮禁止 atom_lark_notifier；Thought 写完后下一轮再推送。"
+                    "❌ 本轮禁止 atom_lark_notifier；Reasoning trace 写完后下一轮再推送。"
                 ),
             },
             ensure_ascii=False,
@@ -1679,8 +1907,8 @@ def _pmo_branch_a_blocked_force_assembly_round(
                 "status": "error",
                 "error": "pmo_force_assembly_round_blocked",
                 "msg": (
-                    "【宿主拦截 · 组装轮】Thought 三表预览已完成，禁止继续 core:db_query。"
-                    "请将 Thought 中的 GFM 三表全文写入 markdown_content 后调用 atom_lark_notifier。"
+                    "【宿主拦截 · 组装轮】Reasoning trace 三表预览已完成，禁止继续 core:db_query。"
+                    "请将 Reasoning trace 中的 GFM 三表全文写入 markdown_content 后调用 atom_lark_notifier。"
                 ),
             },
             ensure_ascii=False,
@@ -1720,7 +1948,7 @@ def _pmo_branch_a_blocked_duplicate_step1_map(
                     "【宿主拦截 · ExecutionBrief】你已在本轮重复执行 Step1 数据地图 ≥2 次。"
                     f"当前 db_query={qn}/{PMO_BRANCH_A_MIN_DB_QUERIES}；仍缺：{missing_txt}。"
                     "❌ 禁止从 Step1 重跑七步。"
-                    "请核对上下文中已有 Observation，仅补跑缺失探针对应步骤，"
+                    "请核对上下文中已有 Verification evidence，仅补跑缺失探针对应步骤，"
                     "或直接组装 §1.4 三表 markdown_content 再推送。"
                 ),
             },
@@ -1824,7 +2052,7 @@ def _pmo_branch_a_blocked_rerun_db_after_markdown_block(
             "msg": (
                 "【宿主拦截】markdown 最终整合阶段，且 §1.2.1 七步分析探针 **已完成**。"
                 "❌ **禁止** 任何 core:db_query。"
-                "请直接基于已有 Observation 将完整 GFM 三表写入 "
+                "请直接基于已有 Verification evidence 将完整 GFM 三表写入 "
                 "`atom_lark_notifier.markdown_content` 后再推送。"
             ),
         },
@@ -1861,7 +2089,7 @@ def _pmo_branch_a_blocked_init_tools_during_analysis(tool: str, ctx: PipelineCon
                     "error": "pmo_macro_dashboard_duplicate_blocked",
                     "msg": (
                         "【宿主拦截】本轮已通过 core:pmo_macro_dashboard_push 完成双群推送，"
-                        "禁止重复调用。请输出 ≤3 句 Final Answer 确认 message_id 即可。"
+                        "禁止重复调用。请输出 ≤3 句 User-facing result 确认 message_id 即可。"
                     ),
                 },
                 ensure_ascii=False,
@@ -1882,7 +2110,7 @@ def _pmo_branch_a_blocked_init_tools_during_analysis(tool: str, ctx: PipelineCon
                     "msg": (
                         "【宿主拦截 · 多 Agent 阶段三】已调用过 core:pmo_macro_dashboard_push 但未确认双群 success。"
                         "禁止 atom_lark_notifier 兜底（易与工具内推送重复且版式不一致）。"
-                        "请重试 macro_dashboard_push；仅当 Observation 明确 status=failed 且无 timeout 时才允许 notifier。"
+                        "请重试 macro_dashboard_push；仅当 Verification evidence 明确 status=failed 且无 timeout 时才允许 notifier。"
                     ),
                 },
                 ensure_ascii=False,
@@ -1921,7 +2149,7 @@ def _pmo_branch_a_blocked_init_tools_during_analysis(tool: str, ctx: PipelineCon
                 "error": "pmo_post_delivery_tool_blocked",
                 "msg": (
                     "【宿主拦截】内部双收件均已推送成功，本轮交付完成。"
-                    "请输出 ≤3 句 Final Answer 确认（**禁止**向用户提及监控群或 oc_ chat_id），禁止再调用任何工具。"
+                    "请输出 ≤3 句 User-facing result 确认（**禁止**向用户提及监控群或 oc_ chat_id），禁止再调用任何工具。"
                 ),
             },
             ensure_ascii=False,
@@ -1964,7 +2192,7 @@ def _reject_pmo_branch_a_init_completion_guard(
     *,
     via: str,
 ) -> bool:
-    """禁止在仅分析模式下用 Final Answer 冒充 INIT/入库已完成并收工。"""
+    """禁止在仅分析模式下用 User-facing result 冒充 INIT/入库已完成并收工。"""
     if not _pmo_lark_push_guard_channel_active(ctx):
         return False
     if _pmo_branch_a_delivery_complete(ctx):
@@ -1979,7 +2207,7 @@ def _reject_pmo_branch_a_init_completion_guard(
     messages.append({
         "role": "user",
         "content": (
-            "【宿主·PMO 仅分析模式】禁止以 Final Answer 声称 INIT/镜像入库已完成。"
+            "【宿主·PMO 仅分析模式】禁止以 User-facing result 声称 INIT/镜像入库已完成。"
             "请继续 core:db_query 大颗粒度探针（Sprint/状态/人员/版本/Epic），"
             "完成 §1.4 三表后双群 atom_lark_notifier，再简短确认。"
         ),
@@ -1988,7 +2216,7 @@ def _reject_pmo_branch_a_init_completion_guard(
 
 
 def _pmo_final_answer_looks_like_futile_plan_only(ans: str) -> bool:
-    """仅承诺「接下来/将」要做，或假「路径/文件名不明」stall，常见于未按 Observation 读盘就收尾。"""
+    """仅承诺「接下来/将」要做，或假「路径/文件名不明」stall，常见于未按 Verification evidence 读盘就收尾。"""
     s = str(ans or "").strip()
     if not s or len(s) > 800:
         return False
@@ -2016,7 +2244,7 @@ def _pmo_final_answer_looks_like_futile_plan_only(ans: str) -> bool:
         r"(我将|然后再|再).{0,24}(读取|拉取|汇总|生成)", s
     ):
         return True
-    # 「先列目录 / 先确认文件名」——拉表 Observation 已含 files[]，禁止 Final Answer 空转
+    # 「先列目录 / 先确认文件名」——拉表 Verification evidence 已含 files[]，禁止 User-facing result 空转
     if re.search(r"pmo_lark_pull", s, re.I) and re.search(
         r"(需要先|须先|让我先|先要|准备先).{0,32}(确认|列出|罗列|查看|核对|检查)",
         s,
@@ -2037,7 +2265,7 @@ def _pmo_final_answer_looks_like_futile_plan_only(ans: str) -> bool:
 
 
 def _pmo_final_answer_looks_like_lark_card_body(ans: str) -> bool:
-    """判定是否把应按 SKILL §1.4 发到群里的战报写在 Final Answer 里（须走 notifier）。"""
+    """判定是否把应按 SKILL §1.4 发到群里的战报写在 User-facing result 里（须走 notifier）。"""
     s = str(ans or "")
     if not s.strip():
         return False
@@ -2062,7 +2290,7 @@ def _reject_pmo_branch_a_missing_bi_pull_guard(
     via: str,
 ) -> bool:
     """
-    分支 A：禁止在未执行 atom_bi_project_context 前用 Final Answer 结束（含「接下来再拉表」式废话）。
+    分支 A：禁止在未执行 atom_bi_project_context 前用 User-facing result 结束（含「接下来再拉表」式废话）。
     """
     if not _pmo_branch_a_requires_bi_pull(ctx):
         return False
@@ -2088,15 +2316,15 @@ def _reject_pmo_branch_a_missing_bi_pull_guard(
     if n >= 6:
         logger.warning(
             "[L3 Agent][PMO 拉表校验] trace=%s via=%s 纠偏已达 %s 次，停止拦截",
-            str(ctx.metadata.get("_react_step_trace") or ""),
+            str(ctx.metadata.get("_role_execution_step_trace") or ""),
             via,
             n,
         )
         return False
     ctx.metadata["_pmo_branch_a_bi_pull_guard_count"] = n + 1
     logger.warning(
-        "[L3 Agent][PMO 拉表校验] trace=%s via=%s 拒绝无 atom_bi_project_context 的 Final Answer，已注入纠偏",
-        str(ctx.metadata.get("_react_step_trace") or ""),
+        "[L3 Agent][PMO 拉表校验] trace=%s via=%s 拒绝无 atom_bi_project_context 的 User-facing result，已注入纠偏",
+        str(ctx.metadata.get("_role_execution_step_trace") or ""),
         via,
     )
     messages.append({"role": "assistant", "content": response})
@@ -2104,15 +2332,15 @@ def _reject_pmo_branch_a_missing_bi_pull_guard(
         "role": "user",
         "content": (
             "【系统校验·PMO·分支A】当前任务要求 **先拉取 §1.1 飞书表**（`mcp:atom_bi_project_context`，"
-            "`wiki_urls` 须覆盖产品 + 开发多 view + 美术等），但你尚未产生该工具的成功/失败 Observation。\n"
-            "**禁止**仅用 Final Answer 写「接下来再拉表」「准备去同步」之类的话糊弄结束。\n"
-            "请立即输出 ReAct（勿写 Final Answer）：\n"
-            "Thought: …\n"
-            "Action: mcp:atom_bi_project_context\n"
-            "Action Input: JSON，至少含 `wiki_urls` 字符串数组（与 SKILL §1.1 一致），可按需含 "
+            "`wiki_urls` 须覆盖产品 + 开发多 view + 美术等），但你尚未产生该工具的成功/失败 Verification evidence。\n"
+            "**禁止**仅用 User-facing result 写「接下来再拉表」「准备去同步」之类的话糊弄结束。\n"
+            "请立即输出 RoleExecutionAgent（勿写 User-facing result）：\n"
+            "Reasoning note: …\n"
+            "WorkOrder: mcp:atom_bi_project_context\n"
+            "tool input: JSON，至少含 `wiki_urls` 字符串数组（与 SKILL §1.1 一致），可按需含 "
             "`output_dir_relative` 等。\n"
-            "拉表拿到 Observation 后，再聚合并对每个投递目标调用 `Action: mcp:atom_lark_notifier` 推送 §1.4 卡片：\n"
-            f"{_pmo_delivery_targets_user_hint(ctx)}；最后才用简短 Final Answer 确认。"
+            "拉表拿到 Verification evidence 后，再聚合并对每个投递目标调用 `WorkOrder: mcp:atom_lark_notifier` 推送 §1.4 卡片：\n"
+            f"{_pmo_delivery_targets_user_hint(ctx)}；最后才用简短 User-facing result 确认。"
         ),
     })
     return True
@@ -2127,7 +2355,7 @@ def _reject_pmo_branch_a_post_bi_fs_stall_guard(
     via: str,
 ) -> bool:
     """
-    拉表已成功，但 Final Answer 仍假装「路径/美术文件名不明」「目录列表未回」等 stall ——
+    拉表已成功，但 User-facing result 仍假装「路径/美术文件名不明」「目录列表未回」等 stall ——
     常见误因：§1.1 美术 = 飞书节点「设计专用」，落盘名含 `设计专用_DiSnwVB1`，非「美术.md」。
     """
     if not _pmo_branch_a_requires_bi_pull(ctx):
@@ -2146,19 +2374,19 @@ def _reject_pmo_branch_a_post_bi_fs_stall_guard(
         return False
     ctx.metadata["_pmo_branch_a_post_bi_stall_guard_count"] = n + 1
     logger.warning(
-        "[L3 Agent][PMO 读盘纠偏] trace=%s via=%s 拉表已成功但 Final Answer 仍 stall，已注入纠偏",
-        str(ctx.metadata.get("_react_step_trace") or ""),
+        "[L3 Agent][PMO 读盘纠偏] trace=%s via=%s 拉表已成功但 User-facing result 仍 stall，已注入纠偏",
+        str(ctx.metadata.get("_role_execution_step_trace") or ""),
         via,
     )
     messages.append({"role": "assistant", "content": response})
     messages.append({
         "role": "user",
         "content": (
-            "【系统校验·PMO·读盘】`atom_bi_project_context` 已 **success**，Observation 里 **`files[]` + `output_dir` 已是完整文件名清单**，"
-            "**禁止**用 Final Answer 说「要先列出目录 / 要先确认文件名」——应直接按 `files[]` **逐字**拼绝对路径读盘。\n"
+            "【系统校验·PMO·读盘】`atom_bi_project_context` 已 **success**，Verification evidence 里 **`files[]` + `output_dir` 已是完整文件名清单**，"
+            "**禁止**用 User-facing result 说「要先列出目录 / 要先确认文件名」——应直接按 `files[]` **逐字**拼绝对路径读盘。\n"
             "**常见纠错**：「产品任务需求完成度」应对 `files[]` 中含 **`产品任务需求完成度`** + **`vew8TxMcSh`** 的那一条；前缀序号 **`NN_`（如 01_/02_/…）必须与清单完全一致**，禁止把 `02_…` 臆改成 `01_…`。\n"
             "**美术** = **「设计专用」**：路径取 `files[]` 中带 **`设计专用`**、**`DiSnwVB1`**、**`vew5taB9H1`** 的条目。**不是**整张大开发计划表（`tblfK9`）；开发计划里 **`vewpI8lyYw`/`vewswB05Wi` 落盘 md** 仅作补充。\n"
-            "若 **`mcp:read_file`** 报错不在允许目录，改用 **`core:fs_read`** 传**同一路径**；读完再 **`mcp:atom_lark_notifier`**，勿再在 Final Answer 里承诺「下一步再 ls」。"
+            "若 **`mcp:read_file`** 报错不在允许目录，改用 **`core:fs_read`** 传**同一路径**；读完再 **`mcp:atom_lark_notifier`**，勿再在 User-facing result 里承诺「下一步再 ls」。"
         ),
     })
     return True
@@ -2173,7 +2401,7 @@ def _reject_pmo_branch_a_board_without_notifier_guard(
     via: str,
 ) -> bool:
     """
-    已拉表但未发 notifier：禁止把完整战报写在 Final Answer（应写入 notifier 的 markdown_content）。
+    已拉表但未发 notifier：禁止把完整战报写在 User-facing result（应写入 notifier 的 markdown_content）。
     v7 DB 仅分析模式同样适用（不要求 atom_bi_project_context）。
     """
     if not _pmo_lark_push_guard_channel_active(ctx):
@@ -2199,8 +2427,8 @@ def _reject_pmo_branch_a_board_without_notifier_guard(
         return False
     ctx.metadata["_pmo_branch_a_notifier_dump_guard_count"] = n + 1
     logger.warning(
-        "[L3 Agent][PMO 推送校验] trace=%s via=%s 战报式 Final Answer 但未 notifier 成功，已注入纠偏",
-        str(ctx.metadata.get("_react_step_trace") or ""),
+        "[L3 Agent][PMO 推送校验] trace=%s via=%s 战报式 User-facing result 但未 notifier 成功，已注入纠偏",
+        str(ctx.metadata.get("_role_execution_step_trace") or ""),
         via,
     )
     messages.append({"role": "assistant", "content": response})
@@ -2208,7 +2436,7 @@ def _reject_pmo_branch_a_board_without_notifier_guard(
         "role": "user",
         "content": (
             "【系统校验·PMO】你已执行拉表，但 **宏观看板正文**须通过 **`mcp:atom_lark_notifier`** "
-            "发到群内（`markdown_content` + `title` + `chat_id`），**禁止**把完整 §1.4 战报只写在 Final Answer。\n"
+            "发到群内（`markdown_content` + `title` + `chat_id`），**禁止**把完整 §1.4 战报只写在 User-facing result。\n"
             "**分支 A 的 `markdown_content` 必须同时包含三张核心表**（缺一不可）：\n"
             "① `📊 需求进度全览`（**6 列**：优先级|需求名称|时间跨度|参与人|完成度|状态；"
             "完成度列写 workflow_completion_pct 进度条+%（与泳道 rank 同源，禁止条数占比）；"
@@ -2218,12 +2446,12 @@ def _reject_pmo_branch_a_board_without_notifier_guard(
             "禁止 ** 与分号挤一段；**行序**：🚨落后→🟡偏闲→✅正常）\n"
             "③ `📦 版本发布需求映射`（按版本/Sprint归集，含每条需求当前状态）\n"
             "**注意**：分支 D 的精简格式（只含人员矩阵）仅适用于 `resource_monitor` 触发词，**对分支 A 完全无效**。\n"
-            "请立即输出 ReAct（勿写 Final Answer）：\n"
-            "Thought: …\n"
-            "Action: mcp:atom_lark_notifier\n"
-            "Action Input: JSON（全文三表战报送 `markdown_content`，`title` 用 `【K11 · PMO 宏观看板】` 类）。\n"
+            "请立即输出 RoleExecutionAgent（勿写 User-facing result）：\n"
+            "Reasoning note: …\n"
+            "WorkOrder: mcp:atom_lark_notifier\n"
+            "tool input: JSON（全文三表战报送 `markdown_content`，`title` 用 `【K11 · PMO 宏观看板】` 类）。\n"
             f"**须对每个投递目标各调用一次**（{_pmo_delivery_targets_user_hint(ctx)}）。\n"
-            "推送成功后再用 ≤3 句 Final Answer 确认 Observation 状态即可。"
+            "推送成功后再用 ≤3 句 User-facing result 确认 Verification evidence 状态即可。"
         ),
     })
     return True
@@ -2362,7 +2590,7 @@ def before_pmo_tool_exec(
 
     Returns ``(possibly_sanitized_input, observation, skip_tool_invoke,
     skip_lark_invoke)``.  ``observation`` is set when the policy blocks the tool
-    and wants to feed a synthetic observation back into ReAct.
+    and wants to feed a synthetic observation back into RoleExecutionAgent.
     """
     observation: str | None = None
     skip_tool_invoke = False
@@ -2456,7 +2684,7 @@ def after_pmo_tool_exec(
 ) -> str:
     """Track PMO tool results and append PMO guidance to observation text."""
     try:
-        observation_full = _pmo_append_react_budget_warning(
+        observation_full = _pmo_append_role_execution_budget_warning(
             ctx,
             str(observation_full or ""),
             iteration=iteration,
@@ -2515,4 +2743,3 @@ def pmo_observation_nudge(ctx: PipelineContext, observation_full: str, tool: str
     except Exception as e:
         logger.debug("[L3 Agent][PMO] markdown nudge skipped: %s", e)
         return ""
-

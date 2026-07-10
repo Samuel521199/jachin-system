@@ -1,10 +1,10 @@
 """
-SKILL.md 热重载（路线图 §六 P1）+ ReAct 中途 inline 对齐（§六 P2）
+SKILL.md 热重载（路线图 §六 P1）+ RoleExecutionAgent 中途 inline 对齐（§六 P2）
 
-P1：每轮 ReAct 在 LLM 前从磁盘替换 HR 招聘 SKILL.md 注入段（可选关闭）。
-P2：skill_evolver 等后台写入 SKILL.md 后 bump 世代 + 对当前前台 ReAct 上下文打
+P1：每轮 RoleExecutionAgent 在 LLM 前从磁盘替换 HR 招聘 SKILL.md 注入段（可选关闭）。
+P2：skill_evolver 等后台写入 SKILL.md 后 bump 世代 + 对当前前台 RoleExecutionAgent 上下文打
     `_skill_sop_dirty`，下一次 HOOK_BEFORE_LLM_THINK 前强制读盘并同步
-    `_react_system_prompt_full`，无需等「自然轮次」外额外条件。
+    `_role_execution_system_prompt_full`，无需等「自然轮次」外额外条件。
 
 环境变量
 --------
@@ -31,7 +31,7 @@ GENERIC_SKILL_MD_END = "<!--/JACHIN_GENERIC_SKILL_MD-->"
 
 _lock = threading.Lock()
 _hr_skill_inline_generation: int = 0
-# run_id -> weakref(PipelineContext)；仅在有 HR 标记块的 ReAct 上注册
+# run_id -> weakref(PipelineContext)；仅在有 HR 标记块的 RoleExecutionAgent 上注册
 _inline_by_run_id: dict[str, weakref.ref] = {}
 
 
@@ -97,7 +97,7 @@ def path_triggers_skill_disk_hot_inline(skill_path: Path) -> bool:
     return "/skills_repo/" in low or "/.jachin/skills/" in low
 
 
-def register_react_ctx_for_skill_inline(run_id: str, ctx: Any) -> None:
+def register_role_execution_ctx_for_skill_inline(run_id: str, ctx: Any) -> None:
     if not skill_md_inline_enabled() or not run_id:
         return
     sp = getattr(ctx, "system_prompt", "") or ""
@@ -117,7 +117,7 @@ def register_react_ctx_for_skill_inline(run_id: str, ctx: Any) -> None:
         _inline_by_run_id[rid] = weakref.ref(ctx, _cleanup)
 
 
-def unregister_react_ctx_for_skill_inline(run_id: str) -> None:
+def unregister_role_execution_ctx_for_skill_inline(run_id: str) -> None:
     rid = (run_id or "").strip()
     if not rid:
         return
@@ -128,7 +128,7 @@ def unregister_react_ctx_for_skill_inline(run_id: str) -> None:
 def notify_skill_md_changed_from_disk_write(skill_path: Path) -> None:
     """
     SKILL.md 写入磁盘后调用（如 skill_evolver、上游同步）。
-    对 HR 招聘路径：bump 世代并对已注册 ReAct 上下文设置 _skill_sop_dirty。
+    对 HR 招聘路径：bump 世代并对已注册 RoleExecutionAgent 上下文设置 _skill_sop_dirty。
     """
     if not skill_md_inline_enabled():
         return
@@ -255,9 +255,9 @@ def refresh_generic_skill_md_in_system_prompt(system_prompt: str, paths: list[st
     return (system_prompt or "") + "\n\n" + fresh + "\n"
 
 
-def apply_skill_md_hot_reload_to_react_ctx(ctx: Any) -> None:
+def apply_skill_md_hot_reload_to_role_execution_ctx(ctx: Any) -> None:
     """HR + generic SKILL.md 热重载（每轮 / inline dirty）。"""
-    apply_hr_skill_md_hot_reload_to_react_ctx(ctx)
+    apply_hr_skill_md_hot_reload_to_role_execution_ctx(ctx)
     if not ctx.metadata.get("_skill_md_generic_watch"):
         return
     gen = get_hr_skill_inline_generation()
@@ -278,18 +278,18 @@ def apply_skill_md_hot_reload_to_react_ctx(ctx: Any) -> None:
         getattr(ctx, "system_prompt", "") or "",
         paths,
     )
-    full = ctx.metadata.get("_react_system_prompt_full")
+    full = ctx.metadata.get("_role_execution_system_prompt_full")
     if isinstance(full, str):
-        ctx.metadata["_react_system_prompt_full"] = refresh_generic_skill_md_in_system_prompt(
+        ctx.metadata["_role_execution_system_prompt_full"] = refresh_generic_skill_md_in_system_prompt(
             full, paths
         )
 
 
-def apply_hr_skill_md_hot_reload_to_react_ctx(ctx: Any) -> None:
+def apply_hr_skill_md_hot_reload_to_role_execution_ctx(ctx: Any) -> None:
     """
-    每个 ReAct 迭代在 HOOK_BEFORE_LLM_THINK 之前调用：
+    每个 RoleExecutionAgent 迭代在 HOOK_BEFORE_LLM_THINK 之前调用：
     - P1：hot_reload 开则每轮读盘；
-    - P2：_skill_sop_dirty 或 inline 世代落后则强制读盘，并同步冻结的 _react_system_prompt_full。
+    - P2：_skill_sop_dirty 或 inline 世代落后则强制读盘，并同步冻结的 _role_execution_system_prompt_full。
     """
     sp = getattr(ctx, "system_prompt", "") or ""
     if HR_SKILL_MD_BODY_START not in sp:
@@ -313,9 +313,9 @@ def apply_hr_skill_md_hot_reload_to_react_ctx(ctx: Any) -> None:
         getattr(ctx, "system_prompt", "") or "",
         force_disk_read=True,
     )
-    full = ctx.metadata.get("_react_system_prompt_full")
+    full = ctx.metadata.get("_role_execution_system_prompt_full")
     if isinstance(full, str) and HR_SKILL_MD_BODY_START in full:
-        ctx.metadata["_react_system_prompt_full"] = refresh_hr_skill_md_body_in_system_prompt(
+        ctx.metadata["_role_execution_system_prompt_full"] = refresh_hr_skill_md_body_in_system_prompt(
             full,
             force_disk_read=True,
         )

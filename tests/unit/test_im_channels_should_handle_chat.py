@@ -1,4 +1,4 @@
-﻿"""im_channels.should_handle_chat — 默认节点 vs 白名单"""
+"""im_channels.should_handle_chat — 默认节点 vs 白名单"""
 from l3_node.im_channels.base import InboundIMChannel
 
 

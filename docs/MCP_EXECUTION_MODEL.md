@@ -1,7 +1,7 @@
 # MCP 执行模型 — L3 本机优先 + L2 TaskManager（目标）/ 兼容委托（现状）
 
-**版本**: 2.2  
-**状态**: 与 [ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md](./ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md) **v0.4 对齐**  
+**版本**: 2.2
+**状态**: 与 [ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md](./ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md) **v0.4 对齐**
 **定位**: 统一 MCP/Skill 执行策略；区分 **目标规格** 与 **仓库当前兼容实现**
 
 **四大原语**：本文聚焦 **MCP** 的宿主与委托；与 **Tools**、**Skills**、**Agent Tasks** 并列定义见 **[Jachin 视角的「四大原语」终极架构规范.md](./Jachin%20视角的「四大原语」终极架构规范.md)**。
@@ -60,7 +60,7 @@ L3 需要调用某 MCP
 
 环境变量：**`JACHIN_L2_STDIO_MCP=1`** — 在 L2 宿主机上恢复旧行为（本机 stdio MCPManager + `GET /tools` 合并本机列表）。**`JACHIN_MCP_DELEGATE_PULL=0`** 关闭 Pull 优先；**`JACHIN_MCP_PULL_WORKER=0`** 关闭 L3 侧拉取协程。无 Redis 时自动仅走 HTTP 回退。
 
-**Task Token（跨节点委托）**：L2 在 Pull 与 HTTP 入站委托时签发 `task_token`（`core/mcp_task_token.py`），绑定 `task_id` + `tool_name` + 执行端 `node_id` + `sub_account_id`。L3 执行前校验；**`JACHIN_MCP_TASK_TOKEN_SECRET`** 建议在 L2 与所有 L3 设为同一密钥（未设时弱回退见模块说明）。**`JACHIN_MCP_DELEGATE_ALLOW_LEGACY_NO_TOKEN=1`** 允许 Pull 消费无令牌任务（仅迁移/排障）。**`JACHIN_L3_MCP_EXECUTE_ALLOW_LEGACY=1`** 允许 `/api/v3/mcp/execute` 不带令牌（不安全）。
+**Task Token（跨节点委托）**：L2 在 Pull 与 HTTP 入站委托时签发 `task_token`（`core/mcp_task_token.py`），绑定 `task_id` + `tool_name` + 执行端 `node_id` + `sub_account_id`。L3 执行前校验；**`JACHIN_MCP_TASK_TOKEN_SECRET`** 建议在 L2 与所有 L3 设为同一密钥（未设时弱回退见模块说明）。**`JACHIN_MCP_DELEGATE_ALLOW_ARCHIVED_NO_TOKEN=1`** 允许 Pull 消费无令牌任务（仅迁移/排障）。**`JACHIN_L3_MCP_EXECUTE_ALLOW_ARCHIVED=1`** 允许 `/api/v3/mcp/execute` 不带令牌（不安全）。
 
 **租户边界**：候选执行节点 = Redis 在线 ∩ SQLite `l3_nodes` 已分配给该子账号。
 

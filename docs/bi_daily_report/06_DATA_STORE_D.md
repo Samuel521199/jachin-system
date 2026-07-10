@@ -1,7 +1,7 @@
 # BI 数据持久化层 (D) — 设计说明
 
-**版本**: 1.0  
-**状态**: 已实现  
+**版本**: 1.0
+**状态**: 已实现
 **定位**: A 抓取的数据全部存入 D（DuckDB），供 C 分析使用
 
 ---
@@ -16,7 +16,7 @@
 | **指标** | 配置驱动，支持 formula 派生 | YAML metrics |
 | **输出器** | 格式化输出 | `console`、`markdown` |
 
-**配置**: `config/bi_metrics.yaml`  
+**配置**: `config/bi_metrics.yaml`
 **扩展**: 在 `l3_node/bi/metrics/plugins/` 新增插件并注册到 `registry.py`
 
 ---

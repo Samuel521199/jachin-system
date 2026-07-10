@@ -1,4 +1,4 @@
-﻿"""进程内前台 + 后台任务负载摘要（轻量 GlobalTaskRegistry，供 prompt 注入）。线程安全。"""
+"""进程内前台 + 后台任务负载摘要（轻量 GlobalTaskRegistry，供 prompt 注入）。线程安全。"""
 from __future__ import annotations
 
 import json

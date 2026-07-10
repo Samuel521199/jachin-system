@@ -1,6 +1,6 @@
 # MCP stdio 子进程与 API Key / 环境变量
 
-**版本**: 2026-04  
+**版本**: 2026-04
 **定位**: 说明为何会出现「父进程已有 Key、MCP 仍报找不到 API Key」类问题，以及 Jachin 侧的通用约束与 Tavily 专项修复；供新增 **依赖环境变量密钥** 的 stdio MCP 时对照，避免重复踩坑。
 
 **相关**: `docs/MCP_SPEC.md`、`core/mcp_embedded_runtime.py`、`core/mcp_client.py`、`core/l3_dotenv_merge.py`。

@@ -20,12 +20,12 @@ def check_skill_license(
 ) -> bool:
     """
     DRM 校验：检查技能是否有有效授权，方可分发给 L3
-    
+
     Args:
         skill_id: 技能 ID
         manifest: 技能 Manifest（含 price 信息），可选
         licenses_path: 自定义 License 缓存路径，可选
-    
+
     Returns:
         True=可分发，False=无授权
     """
@@ -72,7 +72,7 @@ def check_skill_license(
 def ensure_licenses_synced() -> bool:
     """
     确保 License 已同步（供启动时调用）
-    
+
     Returns:
         是否成功（含使用本地缓存）
     """

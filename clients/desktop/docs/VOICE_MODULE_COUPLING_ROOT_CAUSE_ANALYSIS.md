@@ -1,8 +1,8 @@
-﻿# 语音模块「改一处坏一处」— 根因分析与治理方向
+# 语音模块「改一处坏一处」— 根因分析与治理方向
 
-> **文档性质**：架构与工程问题分析（非修复 PR）。  
-> **背景**：开发者在改陪伴态 UI、TTS 语速/音色、唤醒、PTT、L3 流式播报等功能时，频繁出现「改 UI 布局坏了」「改音色口音变了」「改断句策略播报被拦」等连带回归。  
-> **结论先行**：**不是**「所有语音代码都写在一个文件里」的单文件灾难，而是 **「表面模块化 + 多套默认值 + 隐式 fallback + 超大胶水入口」** 叠加造成的 **契约缺失型耦合**。  
+> **文档性质**：架构与工程问题分析（非修复 PR）。
+> **背景**：开发者在改陪伴态 UI、TTS 语速/音色、唤醒、PTT、L3 流式播报等功能时，频繁出现「改 UI 布局坏了」「改音色口音变了」「改断句策略播报被拦」等连带回归。
+> **结论先行**：**不是**「所有语音代码都写在一个文件里」的单文件灾难，而是 **「表面模块化 + 多套默认值 + 隐式 fallback + 超大胶水入口」** 叠加造成的 **契约缺失型耦合**。
 > **关联文档**：`VOICE_UNIFIED_PIPELINE_PROPOSAL.md`（目标架构）、`VOICE_MODULE_HUMAN_GUIDE.md`（人话链路）、`COMPANION_UI_REGRESSION_ROOT_CAUSE_ANALYSIS.md`（陪伴 UI 专项）
 
 ---
@@ -59,7 +59,7 @@ Rust 侧也有独立 crate 模块：`stt/`、`jvs/`、`tts/`、`voice_playback.r
 | Orb / HUD 同步 | `voiceCompanionBridge`、`emitCompanionL3ToHud` |
 | 全局语音 ref | `chatJvsVoiceActiveRef`、`voiceCompanionActiveRef` |
 
-**改语音功能几乎必然 touch `chat.tsx`**；而陪伴 UI 只是其中 `companionMode ? … : …` 的一个分支。  
+**改语音功能几乎必然 touch `chat.tsx`**；而陪伴 UI 只是其中 `companionMode ? … : …` 的一个分支。
 这与 `COMPANION_UI_REGRESSION_ROOT_CAUSE_ANALYSIS.md` 的结论一致：**功能与 UI 在同一棵 React 树里，没有物理隔离。**
 
 ---
@@ -206,7 +206,7 @@ chatJvsVoiceActiveRef     ← 语音：本次是否由「语音输入按钮」�
 
 ### 6.3 测试页不可信
 
-`web/voice-test.html` 存在编码损坏与旧 L2 假设（Codex 已指出）。  
+`web/voice-test.html` 存在编码损坏与旧 L2 假设（Codex 已指出）。
 **不能作为桌面主链路验收标准。**
 
 ---
@@ -223,7 +223,7 @@ chat.tsx                      ← companionMode 分支
 OrbWindow.tsx / JachinOrb.tsx ← 132px 球 + 外圈 glow
 ```
 
-Rust 改 `CHAT_COMPANION_H` 而不改 `companionLayout.ts`，或 CSS 改 `overflow:hidden` 而不改 glow 安全边距，都会出现 **「语音按钮还在 DOM 里，但点不到」**。  
+Rust 改 `CHAT_COMPANION_H` 而不改 `companionLayout.ts`，或 CSS 改 `overflow:hidden` 而不改 glow 安全边距，都会出现 **「语音按钮还在 DOM 里，但点不到」**。
 详见 `COMPANION_UI_REGRESSION_ROOT_CAUSE_ANALYSIS.md`。
 
 ---
@@ -384,7 +384,7 @@ Rust 改 `CHAT_COMPANION_H` 而不改 `companionLayout.ts`，或 CSS 改 `overfl
 
 ## 十、分阶段治理路线图（整合版）
 
-> 本节整合内部根因分析与外部重构建议（Gemini 四阶段等），**去粗取精、按依赖排序**。  
+> 本节整合内部根因分析与外部重构建议（Gemini 四阶段等），**去粗取精、按依赖排序**。
 > **原则不变**：先契约与止血，再断幽灵链路，再拆 `chat.tsx`，最后收束为单一网关。**不要求 Big Bang 重构。**
 
 ### 10.0 总览：四阶段与优先级

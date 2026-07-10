@@ -1,4 +1,4 @@
-﻿"""
+"""
 GatewayContextBundle：统一入站上下文，替代裸字符串贯穿网关算子。
 """
 from __future__ import annotations

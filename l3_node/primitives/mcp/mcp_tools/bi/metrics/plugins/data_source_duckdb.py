@@ -1,4 +1,4 @@
-﻿"""
+"""
 BI 指标 — DuckDB 数据源插件
 """
 from __future__ import annotations

@@ -1,4 +1,4 @@
-﻿# com.jachin.mcp.office_powerpoint
+# com.jachin.mcp.office_powerpoint
 
 Jachin 封装的 **PowerPoint / PPTX MCP**（stdio），上游为 [Office-PowerPoint-MCP-Server](https://github.com/GongRzhe/Office-PowerPoint-MCP-Server)，PyPI 包名 `office-powerpoint-mcp-server`（MIT）。
 
@@ -21,7 +21,7 @@ pip install -r requirements.txt
 | `professional_slide` | 新增一页专业样式幻灯片 | 按工具其它参数 |
 | `enhance` | 美化**已有**某一页 | **必填**（0 起） |
 
-常见模型误用：`operation: "apply"`（无效）、`"enhance"` 但不传 `slide_index`。  
+常见模型误用：`operation: "apply"`（无效）、`"enhance"` 但不传 `slide_index`。
 Jachin 在 `l3_node/primitives/mcp/registry.py` 会对上述情况做**调用前规范化**（如 `apply`→`theme`，无索引的 `enhance`→`theme`），并在工具描述中追加说明。
 
 ## 行为说明

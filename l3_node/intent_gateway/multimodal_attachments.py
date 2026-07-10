@@ -1,4 +1,4 @@
-﻿"""
+"""
 将 WebSocket / 网关传入的附件实体转为 OpenAI 兼容的 user content（纯文本或 text+image_url 列表）。
 
 - 图片：读本地路径或 base64 → 可选 Pillow 缩放 → data:image/...;base64,...
@@ -39,11 +39,11 @@ MAX_IMAGE_READ_BYTES = 5 * 1024 * 1024
 MAX_IMAGE_LONG_EDGE = 1536
 JPEG_QUALITY = 82
 
-# 含图时追加到 user 文本段：避免 VL 在 ReAct 下误调网页抓取、或否认「能看见图」
+# 含图时追加到 user 文本段：避免 VL 在 RoleExecutionAgent 下误调网页抓取、或否认「能看见图」
 _MULTIMODAL_VISION_HINT_ZH = (
     "\n\n【多模态】本条用户消息含上传图片，请直接依据图像作答（含图中文字/OCR）；"
     "不要声称无法读图或缺少图像识别能力。"
-    "请勿仅因会话历史中出现 http(s) 链接或旧轮 Observation 就调用网页抓取；"
+    "请勿仅因会话历史中出现 http(s) 链接或旧轮 Verification evidence 就调用网页抓取；"
     "历史里的新浪/新闻正文与当前截图无关。除非用户在本轮明确给出要你抓取的 URL。"
 )
 
@@ -509,7 +509,7 @@ def _is_document(path: Path | None, mime: str, display_name: str = "") -> bool:
 
 def build_openai_user_content(user_text: str, attachments: list[dict[str, Any]]) -> str | list[dict[str, Any]]:
     """
-    无图片时返回纯字符串（兼容旧 ReAct / 日志）；含图片时返回 OpenAI 多模态 content 列表。
+    无图片时返回纯字符串（兼容旧 RoleExecutionAgent / 日志）；含图片时返回 OpenAI 多模态 content 列表。
     """
     if not attachments:
         return user_text or ""
@@ -609,5 +609,5 @@ def build_openai_user_content(user_text: str, attachments: list[dict[str, Any]])
 
     combined_text = combined_text + _MULTIMODAL_VISION_HINT_ZH
 
-    # 与 DashScope 官方 MultiModalConversation 示例一致：先图后文（避免兼容层忽略 image_url）
+    # 与 DashScope 官方 MultiModalConversation 示例一致：先图后文（避免适配层忽略 image_url）
     return [*image_parts, {"type": "text", "text": combined_text}]

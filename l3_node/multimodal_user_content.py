@@ -1,4 +1,4 @@
-﻿"""
+"""
 将 §12.1 attachments_metadata 转为 LLM user content（文本或 OpenAI 风格 multimodal 数组）。
 前端可传 data_url（data:image/...;base64,...）与 text_content（纯文本附件）。
 """

@@ -1,4 +1,4 @@
-﻿"""PMO 战报紧凑单元格 SSOT。"""
+"""PMO 战报紧凑单元格 SSOT。"""
 from __future__ import annotations
 
 from l3_node.channels.lark.md_native_table_card import _table_element

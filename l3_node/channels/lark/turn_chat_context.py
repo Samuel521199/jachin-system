@@ -1,5 +1,5 @@
-﻿"""
-ReAct 单轮内绑定「当前会话的 Lark chat_id」，供 util:lark_send_text 等读取。
+"""
+RoleExecutionAgent 单轮内绑定「当前会话的 Lark chat_id」，供 util:lark_send_text 等读取。
 
 WebSocket 已将 lark_chat_id 写入 run_agent metadata，但 OpenAI function.name 为
 util_lark_send_text 时，agent_core 注入分支可能未命中；此处用 ContextVar 兜底。

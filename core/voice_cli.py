@@ -58,7 +58,7 @@ async def _main() -> None:
     console.print()
 
     bus = get_bus()
-    set_omni_step_callback(None)  # Voice 模式不打印 ReAct 步骤到控制台
+    set_omni_step_callback(None)  # Voice 模式不打印 CognitiveKernel 步骤到控制台
     start_omni_consumer()
 
     voice = JachinVoiceInterface(bus)

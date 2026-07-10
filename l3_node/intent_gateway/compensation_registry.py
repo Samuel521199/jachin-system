@@ -1,4 +1,4 @@
-"""§11.3 补偿动作白名单：仅 Registry 登记 ID → 可调用处理器。"""
+﻿"""§11.3 补偿动作白名单：仅 Registry 登记 ID → 可调用处理器。"""
 from __future__ import annotations
 
 from typing import Any, Awaitable, Callable, Dict, Optional
@@ -6,7 +6,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 CompensationHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
-class CompensationActionRegistry:
+class CompensationWorkOrderRegistry:
     def __init__(self) -> None:
         self._handlers: Dict[str, CompensationHandler] = {}
 
@@ -19,8 +19,8 @@ class CompensationActionRegistry:
         return self._handlers.get((action_id or "").strip())
 
 
-_GLOBAL = CompensationActionRegistry()
+_GLOBAL = CompensationWorkOrderRegistry()
 
 
-def get_compensation_registry() -> CompensationActionRegistry:
+def get_compensation_registry() -> CompensationWorkOrderRegistry:
     return _GLOBAL

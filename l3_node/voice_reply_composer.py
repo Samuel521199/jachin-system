@@ -2,7 +2,7 @@
 
 The rule layer owns the boundary; this module only phrases one short spoken
 reply. It is intentionally tool-free and uses a fast/economic Qwen model by
-default so voice clarification does not enter the full ReAct agent path.
+default so voice clarification does not enter the full RoleExecutionAgent agent path.
 """
 from __future__ import annotations
 

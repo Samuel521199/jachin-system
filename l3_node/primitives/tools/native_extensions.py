@@ -1,4 +1,4 @@
-"""Optional native tool extension loading.
+﻿"""Optional native tool extension loading.
 
 Core tools live in ``loader.NATIVE_TOOLS`` and ``core.native_tools``. Domain
 packages such as PMO must opt in here instead of being imported by the main
@@ -27,7 +27,7 @@ def _configured_provider_modules() -> tuple[str, ...]:
     modules = [x.strip() for x in raw.split(",") if x.strip()]
 
     # PMO is a skill/domain package. It opts in when its runner marks the
-    # process, or when an operator explicitly enables the legacy native tools.
+    # process, or when an operator explicitly enables the archived native tools.
     if _truthy_env("JACHIN_PMO_COPILOT_RUN") or _truthy_env("JACHIN_ENABLE_PMO_NATIVE_TOOLS"):
         if _PMO_PROVIDER not in modules:
             modules.append(_PMO_PROVIDER)
@@ -90,21 +90,21 @@ def is_native_extension_tool(tool_id: str) -> bool:
     return _provider_for_tool(tool_id) is not None
 
 
-def parse_native_extension_action_input(tool_id: str, action_input: str) -> dict[str, Any]:
+def parse_native_extension_work_order_input(tool_id: str, work_order_input: str) -> dict[str, Any]:
     provider = _provider_for_tool(tool_id)
     if provider is None:
         return {}
-    parser = getattr(provider, "parse_native_action_input", None)
+    parser = getattr(provider, "parse_native_work_order_input", None)
     if callable(parser):
-        out = parser(tool_id, action_input)
+        out = parser(tool_id, work_order_input)
         return out if isinstance(out, dict) else {}
 
     # Compatibility for the current PMO provider. This is intentionally kept
     # outside the main loader/core dispatch path.
-    if tool_id == "core:db_query" and callable(getattr(provider, "parse_db_query_action_input", None)):
-        return provider.parse_db_query_action_input(action_input)
+    if tool_id == "core:db_query" and callable(getattr(provider, "parse_db_query_work_order_input", None)):
+        return provider.parse_db_query_work_order_input(work_order_input)
 
-    s = (action_input or "").strip()
+    s = (work_order_input or "").strip()
     if s.startswith("{"):
         try:
             obj = json.loads(s)

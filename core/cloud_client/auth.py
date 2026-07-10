@@ -27,7 +27,7 @@ _DEFAULT_LICENSES_PATH = Path.home() / ".jachin" / "licenses.json"
 class CloudAuthClient:
     """
     Layer 1 云认证客户端
-    
+
     OAuth2 授权码流程 + License 同步
     """
 
@@ -78,10 +78,10 @@ class CloudAuthClient:
     def login(self, use_browser: bool = True) -> bool:
         """
         处理 OAuth2 授权码流程，获取 Access Token
-        
+
         Args:
             use_browser: 是否打开浏览器完成授权（否则返回 auth_url 供手动操作）
-        
+
         Returns:
             是否成功获取 Token
         """
@@ -128,10 +128,10 @@ class CloudAuthClient:
     def sync_licenses(self, home_domain_id: Optional[str] = None) -> List[LicenseToken]:
         """
         从云端拉取当前家庭域已购买的技能列表 (License Tokens)
-        
+
         Args:
             home_domain_id: 家庭域 ID，不传则使用 settings.HOME_DOMAIN_ID
-        
+
         Returns:
             有效的 License Token 列表
         """

@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import json
 from pathlib import Path
 
@@ -45,12 +45,12 @@ def test_cognitive_kernel_ledger_roundtrip(tmp_path, monkeypatch):
             turn_id=ctx.envelope.turn_id,
             goal="read project status",
             tool="core:fs_read",
-            action_input='{"path":"README.md"}',
+            work_order_input='{"path":"README.md"}',
         )
         work = build_work_order(
             contract=contract,
             tool="core:fs_read",
-            action_input='{"path":"README.md"}',
+            work_order_input='{"path":"README.md"}',
         )
         mark_work_order_running(work, contract.turn_id)
         report = verify_work_order(
@@ -99,7 +99,7 @@ def test_cognitive_kernel_ledger_roundtrip(tmp_path, monkeypatch):
 
 def test_voice_envelope_and_fast_lane_policy(tmp_path, monkeypatch):
     monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
-    monkeypatch.delenv("JACHIN_LEGACY_VOICE_FAST_LANE", raising=False)
+    monkeypatch.delenv("JACHIN_ARCHIVED_VOICE_FAST_LANE", raising=False)
     monkeypatch.delenv("JACHIN_ENABLE_VOICE_FAST_LANE", raising=False)
 
     from l3_node.cognitive_kernel.pipeline import build_cognitive_turn_context
@@ -133,7 +133,7 @@ def test_voice_envelope_and_fast_lane_policy(tmp_path, monkeypatch):
 
     asyncio.run(_run())
 
-    monkeypatch.setenv("JACHIN_LEGACY_VOICE_FAST_LANE", "1")
+    monkeypatch.setenv("JACHIN_ARCHIVED_VOICE_FAST_LANE", "1")
     assert _is_ws_voice_fast_lane("你好", {"voice_fast_lane": True}, {"origin": "desktop_voice_companion"}) is False
 
 
@@ -215,7 +215,7 @@ def test_memory_recall_section_6_query_plan_and_long_term_channels(tmp_path, mon
     asyncio.run(_run())
 
 
-def test_memory_recall_unifies_legacy_prompt_memory_sources(tmp_path, monkeypatch):
+def test_memory_recall_unifies_passive_prompt_memory_sources(tmp_path, monkeypatch):
     monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
 
     import l3_node.cognitive_kernel.memory_recall_agent as memory_recall_agent
@@ -283,7 +283,7 @@ def test_memory_recall_unifies_legacy_prompt_memory_sources(tmp_path, monkeypatc
     asyncio.run(_run())
 
 
-def test_legacy_passive_memory_prompt_snapshots_are_disabled():
+def test_passive_memory_prompt_snapshots_are_disabled():
     from l3_node.local_memory import get_local_memory_for_prompt
     from l3_node.memory_facade import snapshot_for_prompt
 
@@ -388,7 +388,7 @@ def test_role_registry_and_work_order_dispatcher(tmp_path, monkeypatch):
             turn_id="ck-dispatch-1",
             goal="read file",
             tool="core:fs_read",
-            action_input='{"path":"README.md"}',
+            work_order_input='{"path":"README.md"}',
             executor=executor,
         )
         assert result.work_order.role_agent == "FileExecutorAgent"
@@ -431,7 +431,7 @@ def test_specialized_role_executor_metadata(tmp_path, monkeypatch):
             turn_id="ck-message-1",
             goal="send a lark message",
             tool="mcp:lark_send_text",
-            action_input='{"recipients":["Vivian","Neil"],"text":"hello"}',
+            work_order_input='{"recipients":["Vivian","Neil"],"text":"hello"}',
             executor=executor,
         )
         assert result.work_order.role_agent == "MessageExecutorAgent"
@@ -465,7 +465,7 @@ def test_unknown_tool_still_goes_through_work_order_dispatcher(tmp_path, monkeyp
             turn_id="ck-future-tool",
             goal="execute future tool",
             tool="mcp:future_new_tool",
-            action_input='{"value":1}',
+            work_order_input='{"value":1}',
             executor=executor,
         )
         assert result.work_order.role_agent == "ToolExecutionAgent"
@@ -495,7 +495,7 @@ def test_file_executor_direct_native_channel(tmp_path, monkeypatch):
             turn_id="ck-file-direct-write",
             goal="write note",
             tool="core:fs_write",
-            action_input='{"path":"notes/stage-d.txt","content":"stage d ok"}',
+            work_order_input='{"path":"notes/stage-d.txt","content":"stage d ok"}',
             executor=transport_should_not_run,
         )
         assert write.verification.ok is True
@@ -505,7 +505,7 @@ def test_file_executor_direct_native_channel(tmp_path, monkeypatch):
             turn_id="ck-file-direct-read",
             goal="read note",
             tool="core:fs_read",
-            action_input='{"path":"notes/stage-d.txt"}',
+            work_order_input='{"path":"notes/stage-d.txt"}',
             executor=transport_should_not_run,
         )
         assert read.verification.ok is True
@@ -533,7 +533,7 @@ def test_message_executor_retry_and_evidence(tmp_path, monkeypatch):
             turn_id="ck-message-retry-1",
             goal="send message",
             tool="mcp:lark_send_text",
-            action_input='{"recipients":["Neil"],"text":"hello"}',
+            work_order_input='{"recipients":["Neil"],"text":"hello"}',
             executor=flaky_sender,
         )
         assert calls["n"] == 2
@@ -564,7 +564,7 @@ def test_memory_write_executor_direct_channel(tmp_path, monkeypatch):
             turn_id="ck-memory-direct-1",
             goal="remember preference",
             tool="core:local_memory_append",
-            action_input='{"content":"User prefers role-agent evidence.","tags":["preference","stage-d"]}',
+            work_order_input='{"content":"User prefers role-agent evidence.","tags":["preference","stage-d"]}',
             executor=transport_should_not_run,
         )
         assert result.verification.ok is True
@@ -601,12 +601,12 @@ def test_turn_closure_memory_requests_execute_via_memory_agent(tmp_path, monkeyp
             turn_id="ck-closure-memory-1",
             goal="read file",
             tool="core:fs_read",
-            action_input='{"path":"README.md"}',
+            work_order_input='{"path":"README.md"}',
         )
         work = build_work_order(
             contract=contract,
             tool="core:fs_read",
-            action_input='{"path":"README.md"}',
+            work_order_input='{"path":"README.md"}',
         )
         report = verify_work_order(
             turn_id=contract.turn_id,
@@ -721,10 +721,10 @@ def test_task_dag_and_guardian_track_ready_nodes(tmp_path, monkeypatch):
         turn_id="ck-dag-1",
         goal="read then send",
         tool="core:fs_read",
-        action_input='{"path":"README.md"}',
+        work_order_input='{"path":"README.md"}',
     )
-    first = build_work_order(contract=contract, tool="core:fs_read", action_input='{"path":"README.md"}')
-    second = build_work_order(contract=contract, tool="mcp:lark_send_text", action_input='{"recipients":["Neil"],"text":"ok"}')
+    first = build_work_order(contract=contract, tool="core:fs_read", work_order_input='{"path":"README.md"}')
+    second = build_work_order(contract=contract, tool="mcp:lark_send_text", work_order_input='{"recipients":["Neil"],"text":"ok"}')
     dag = create_task_dag_from_work_orders(
         turn_id=contract.turn_id,
         goal=contract.goal,
@@ -812,7 +812,7 @@ def test_dispatcher_auto_recovery_retry_for_app_control(tmp_path, monkeypatch):
             turn_id="ck-app-recovery-1",
             goal="switch app",
             tool="mcp:windows_window_switch",
-            action_input='{"window_title":"Calculator"}',
+            work_order_input='{"window_title":"Calculator"}',
             executor=flaky_app_tool,
         )
         assert calls["n"] == 2
@@ -829,11 +829,154 @@ def test_dispatcher_auto_recovery_retry_for_app_control(tmp_path, monkeypatch):
     )
 
 
+def test_dispatcher_recovery_switches_paths_before_success(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.dispatcher import dispatch_tool_work_order
+    from l3_node.cognitive_kernel.ledger import current_ledger_path
+
+    async def _run():
+        seen: list[str] = []
+
+        async def desktop_tool(work_order):
+            recovery = work_order.inputs.get("recovery") if isinstance(work_order.inputs.get("recovery"), dict) else {}
+            strategy = str(recovery.get("strategy") or "initial")
+            seen.append(strategy)
+            if strategy == "switch_existing_window":
+                return '{"ok":true,"active_window":"Browser","screenshot_path":"C:/tmp/browser.png"}'
+            return '{"ok":false,"error":"window_not_found"}'
+
+        result = await dispatch_tool_work_order(
+            turn_id="ck-app-recovery-switch-path",
+            goal="switch browser",
+            tool="mcp:windows_window_switch",
+            work_order_input='{"keywords":"Browser","timeout":1}',
+            executor=desktop_tool,
+        )
+        assert result.verification.ok is True
+        assert seen == ["initial", "retry_same_path", "switch_existing_window"]
+        assert result.attempts is not None
+        assert [x["strategy"] for x in result.attempts] == ["initial", "retry_same_path", "switch_existing_window"]
+
+    asyncio.run(_run())
+    events = [json.loads(line) for line in current_ledger_path().read_text(encoding="utf-8").splitlines()]
+    planned = [e for e in events if e["event_type"] == "recovery_attempt_planned"]
+    assert [e["payload"]["strategy"] for e in planned] == ["retry_same_path", "switch_existing_window"]
+
+
+def test_recovery_planner_uses_manifest_and_history_to_choose_next_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+    manifest_root = tmp_path / "capabilities" / "com.example.visual-app"
+    manifest_root.mkdir(parents=True)
+    (manifest_root / "plugin.json").write_text(
+        json.dumps(
+            {
+                "id": "com.example.visual-app",
+                "name": "Visual App Control",
+                "recovery_playbook": {
+                    "targets": [
+                        {
+                            "id": "visual_app_control",
+                            "role_agent": "AppControlExecutorAgent",
+                            "tools": ["mcp:windows_window_switch"],
+                            "max_attempts": 5,
+                            "steps": [
+                                {
+                                    "strategy": "switch_by_visual_anchor",
+                                    "tool": "mcp:windows_window_switch",
+                                    "when": {
+                                        "failure_any": ["window_not_found", "window"],
+                                        "after_attempt": 2,
+                                    },
+                                    "action_template": {
+                                        "keywords": "$window_hint",
+                                        "timeout": 15.0,
+                                        "visual_anchor": True,
+                                    },
+                                    "rationale": "after plain retry fails, use visual anchors declared by the capability",
+                                    "priority": 1,
+                                }
+                            ],
+                        }
+                    ]
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JACHIN_RECOVERY_MANIFEST_ROOTS", str(tmp_path / "capabilities"))
+
+    from l3_node.cognitive_kernel.dispatcher import dispatch_tool_work_order
+
+    async def _run():
+        seen: list[str] = []
+
+        async def desktop_tool(work_order):
+            recovery = work_order.inputs.get("recovery") if isinstance(work_order.inputs.get("recovery"), dict) else {}
+            strategy = str(recovery.get("strategy") or "initial")
+            seen.append(strategy)
+            if strategy == "switch_by_visual_anchor":
+                payload = json.loads(str(work_order.inputs.get("work_order_input") or "{}"))
+                assert payload["visual_anchor"] is True
+                assert payload["timeout"] == 15.0
+                return '{"ok":true,"active_window":"Browser","screenshot_path":"C:/tmp/browser.png"}'
+            return '{"ok":false,"error":"window_not_found"}'
+
+        result = await dispatch_tool_work_order(
+            turn_id="ck-app-recovery-manifest-history",
+            goal="switch browser",
+            tool="mcp:windows_window_switch",
+            work_order_input='{"keywords":"Browser","timeout":1}',
+            executor=desktop_tool,
+        )
+        assert result.verification.ok is True
+        assert seen == ["initial", "retry_same_path", "switch_by_visual_anchor"]
+        assert result.attempts is not None
+        assert [x["strategy"] for x in result.attempts] == ["initial", "retry_same_path", "switch_by_visual_anchor"]
+
+    asyncio.run(_run())
+
+
+def test_dispatcher_recovery_stops_with_final_failure_report(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+    monkeypatch.setenv("JACHIN_RECOVERY_MAX_ATTEMPTS", "5")
+
+    from l3_node.cognitive_kernel.dispatcher import dispatch_tool_work_order
+    from l3_node.cognitive_kernel.ledger import current_ledger_path
+
+    async def _run():
+        calls = {"n": 0}
+
+        async def always_fails(work_order):
+            calls["n"] += 1
+            return '{"ok":false,"error":"window_not_found"}'
+
+        result = await dispatch_tool_work_order(
+            turn_id="ck-app-recovery-final-failure",
+            goal="switch missing app",
+            tool="mcp:windows_window_switch",
+            work_order_input='{"keywords":"MissingApp","timeout":1}',
+            executor=always_fails,
+        )
+        assert result.verification.ok is False
+        assert calls["n"] == 5
+        assert result.final_failure_report is not None
+        assert result.final_failure_report["max_attempts"] == 5
+        assert result.final_failure_report["attempt_count"] == 5
+        assert result.final_failure_report["final_failure_reason"] == "window_not_found"
+        assert result.final_failure_report["recommended_next_steps"]
+
+    asyncio.run(_run())
+    events = [json.loads(line) for line in current_ledger_path().read_text(encoding="utf-8").splitlines()]
+    assert any(e["event_type"] == "final_failure_report" for e in events)
+
+
 def test_stage_f_policy_boundaries_live_in_kernel():
     from l3_node.cognitive_kernel import (
-        REACT_PSEUDO_ACTION_IDS,
         RECALL_MEMORY_TOOL_ID,
         SQL_DATA_SOP_PROMPT,
+        WORK_ORDER_ALIAS_IDS,
         build_fake_mcp_error_recovery_prompt,
         build_fake_weather_error_recovery_prompt,
         is_hallucinated_final_mcp_error_json,
@@ -841,7 +984,7 @@ def test_stage_f_policy_boundaries_live_in_kernel():
     )
 
     assert RECALL_MEMORY_TOOL_ID == "recall_memory"
-    assert REACT_PSEUDO_ACTION_IDS == ("recall_memory", "coordinate", "delegate")
+    assert WORK_ORDER_ALIAS_IDS == ("recall_memory", "coordinate", "delegate")
     assert "WorkOrder" in SQL_DATA_SOP_PROMPT
     assert "probe" in SQL_DATA_SOP_PROMPT
     assert is_hallucinated_final_mcp_error_json(

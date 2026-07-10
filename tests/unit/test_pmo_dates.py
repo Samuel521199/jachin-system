@@ -1,4 +1,4 @@
-﻿"""PMO 日期：飞书毫秒时间戳须按 Asia/Shanghai 解析，避免 UTC 少一天。"""
+"""PMO 日期：飞书毫秒时间戳须按 Asia/Shanghai 解析，避免 UTC 少一天。"""
 from __future__ import annotations
 
 from datetime import datetime

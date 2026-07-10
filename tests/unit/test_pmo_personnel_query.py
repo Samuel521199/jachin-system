@@ -1,4 +1,4 @@
-﻿"""core:pmo_personnel_report 与 resolve_current_sprint 单元测试。"""
+"""core:pmo_personnel_report 与 resolve_current_sprint 单元测试。"""
 from __future__ import annotations
 
 from l3_node.tools.pmo_personnel_query import (

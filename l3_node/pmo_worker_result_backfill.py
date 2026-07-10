@@ -1,8 +1,8 @@
-﻿"""
-PMO FanOut Worker 结果宿主回填：ReAct Observation 有数据但 Final Answer JSON 漏写时，确定性补全。
+"""
+PMO FanOut Worker 结果宿主回填：RoleExecutionAgent Verification evidence 有数据但 User-facing result JSON 漏写时，确定性补全。
 
-典型场景：Worker B 已执行 B-4 查到 personnel_tasks，Final Answer 却仅有空的 product_tasks/development_tasks。
-Publisher / Auditor 只读 Final Answer 文本，须在此补全后再进入阶段二/三。
+典型场景：Worker B 已执行 B-4 查到 personnel_tasks，User-facing result 却仅有空的 product_tasks/development_tasks。
+Publisher / Auditor 只读 User-facing result 文本，须在此补全后再进入阶段二/三。
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 def parse_worker_final_json(text: str) -> dict[str, Any] | None:
-    """从 SubAgent Final Answer 提取 JSON 对象（容忍 markdown 围栏与前后缀）。"""
+    """从 SubAgent User-facing result 提取 JSON 对象（容忍 markdown 围栏与前后缀）。"""
     raw = (text or "").strip()
     if not raw:
         return None
@@ -291,7 +291,7 @@ def run_worker_c_host_bootstrap() -> dict[str, Any]:
 
 
 def merge_worker_c_result(host_seed: dict[str, Any], agent_raw: str) -> str:
-    """合并宿主 C-TOOL 预取与 SubAgent Final Answer（兜底 SQL 仅补缺）。"""
+    """合并宿主 C-TOOL 预取与 SubAgent User-facing result（兜底 SQL 仅补缺）。"""
     out: dict[str, Any] = {
         "current_sprint": host_seed.get("current_sprint"),
         "recent_sprints": host_seed.get("recent_sprints") or [],
@@ -329,7 +329,7 @@ def backfill_worker_outputs(worker_b: str, worker_c: str) -> tuple[str, str]:
 def run_worker_b_host_bootstrap() -> dict[str, Any]:
     """
     FanOut 前宿主确定性执行 core:pmo_personnel_report（recent_window）。
-    Worker B SubAgent 禁止重跑 B-S1/B-4；仅整理 Final Answer 或 B-SUP 兜底。
+    Worker B SubAgent 禁止重跑 B-S1/B-4；仅整理 User-facing result 或 B-SUP 兜底。
     """
     try:
         from l3_node.tools.pmo_personnel_query import run_personnel_report_for_recent
@@ -391,7 +391,7 @@ def run_worker_b_host_bootstrap() -> dict[str, Any]:
 
 def merge_worker_b_result(host_seed: dict[str, Any], agent_raw: str) -> str:
     """
-    合并宿主 B-S1/B-4 与 SubAgent Final Answer（B-SUP）。
+    合并宿主 B-S1/B-4 与 SubAgent User-facing result（B-SUP）。
     SubAgent 未交卷或缺 B-SUP 时，宿主兜底执行 B-SUP。
     """
     out: dict[str, Any] = {
@@ -652,7 +652,7 @@ def _worker_d_empty(data: dict[str, Any]) -> bool:
 
 
 def backfill_worker_d(raw: str) -> str:
-    """Worker D Final Answer 缺 markdown_section 时，再跑 D-TOOL 一次。"""
+    """Worker D User-facing result 缺 markdown_section 时，再跑 D-TOOL 一次。"""
     data = parse_worker_final_json(raw) or {}
     if not _worker_d_empty(data):
         return raw if parse_worker_final_json(raw) else json.dumps(data, ensure_ascii=False, indent=2)
@@ -661,7 +661,7 @@ def backfill_worker_d(raw: str) -> str:
 
 
 def merge_worker_d_result(host_seed: dict[str, Any], agent_raw: str) -> str:
-    """合并宿主 D-TOOL 预取与 SubAgent Final Answer。"""
+    """合并宿主 D-TOOL 预取与 SubAgent User-facing result。"""
     out: dict[str, Any] = {
         "window_since": host_seed.get("window_since"),
         "window_until": host_seed.get("window_until"),

@@ -94,7 +94,7 @@ def _is_ws_voice_fast_lane(intent: str, implicit_signals: dict | None, msg: dict
     return False
 
 
-def _legacy_ws_voice_fast_lane_enabled() -> bool:
+def _archived_ws_voice_fast_lane_enabled() -> bool:
     """The pre-kernel voice fast lane has been retired."""
     return False
 
@@ -104,7 +104,7 @@ def _normalize_ws_implicit_signals_for_kernel(
     *,
     local_voice_session: bool,
 ) -> dict | None:
-    """Remove legacy bypass flags so voice/text enter the same kernel path."""
+    """Remove archived bypass flags so voice/text enter the same kernel path."""
     if not isinstance(implicit_signals, dict):
         return implicit_signals
     if not local_voice_session:
@@ -629,7 +629,7 @@ async def _push_reply_to_lark(chat_id: str, content: str) -> None:
     if not chat_id or content is None:
         return
 
-    from l3_node.react_ui_sanitize import sanitize_final_answer_for_lark_im
+    from l3_node.role_output_sanitize import sanitize_final_answer_for_lark_im
 
     content = sanitize_final_answer_for_lark_im(str(content))
     if not content.strip():
@@ -873,9 +873,9 @@ async def _ws_execute_intent_turn(
             pass
         out_content = content
         if step_type == "thought":
-            from l3_node.react_ui_sanitize import sanitize_thought_step_for_ui
+            from l3_node.role_output_sanitize import sanitize_reasoning_step_for_ui
 
-            out_content = sanitize_thought_step_for_ui(content)
+            out_content = sanitize_reasoning_step_for_ui(content)
         base_on_step(step_type, out_content, ctx_run_id)
 
     _imp_sig = msg.get("implicit_signals")
@@ -905,7 +905,7 @@ async def _ws_execute_intent_turn(
             )
         except Exception:
             pass
-        from l3_node.react_ui_sanitize import sanitize_final_answer_for_ui
+        from l3_node.role_output_sanitize import sanitize_final_answer_for_ui
 
         _gate_payload = {
             "step_type": "answer",
@@ -930,7 +930,7 @@ async def _ws_execute_intent_turn(
             append_stream_chunk(_early_yield)
         except Exception:
             pass
-        from l3_node.react_ui_sanitize import sanitize_stream_chunk_for_ui
+        from l3_node.role_output_sanitize import sanitize_stream_chunk_for_ui
 
         _early_payload = {
             "step_type": "chunk",
@@ -966,7 +966,7 @@ async def _ws_execute_intent_turn(
             append_stream_chunk(chunk)
         except Exception:
             pass
-        from l3_node.react_ui_sanitize import sanitize_stream_chunk_for_ui
+        from l3_node.role_output_sanitize import sanitize_stream_chunk_for_ui
 
         safe_chunk = sanitize_stream_chunk_for_ui(chunk)
         p = {"step_type": "chunk", "content": safe_chunk, "run_id": run_id}
@@ -976,7 +976,7 @@ async def _ws_execute_intent_turn(
         return p
     if _ws_voice_fast_lane:
         try:
-            from l3_node.react_ui_sanitize import sanitize_final_answer_for_ui
+            from l3_node.role_output_sanitize import sanitize_final_answer_for_ui
             from l3_node.terminal_turn_debug_log import append_final
 
             _template_reply = _pick_ws_voice_template_reply(intent, _imp_sig)
@@ -1277,7 +1277,7 @@ async def _ws_execute_intent_turn(
         except Exception:
             pass
 
-        from l3_node.react_ui_sanitize import sanitize_final_answer_for_ui
+        from l3_node.role_output_sanitize import sanitize_final_answer_for_ui
 
         _reply_ui = sanitize_final_answer_for_ui(reply or "") if (reply or "").strip() else (reply or "")
         ans_payload = {"step_type": "answer", "content": _reply_ui, "run_id": run_id}
@@ -1498,7 +1498,7 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
                 )
                 continue
 
-            # 生成式 UI：前端提交 tool 参数，Native 执行或生成说明，不经本轮 LLM ReAct（会话仍落盘）
+            # 生成式 UI：前端提交 tool 参数，Native 执行或生成说明，不经本轮 LLM RoleExecutionAgent（会话仍落盘）
             if msg_type == "tool_ui_result":
                 chat_id = _ws_msg_session_key(msg)
                 if chat_id:
@@ -1714,7 +1714,7 @@ async def run_ws_server(
                 handler,
                 host,
                 try_port,
-                # ReAct + 多模态单轮可 30s+；事件环若短暂卡顿（Memory Nexus/GIL 等）须避免误杀连接，
+                # RoleExecutionAgent + 多模态单轮可 30s+；事件环若短暂卡顿（Memory Nexus/GIL 等）须避免误杀连接，
                 # 否则桌面端会双断连 → 占位「等待 L3 或 L2」且输入被硬禁用。
                 ping_interval=30,
                 ping_timeout=120,
@@ -1778,8 +1778,3 @@ async def run_ws_server(
     raise RuntimeError(
         f"端口 {ports_to_try[0]}~{ports_to_try[-1]} 均被占用。请关闭其他 L3 实例: netstat -ano | findstr 18981"
     ) from last_err
-
-
-
-
-

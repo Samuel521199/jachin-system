@@ -1,4 +1,4 @@
-﻿"""is_tool_allowed：mcp:* 通配（L2 白名单 + 本地 MCP 合并）。"""
+"""is_tool_allowed：mcp:* 通配（L2 白名单 + 本地 MCP 合并）。"""
 
 from l3_node.primitives.tools.loader import is_tool_allowed
 

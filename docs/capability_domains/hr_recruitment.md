@@ -1,7 +1,7 @@
 # 能力域：招聘（HR / Boss / Lark）
 
-**域 id**：`hr_recruitment`  
-**总目录**：[L3_CAPABILITY_CATALOG.md](../L3_CAPABILITY_CATALOG.md)  
+**域 id**：`hr_recruitment`
+**总目录**：[L3_CAPABILITY_CATALOG.md](../L3_CAPABILITY_CATALOG.md)
 **架构细节**：[HR_RECRUITMENT.md](../HR_RECRUITMENT.md)
 
 ---

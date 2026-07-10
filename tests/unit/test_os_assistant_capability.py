@@ -1,4 +1,4 @@
-def test_os_assistant_domain_injects_for_windows_uia_tools() -> None:
+﻿def test_os_assistant_domain_injects_for_windows_uia_tools() -> None:
     from l3_node.capability_catalog import build_capability_prompt_inject_for_tools
 
     prompt = build_capability_prompt_inject_for_tools(
@@ -1628,11 +1628,11 @@ def test_window_close_not_found_reports_resolved_browser_keywords() -> None:
 def test_environment_verifier_falls_back_when_active_snapshot_is_missing() -> None:
     from l3_client.local_mcps.windows_uia_mcp.os_tasks import EnvironmentVerifier, _app_contract
 
-    class LegacyWin:
+    class ArchivedWin:
         def active_title(self):
             return "Calculator"
 
-    result = EnvironmentVerifier(LegacyWin()).verify(_app_contract("calculator"), stage="calculator_before_input", action="type_expression")
+    result = EnvironmentVerifier(ArchivedWin()).verify(_app_contract("calculator"), stage="calculator_before_input", action="type_expression")
 
     assert result.ok is True
     assert result.detail == "environment_verified"

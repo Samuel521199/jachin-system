@@ -1,4 +1,4 @@
-﻿from l3_node.ws_server import _voice_evidence_gate_reply
+from l3_node.ws_server import _voice_evidence_gate_reply
 
 
 def test_voice_evidence_gate_blocks_stream_task_result() -> None:

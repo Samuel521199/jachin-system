@@ -1,4 +1,4 @@
-﻿"""
+"""
 Lark 通道 — 入站长连接（WebSocket）
 
 使用 lark-oapi WebSocket 客户端与飞书建立长连接，接收 im.message.receive_v1 事件。

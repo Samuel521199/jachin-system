@@ -4,7 +4,7 @@
 
 **目标**：消除 `users.tenant_id` 与 `organizations.id` 双轨语义；租户隔离边界 **唯一** 为 `organizations.id`，用户归属 **唯一** 为 `organization_users`。
 
-**配套代码**：`cloud/nexus/src/db/schema.ts`、`cloud/nexus/src/lib/tenant.ts`  
+**配套代码**：`cloud/nexus/src/db/schema.ts`、`cloud/nexus/src/lib/tenant.ts`
 **SQL 草案**：`cloud/nexus/drizzle/0012_p1_tenant_ssot.sql`
 
 ---
@@ -33,15 +33,15 @@
 
 ## 3. SQL 步骤说明（向前兼容）
 
-1. **`ALTER organizations ADD is_personal_default`**  
+1. **`ALTER organizations ADD is_personal_default`**
    现有行默认 `false`，不影响已存在企业组织。
 
-2. **回填「个人默认组织」**  
+2. **回填「个人默认组织」**
    对「在 `organization_users` 中没有任何行」的用户：
    - `INSERT organizations`：`name` 可为 `Personal workspace`，`is_personal_default = true`。
    - `INSERT organization_users`：`role = 'owner'`。
 
-3. **`ALTER users DROP COLUMN tenant_id`**  
+3. **`ALTER users DROP COLUMN tenant_id`**
    应用层已不再读取该列；若线上仍有旧脚本写入，需先停写再 DROP。
 
 ---
@@ -67,8 +67,8 @@
 
 ## 7. 检查清单
 
-- [ ] 备份已做  
-- [ ] `0012` 已执行  
-- [ ] 无用户缺少 `organization_users`  
-- [ ] JWT 与 Cookie 中 `tenant_id` 已为组织 UUID  
-- [ ] 监控 L1 API 4xx 是否因 `tenant_id` 格式变更上升  
+- [ ] 备份已做
+- [ ] `0012` 已执行
+- [ ] 无用户缺少 `organization_users`
+- [ ] JWT 与 Cookie 中 `tenant_id` 已为组织 UUID
+- [ ] 监控 L1 API 4xx 是否因 `tenant_id` 格式变更上升

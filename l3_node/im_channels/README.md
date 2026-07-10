@@ -1,4 +1,4 @@
-﻿# IM 通道层 — Lark/Telegram 等同维度
+# IM 通道层 — Lark/Telegram 等同维度
 
 **配置总览（L3 交互 / `plugin/.env` / 长连接 合并说明）**：见仓库根文档 [`docs/L3_LARK_CONFIG_SINGLE_SOURCE.md`](../../docs/L3_LARK_CONFIG_SINGLE_SOURCE.md)。
 

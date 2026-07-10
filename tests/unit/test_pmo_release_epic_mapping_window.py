@@ -1,4 +1,4 @@
-﻿"""resolve_release_window 口径：since = 最近一封发版公告（非第二新）。"""
+"""resolve_release_window 口径：since = 最近一封发版公告（非第二新）。"""
 from __future__ import annotations
 
 from datetime import datetime, timezone

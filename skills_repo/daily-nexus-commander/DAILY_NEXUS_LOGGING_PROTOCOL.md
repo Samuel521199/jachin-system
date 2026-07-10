@@ -1,8 +1,8 @@
-﻿# Daily Nexus Commander — 日志协议（SSOT）
+# Daily Nexus Commander — 日志协议（SSOT）
 
-**技能 ID（概念）**: `daily_nexus_commander`  
-**执行入口**: 仓库根目录 `scripts/run_daily_nexus.py`  
-**本文档版本**: 1.0  
+**技能 ID（概念）**: `daily_nexus_commander`
+**执行入口**: 仓库根目录 `scripts/run_daily_nexus.py`
+**本文档版本**: 1.0
 
 ---
 

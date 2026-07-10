@@ -1,4 +1,4 @@
-﻿"""
+"""
 BI 每日战报 — L3 控制台定时调度（APScheduler + CronTrigger，北京时间）。
 
 与 ``l3_node/primitives/skills/bi/scheduler.py``（YAML 配置）独立：

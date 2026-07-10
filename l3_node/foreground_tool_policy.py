@@ -1,4 +1,4 @@
-"""Foreground synchronous tool timeout policy for WorkOrder execution compatibility."""
+"""Foreground synchronous tool timeout policy for WorkOrder execution protocol."""
 from __future__ import annotations
 
 import json

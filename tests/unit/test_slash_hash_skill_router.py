@@ -38,7 +38,7 @@ def test_pmo_anomaly_branch_from_tail() -> None:
 def test_build_pmo_message_insists_on_lark_card() -> None:
     msg = build_pmo_user_message_for_tail("项目情况怎么样", "full_board")
     assert "atom_lark_notifier" in msg
-    assert "禁止" in msg and "Final Answer" in msg
+    assert "禁止" in msg and "User-facing result" in msg
 
 
 def test_shorten_war_report_markdown_in_final_answer() -> None:

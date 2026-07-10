@@ -1,4 +1,4 @@
-"""Inbound preflight helpers for L3.
+﻿"""Inbound preflight helpers for L3.
 
 Preflight may normalize evidence, but it is not the final decision maker. The
 Cognitive Kernel remains the authorization boundary. Architecture SSOT:
@@ -11,6 +11,7 @@ import logging
 import re
 from typing import Any, Optional
 
+from l3_node.cognitive_kernel.capability_hook_bridge import build_work_order_suggestion
 from l3_node.mission_intent_schema import MissionTaskType
 
 logger = logging.getLogger(__name__)
@@ -98,7 +99,7 @@ def prepend_text_to_last_user_message(messages: list[dict[str, Any]], prefix: st
     在**保留** user.content 为多模态列表（text + image_url）的前提下前置系统指令。
 
     若干历史分支曾写 ``messages[-1]["content"] = prefix + user_input``，会把整段多模态
-    覆盖成纯字符串，导致 ReAct 侧「已切 VL 但请求里无 image_url」。
+    覆盖成纯字符串，导致认知内核侧「已切 VL 但请求里无 image_url」。
     """
     if not messages or not (prefix or "").strip():
         return
@@ -297,7 +298,7 @@ async def apply_inbound_preflight(
         and _vague_recruitment
         and not _has_jd_in_history
     ):
-        prefix = "【系统】用户要发布职位，但尚未提供完整配置。你必须**仅做询问**，禁止臆想、禁止杜撰、禁止调用 atom_post_job_boss。请用 Final Answer 向 HR 依次询问：1.岗位名称是什么？2.社招、校招、实习还是兼职？3.薪资待遇大概多少？4.学历要求？5.经验要求？若 HR 第一轮未给某项，下一轮**单独追问**该项，直到收集齐再输出完整 JD 配置供确认。\n\n"
+        prefix = "【系统】用户要发布职位，但尚未提供完整配置。你必须**仅做询问**，禁止臆想、禁止杜撰、禁止调用 atom_post_job_boss。请用 User-facing result 向 HR 依次询问：1.岗位名称是什么？2.社招、校招、实习还是兼职？3.薪资待遇大概多少？4.学历要求？5.经验要求？若 HR 第一轮未给某项，下一轮**单独追问**该项，直到收集齐再输出完整 JD 配置供确认。\n\n"
         prepend_text_to_last_user_message(messages, prefix)
 
     if (
@@ -309,7 +310,7 @@ async def apply_inbound_preflight(
     ):
         _pfx1b = (
             "【系统】本条为 **Boss 选岗／换绑**（jd_select 与工作指针已在外层合并），**不是** HR 已确认的无人值守参数表。\n"
-            "你必须 **先** 用 Final Answer 追问并等 HR 明确：① **推荐牛人 ↔ 沟通收简历** 是否交替，还是 **仅收网**；"
+            "你必须 **先** 用 User-facing result 追问并等 HR 明确：① **推荐牛人 ↔ 沟通收简历** 是否交替，还是 **仅收网**；"
             "② **累计收网目标**（份）；③ **透析触发份数**（可与收网目标相同）；④ 若开交替：**每轮打招呼人数**、**轮换间隔（分钟，默认 10）**。\n"
             "**在 HR 逐项确认前禁止调用** mcp:add_automated_recruitment_task；禁止用磁盘 jd 缺省（如示例 4 份、或历史「仅收网」快照）代替 HR 决策。\n\n"
         )
@@ -321,8 +322,14 @@ async def apply_inbound_preflight(
         r"招聘|无人值守|自动化\s*招聘|招聘\s*自动化|无人值守\s*自动化",
         ui,
     ):
-        prefix = "【系统】用户要求关闭招聘流程。你必须输出 Action: mcp:stop_automated_recruitment，Action Input: {\"job_name\": \"\"}，以真正停止后台任务。禁止仅回复「已关闭」而不调用工具。\n\n"
-        prepend_text_to_last_user_message(messages, prefix)
+        prefix = build_work_order_suggestion(
+            tool="mcp:stop_automated_recruitment",
+            work_order_input={"job_name": ""},
+            reason="hr_recruitment_stop_requested",
+            role_agent="MessageExecutorAgent",
+            visible_message="用户要求关闭招聘流程；已生成停止自动招聘的 WorkOrder 建议。",
+        )
+        prepend_text_to_last_user_message(messages, prefix + "\n\n")
 
     _branch_b_ctx = _hr_branch_b_recruitment_context(messages)
     _branch_b_confirm = re.search(
@@ -361,11 +368,13 @@ async def apply_inbound_preflight(
             _direct_b = await _execute_branch_b_harvest_bypass(_b_payload, allowed_skills=allowed)
             if _direct_b:
                 return _direct_b
-        _b_prefix = (
-            "【系统·分支B】当前为「已有岗位·轻量收网」，**严禁** mcp:atom_post_job_boss。"
-            "用户已确认启动，请立即输出 Action: mcp:add_automated_recruitment_task，"
-            "Action Input 为上一轮「配置总览」中的完整 JSON（含 job_name、enable_greet_recommend、resume_collect_target 等）。\n\n"
-        )
+        _b_prefix = build_work_order_suggestion(
+            tool="mcp:add_automated_recruitment_task",
+            work_order_input={"source": "previous_branch_b_config"},
+            reason="hr_branch_b_confirmed_start",
+            role_agent="MessageExecutorAgent",
+            visible_message="用户已确认启动轻量收网；已生成自动招聘任务 WorkOrder 建议。",
+        ) + "\n\n"
         prepend_text_to_last_user_message(messages, _b_prefix)
 
     _agree_match = re.search(r"同意|确认|确认发布|就按这个发|直接发布", ui)
@@ -394,9 +403,14 @@ async def apply_inbound_preflight(
             )
             if _direct_publish:
                 return _direct_publish
-            _jd_str = json.dumps({"jd_config": _agree_jd_cfg}, ensure_ascii=False)
-            prefix = "【系统】用户已确认以下 JD，请直接调用 mcp:atom_post_job_boss，Action Input 填：{}\n勿输出「没有配置」或「新对话」类提示。\n\n".format(_jd_str)
-            prepend_text_to_last_user_message(messages, prefix)
+            prefix = build_work_order_suggestion(
+                tool="mcp:atom_post_job_boss",
+                work_order_input={"jd_config": _agree_jd_cfg},
+                reason="hr_jd_confirmed_publish",
+                role_agent="MessageExecutorAgent",
+                visible_message="用户已确认 JD；已生成 Boss 发帖 WorkOrder 建议。",
+            )
+            prepend_text_to_last_user_message(messages, prefix + "\n\n")
 
     try:
         from l3_node.intent_gateway.slot_subintent_gate import maybe_subintent_slot_gate_async

@@ -1,4 +1,4 @@
-"""Capability-owned hooks used by the core ReAct agent.
+"""Capability-owned hooks used by the core RoleExecutionAgent agent.
 
 The core agent should not contain business-skill rules.  It calls these generic
 hooks, and installed capability policy modules decide whether they need to act.
@@ -137,7 +137,7 @@ def before_capability_tool_exec(
     return before_pmo_tool_exec(ctx, tool=tool, inp=inp, response=response)
 
 
-async def maybe_reject_sqlite_action_before_tool_exec(
+async def maybe_reject_sqlite_work_order_before_tool_exec(
     ctx: PipelineContext,
     *,
     tool: str,
@@ -147,9 +147,9 @@ async def maybe_reject_sqlite_action_before_tool_exec(
     observation_excerpt_fn: Any,
     followup_user_text_fn: Any,
 ) -> bool:
-    from l3_node.capability_policies.sqlite_action_critic import maybe_reject_sqlite_action
+    from l3_node.capability_policies.sqlite_work_order_critic import maybe_reject_sqlite_work_order
 
-    return await maybe_reject_sqlite_action(
+    return await maybe_reject_sqlite_work_order(
         ctx=ctx,
         tool=tool,
         inp=inp,
@@ -167,7 +167,7 @@ def mark_workspace_io_capability_flags(ctx: PipelineContext, tool: str, observat
 
 
 def mark_sqlite_experience_capability_gate(ctx: PipelineContext, tool: str) -> None:
-    from l3_node.capability_policies.sqlite_action_critic import mark_sqlite_experience_save_gate
+    from l3_node.capability_policies.sqlite_work_order_critic import mark_sqlite_experience_save_gate
 
     mark_sqlite_experience_save_gate(ctx, tool)
 

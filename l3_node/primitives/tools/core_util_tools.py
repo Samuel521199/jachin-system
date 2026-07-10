@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin L3 — 原生轻量实用工具 (util:* / sys:*)
 
 供大模型补齐：绝对时间、安全算术、编解码、轻量网络与主机状态等。
@@ -1330,10 +1330,10 @@ def run_lark_send_text(**kwargs: Any) -> dict[str, Any]:
 
     典型链路：用户要「总结某网页并发到飞书」→ 先用 **util:stealth_extract**（或 MCP）取正文，再在模型内压缩后调用本工具 **text**。
     **接收者** 解析顺序（与飞书「发送消息」一致）：
-    1) Action Input 里同时给出 **receive_id_type**（非默认 chat_id）与 **chat_id/receive_id** 时，按模型指定发；
+    1) tool input 里同时给出 **receive_id_type**（非默认 chat_id）与 **chat_id/receive_id** 时，按模型指定发；
     2) 环境变量 **LARK_USER_OPEN_ID** / **LARK_DM_OPEN_ID**（用户 **ou_** open_id）— 官方推荐用于**机器人私聊**，不必依赖 oc_ 会话 ID；
     3) **LARK_CHAT_ID**（群或会话 oc_…）；
-    4) Action 仅含正文时的 **chat_id**；
+    4) WorkOrder 仅含正文时的 **chat_id**；
     5) 当前轮 ContextVar（终端镜像）。
     """
     try:
@@ -1389,7 +1389,7 @@ def run_lark_send_text(**kwargs: Any) -> dict[str, Any]:
     if not chat_id:
         return _err(
             "未指定接收者：请配置 LARK_CHAT_ID（群/会话 oc_…），或私聊配置 LARK_USER_OPEN_ID（用户 ou_…），"
-            "或在 Action Input 传入 chat_id / receive_id_type。"
+            "或在 tool input 传入 chat_id / receive_id_type。"
         )
 
     if receive_id_type not in _valid_recv:
@@ -1447,7 +1447,7 @@ def run_lark_send_text(**kwargs: Any) -> dict[str, Any]:
             f"{err_raw}。"
             "常见原因：(1) 群聊：机器人未入群，请 @ 添加该应用机器人；"
             "(2) 私聊：飞书文档推荐用用户 **open_id**（ou_…）发消息，可在 .env 设置 LARK_USER_OPEN_ID=你的 ou_…，"
-            "或在 Action 中传 receive_id_type=open_id、receive_id=ou_…，避免仅用 oc_ 会话 ID；"
+            "或在 WorkOrder 中传 receive_id_type=open_id、receive_id=ou_…，避免仅用 oc_ 会话 ID；"
             "(3) 用户在应用「可用范围」外（开发者后台调整可见范围并重新发布）；"
             "(4) 终端镜像 oc_ 与目标不一致时，用 LARK_CHAT_ID 或 LARK_USER_OPEN_ID 固定目标。"
         )
@@ -2140,7 +2140,7 @@ UTIL_TOOLS_NATIVES_LIST: list[dict[str, Any]] = [
     {
         "id": "util:uuid_gen",
         "label": "util:uuid_gen",
-        "desc": "生成 UUID v4。Action Input 可为 {} 或空",
+        "desc": "生成 UUID v4。tool input 可为 {} 或空",
         "params": [],
     },
     {
@@ -2234,13 +2234,13 @@ UTIL_TOOLS_NATIVES_LIST: list[dict[str, Any]] = [
     {
         "id": "sys:health_stats",
         "label": "sys:health_stats",
-        "desc": "本机 CPU/内存/磁盘余量（psutil）。Action Input 可为 {}",
+        "desc": "本机 CPU/内存/磁盘余量（psutil）。tool input 可为 {}",
         "params": [],
     },
     {
         "id": "sys:list_env_safe",
         "label": "sys:list_env_safe",
-        "desc": "列出环境变量名（不含值，防泄密）。Action Input 可为 {}",
+        "desc": "列出环境变量名（不含值，防泄密）。tool input 可为 {}",
         "params": [],
     },
     {
@@ -2683,7 +2683,7 @@ UTIL_TOOLS_REGISTRY: dict[str, dict[str, Any]] = {
             "与 util:schedule_desktop_reminder（仅弹系统气泡，须桌面端）完全不同——本工具会调用 Agent 真正完成任务。\n"
             "适合：「上午11:23帮我在 workspace 新建 txt 写游戏推荐」「30分钟后发飞书消息给 XXX」「明天下午3点查数据汇总」等。\n"
             "若请求来自**飞书**（system 顶部有【飞书 originating 会话】），**必须**传 **lark_chat_id** 且与其中 **完整 oc_… 字符串逐字相同**；"
-            "到点时宿主会把该次 Final Answer 自动推回该会话，而不是仅弹桌面。\n"
+            "到点时宿主会把该次 User-facing result 自动推回该会话，而不是仅弹桌面。\n"
             "JSON 必填：intent；飞书来源时 **lark_chat_id 必填**。\n"
             "时刻四选一（优先级顺序）：\n"
             "  fire_at_iso（ISO8601，如 \"2026-05-18T11:23:00\"）\n"
@@ -2702,7 +2702,7 @@ UTIL_TOOLS_REGISTRY: dict[str, dict[str, Any]] = {
                     "type": "string",
                     "description": (
                         "飞书来源时**必填**：与 system 最上方【飞书 originating 会话】中的 chat_id **完全一致**（通常 oc_ 开头）。"
-                        "到点由宿主把 Final Answer 推送到此会话；勿填监控群或其他默认环境变量 ID。"
+                        "到点由宿主把 User-facing result 推送到此会话；勿填监控群或其他默认环境变量 ID。"
                     ),
                 },
                 "fire_at_iso": {

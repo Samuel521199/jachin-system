@@ -1,4 +1,4 @@
-﻿"""
+"""
 Lark 通道 — 入站 Webhook 传输层
 
 接收 Lark 的 HTTP 回调，解析事件为 (text, chat_id, user_id)，调用业务回调。

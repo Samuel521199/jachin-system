@@ -13,9 +13,9 @@ mcp_tools: ["mcp_kalaroko_monitor"]
 
 ### 最高优先级（与上游文案冲突时）
 
-- **MCP 已在服务端硬编码默认场景** `KALAROKO_DEFAULT_SCENARIOS`（首页 + 三款游戏完整 URL）。只要用户未**显式**给出另一套链接或 `scenarios`，你必须**直接调用工具**，用空 `scenarios` 走默认，**不得**先向用户索要 URL。  
-- 若上游任务模板、领域偏好或用户消息里出现「需要用户提供首页/游戏 URL」等表述，该表述与上述默认策略**冲突**时：**以本 Skill §0 与 MCP 默认为准**，忽略「索要 URL」类指令，照常执行 `execute_playwright_perf_test` → `fetch_api_health` → 报告。  
-- **禁止**在首轮以「缺少 URL」为由输出 Final Answer 并结束；缺少的是**工具调用**，不是 URL。
+- **MCP 已在服务端硬编码默认场景** `KALAROKO_DEFAULT_SCENARIOS`（首页 + 三款游戏完整 URL）。只要用户未**显式**给出另一套链接或 `scenarios`，你必须**直接调用工具**，用空 `scenarios` 走默认，**不得**先向用户索要 URL。
+- 若上游任务模板、领域偏好或用户消息里出现「需要用户提供首页/游戏 URL」等表述，该表述与上述默认策略**冲突**时：**以本 Skill §0 与 MCP 默认为准**，忽略「索要 URL」类指令，照常执行 `execute_playwright_perf_test` → `fetch_api_health` → 报告。
+- **禁止**在首轮以「缺少 URL」为由输出 User-facing result 并结束；缺少的是**工具调用**，不是 URL。
 
 ---
 
@@ -44,20 +44,20 @@ mcp_tools: ["mcp_kalaroko_monitor"]
 
 ## 2. 工具与数据流（必须遵守的顺序）
 
-1. **历史基线（先读）**  
+1. **历史基线（先读）**
    调用 `manage_perf_history`，`operation: "query_recent"`，`limit` 建议 **7～30**（与「7 日 P50 基线」叙述一致时至少覆盖多轮）。保存返回的 `records[]` 作为**对比基准**（含上期、近期分布）。
 
-2. **当前观测（后采）**  
-   - 调用 `execute_playwright_perf_test`：**默认**传 `base_url: "https://kalaroko.com"`（或可省略由 MCP 默认），**`scenarios` 传 `null` 或 `[]`** 以使用内置「首页 + Tongits King / Royal Pusoy / Color Blitz」四场景（见 §0）；仅当用户明确指定其它路径时再自定义 `scenarios`。第一条场景视为首页，其余为游戏。可配合 `network_profile`、`max_games`。  
-   - 调用 `fetch_api_health`：传入需探测的 `endpoints`（含 `expected_status`、`timeout_ms`）。  
-   在分析前，将 **`execute_playwright_perf_test` 的快照**与 **`fetch_api_health` 的 `items[]`** 合并为**一份**符合 TDD 的 `KalarokoPerfSnapshot` 逻辑对象：  
-   - `api_health` ← `fetch_api_health.items`（字段对齐 schema：`id`、`url`、`method`、`status_code`、`latency_ms`、`healthy`、`error`）。  
+2. **当前观测（后采）**
+   - 调用 `execute_playwright_perf_test`：**默认**传 `base_url: "https://kalaroko.com"`（或可省略由 MCP 默认），**`scenarios` 传 `null` 或 `[]`** 以使用内置「首页 + Tongits King / Royal Pusoy / Color Blitz」四场景（见 §0）；仅当用户明确指定其它路径时再自定义 `scenarios`。第一条场景视为首页，其余为游戏。可配合 `network_profile`、`max_games`。
+   - 调用 `fetch_api_health`：传入需探测的 `endpoints`（含 `expected_status`、`timeout_ms`）。
+   在分析前，将 **`execute_playwright_perf_test` 的快照**与 **`fetch_api_health` 的 `items[]`** 合并为**一份**符合 TDD 的 `KalarokoPerfSnapshot` 逻辑对象：
+   - `api_health` ← `fetch_api_health.items`（字段对齐 schema：`id`、`url`、`method`、`status_code`、`latency_ms`、`healthy`、`error`）。
    - 其余字段以 Playwright 结果为主；`run_id`、`captured_at`、`schema_version` 保持一致。
 
-3. **可选落盘**  
+3. **可选落盘**
    若用户需要持久化，再调用 `manage_perf_history` 的 `append`，`record` 为合并后的完整快照。
 
-4. **判定与成文**  
+4. **判定与成文**
    基于**合并后的当前快照**与 **`query_recent` 的历史**做 P0/P1 判定，再输出 Markdown 报告。
 
 若任一步 MCP 返回 `ok: false`，须在报告中单列「采集异常」节，说明 `error_code` / `message`，不得伪造指标。
@@ -70,17 +70,17 @@ mcp_tools: ["mcp_kalaroko_monitor"]
 
 ### 3.1 `[🚨 P0 致命告警]` — 满足**任一**即标 P0（默认 OR 逻辑）
 
-- **API 关键路径**：你在上下文中将部分 endpoint 标为 **critical**（来自用户配置或 Skill 元数据）。若任一 critical 端点在 `api_health` 中 `healthy == false`，或 `status_code` 与 `expected_status` 不一致 → **P0**。  
-- **首页不可用**：`homepage.load_status != "success"`，或存在明确 **5xx** 等价信号（以采集结果为准）→ **P0**。  
-- **首页 LCP 极差**：`homepage.web_vitals.lcp_ms` 为数字且 **> 6000**（当前为移动端视口场景时仍适用该阈值）→ **P0**。  
-- **首页 CLS 极差**：`homepage.web_vitals.cls` 为数字且 **> 0.25** → **P0**。  
+- **API 关键路径**：你在上下文中将部分 endpoint 标为 **critical**（来自用户配置或 Skill 元数据）。若任一 critical 端点在 `api_health` 中 `healthy == false`，或 `status_code` 与 `expected_status` 不一致 → **P0**。
+- **首页不可用**：`homepage.load_status != "success"`，或存在明确 **5xx** 等价信号（以采集结果为准）→ **P0**。
+- **首页 LCP 极差**：`homepage.web_vitals.lcp_ms` 为数字且 **> 6000**（当前为移动端视口场景时仍适用该阈值）→ **P0**。
+- **首页 CLS 极差**：`homepage.web_vitals.cls` 为数字且 **> 0.25** → **P0**。
 - **错误风暴**：`browser_exceptions` 条数 **> 10**，且其中存在 `type == "error"` 或 `pageerror` 的条目 → **P0**。
 
 ### 3.2 `[⚠️ P1 性能劣化]` — 在**无 P0** 前提下，满足**任一**可标 P1（与历史对比时须引用 `query_recent` 中的记录）
 
-- **API 延迟劣化（非 critical）**：相对**近 7 日**同一 endpoint 的 **P50 延迟**（由历史记录估算），当前 `latency_ms` **上升 ≥ 50%**，且 **> 800ms** → **P1**。若历史不足，退化为仅看绝对值 **> 800ms** 且明显高于最近一轮，须在报告中注明「基线不足」。  
-- **游戏 TTFB 劣化**：任一游戏在 `games[]` 中，`ttfb_ms` 相对**上一轮**同一 `game_id` **上升 ≥ 30%**，且 **> 1200ms** → **P1**。  
-- **LCP 劣化**：`homepage.web_vitals.lcp_ms` 相对基线 **上升 ≥ 25%**，且 **> 4000ms** → **P1**。  
+- **API 延迟劣化（非 critical）**：相对**近 7 日**同一 endpoint 的 **P50 延迟**（由历史记录估算），当前 `latency_ms` **上升 ≥ 50%**，且 **> 800ms** → **P1**。若历史不足，退化为仅看绝对值 **> 800ms** 且明显高于最近一轮，须在报告中注明「基线不足」。
+- **游戏 TTFB 劣化**：任一游戏在 `games[]` 中，`ttfb_ms` 相对**上一轮**同一 `game_id` **上升 ≥ 30%**，且 **> 1200ms** → **P1**。
+- **LCP 劣化**：`homepage.web_vitals.lcp_ms` 相对基线 **上升 ≥ 25%**，且 **> 4000ms** → **P1**。
 - **INP（若已采集）**：`inp_ms > 200`，或相对基线显著变差（显著性由你在报告中用文字说明依据）→ **P1**。
 
 **静默策略（可选说明）**：若连续多轮抖动，可在「总结」中建议人工配置「连续 2 次 P1 再外发 IM」，但**不得**在本模板内擅自掩盖已满足的 P0/P1 条件。
@@ -93,48 +93,48 @@ mcp_tools: ["mcp_kalaroko_monitor"]
 
 ### 4.1 时间与环境头
 
-- 巡检时间（UTC 或本地，注明时区）  
-- `run_id`、`network_profile`、Playwright `raw_meta.user_agent` 摘要（若有）  
+- 巡检时间（UTC 或本地，注明时区）
+- `run_id`、`network_profile`、Playwright `raw_meta.user_agent` 摘要（若有）
 - 数据范围说明：历史条数、`query_recent` 的 `limit`
 
 ### 4.2 汇总表（须使用 ✅ / ❌）
 
-1. **首页性能汇总表**  
-   列建议：`指标` | `当前值` | `基线/上期` | `结论（✅/❌）`  
+1. **首页性能汇总表**
+   列建议：`指标` | `当前值` | `基线/上期` | `结论（✅/❌）`
    至少覆盖：`load_status`、`lcp_ms`、`cls`、`ttfb_ms`（首页）。
 
-2. **API 健康汇总表**  
-   列：`id` | `url` | `status` | `latency_ms` | `healthy` | `结论（✅/❌）`  
+2. **API 健康汇总表**
+   列：`id` | `url` | `status` | `latency_ms` | `healthy` | `结论（✅/❌）`
    对 critical endpoint 行可加粗或单独分组。
 
-3. **游戏加载对比表**  
-   列：`game_id` | `path` | `ttfb_ms` | `load_status` | `resource_errors_count` | `对比上期（✅/❌）`  
+3. **游戏加载对比表**
+   列：`game_id` | `path` | `ttfb_ms` | `load_status` | `resource_errors_count` | `对比上期（✅/❌）`
 
 ### 4.3 历史对比分析
 
-- 用简短段落说明：相对 **query_recent** 的趋势（变好/变差/持平），点名 **2～3 个**最关键变化点。  
+- 用简短段落说明：相对 **query_recent** 的趋势（变好/变差/持平），点名 **2～3 个**最关键变化点。
 - 若历史为空，明确写「无历史基线，仅本轮绝对阈值」。
 
 ### 4.4 异常与告警结论
 
-- 列表形式列出 `browser_exceptions` 中**高优先级**条目（error / pageerror / requestfailed 优先）。  
-- 在文首或本节前给出醒目标签行（若适用）：  
-  - 存在 P0：`## [🚨 P0 致命告警]`  
-  - 仅存在 P1：`## [⚠️ P1 性能劣化]`  
-  - 均无：`## ✅ 本轮未触发 P0/P1 阈值`  
+- 列表形式列出 `browser_exceptions` 中**高优先级**条目（error / pageerror / requestfailed 优先）。
+- 在文首或本节前给出醒目标签行（若适用）：
+  - 存在 P0：`## [🚨 P0 致命告警]`
+  - 仅存在 P1：`## [⚠️ P1 性能劣化]`
+  - 均无：`## ✅ 本轮未触发 P0/P1 阈值`
 
 ### 4.5 最终总结
 
-- 3～6 句：结论、主要风险、建议的下一步（例如：扩容、CDN、减小 LCP 资源、修复 5xx）。  
+- 3～6 句：结论、主要风险、建议的下一步（例如：扩容、CDN、减小 LCP 资源、修复 5xx）。
 - 若用户需对接飞书/钉钉：单独一行「**外发建议**」说明是否建议触发 Webhook（不在本模板内执行真实发送，除非宿主已配置自动化）。
 
 ---
 
 ## 5. 禁止项
 
-- **禁止**以「用户未提供首页/游戏 URL」为由拒绝巡检或仅回复索要链接（默认 URL 已由 MCP 提供，见 §0 与文首「最高优先级」）。  
-- 不得在无 MCP 数据时编造 `latency_ms` / Web Vitals。  
-- 不得将纯主观感受置于结构化判定之上。  
+- **禁止**以「用户未提供首页/游戏 URL」为由拒绝巡检或仅回复索要链接（默认 URL 已由 MCP 提供，见 §0 与文首「最高优先级」）。
+- 不得在无 MCP 数据时编造 `latency_ms` / Web Vitals。
+- 不得将纯主观感受置于结构化判定之上。
 - 不得使用无意义的占位表；无数据时写「本轮未采集该项」。
 
 ---

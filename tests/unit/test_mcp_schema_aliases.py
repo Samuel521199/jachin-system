@@ -55,13 +55,13 @@ def test_unrelated_tool_unchanged() -> None:
 
 
 def test_should_prime_coder_for_python_script_request() -> None:
-    from core.llm_provider import should_prime_l3_react_coder_mode
+    from core.llm_provider import should_prime_l3_role_execution_coder_mode
 
     msgs = [
         {"role": "user", "content": "请新建 scripts 并写 Python 脚本 system_monitor.py，每2秒打印 CPU 内存。"},
     ]
-    assert should_prime_l3_react_coder_mode(react_iteration=0, full_messages=msgs) is True
-    assert should_prime_l3_react_coder_mode(react_iteration=1, full_messages=msgs) is False
+    assert should_prime_l3_role_execution_coder_mode(role_execution_iteration=0, full_messages=msgs) is True
+    assert should_prime_l3_role_execution_coder_mode(role_execution_iteration=1, full_messages=msgs) is False
 
 
 def test_to_openai_write_file_requires_path_and_content_even_if_params_order_content_first() -> None:

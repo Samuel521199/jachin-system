@@ -2,11 +2,11 @@
 
 本文说明在 **L3 IM 招聘通道** 中，哪些 **纯文本短句** 会在送入大模型之前被 **`try_lark_workflow_command_intercept`** 拦截并直接驱动 **`com.jachin.hr.recruitment`** 调度与 RPA（与 Agent 里口头说「帮我…」不是同一路径）。
 
-**实现入口：** `l3_node/lark_workflow_command_interceptor.py`  
-**词表/谓词：** `l3_node/hr_lark_command_lexicon.py`  
+**实现入口：** `l3_node/lark_workflow_command_interceptor.py`
+**词表/谓词：** `l3_node/hr_lark_command_lexicon.py`
 **选岗合并（可与参数写在同一条消息）：** `im_channels/dispatcher.py` 在拦截前会尝试 `apply_job_select_from_hr_im_text`；`tools/atom_lark_chat.py`
 
-**数据根目录（默认）：** `~/.jachin/workspace/hr_recruitment/{目录键}/`  
+**数据根目录（默认）：** `~/.jachin/workspace/hr_recruitment/{目录键}/`
 **无人值守指针：** `get_hr_recruitment_workflow_pointer()` — 多数指令作用在 **当前指针岗位**，与助手卡片里「某岗历史快照」可能不是同一岗；改批次/调度前请确认指针（成功回复里会提示目录键）。
 
 ---
@@ -90,9 +90,9 @@
 
 ## 7. 易混点速查
 
-1. **指针 ≠ 助手正在描述的岗** — 批次更新、再抓、停止都认 **指针**；看卡片后要先发 **选岗行** 或同条合并选岗。  
-2. **「再抓 N」是加法** — 基准取 max(旧目标, 未处理, PDF)，不是单纯「旧目标 + N」在极端 pending 情况下要留意。  
-3. **「停止」后** — 当前 Playwright 这一轮可能仍会跑完；主定时卸掉后应 **不再** 自动交替；若仍跑，查日志是否 **`removed`** 非空、目录键是否与 `rec_{目录键}_*` 一致。  
+1. **指针 ≠ 助手正在描述的岗** — 批次更新、再抓、停止都认 **指针**；看卡片后要先发 **选岗行** 或同条合并选岗。
+2. **「再抓 N」是加法** — 基准取 max(旧目标, 未处理, PDF)，不是单纯「旧目标 + N」在极端 pending 情况下要留意。
+3. **「停止」后** — 当前 Playwright 这一轮可能仍会跑完；主定时卸掉后应 **不再** 自动交替；若仍跑，查日志是否 **`removed`** 非空、目录键是否与 `rec_{目录键}_*` 一致。
 4. **模糊句** — 未命中硬指令时可能走 **`intent_clarification`** HR 插件，反问请发短指令。
 
 ---

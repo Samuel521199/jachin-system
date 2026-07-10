@@ -1,4 +1,4 @@
-﻿"""
+"""
 GameQA HTTP：桌面控制台 **点火器**（run-skill）+ SSE 日志 + 停止 / 训练抽样。
 
 业务闭环由 **L3 Agent** 读取 ``l3_node/skills/gameqa/*.md`` 并仅调用 **进程内** ``mcp:tool_*``（见 ``registry.L3_LOCAL_MCP_TOOLS``），
@@ -171,7 +171,7 @@ async def handle_run_skill(request):
         f"rules_path: {rules_path}\n"
         f"skill_file: {sp}\n\n"
         f"--- SKILL BEGIN ---\n{skill_text}\n--- SKILL END ---\n\n"
-        f"请严格按 SKILL 中的 Persona、工具白名单与 SOP 执行（ReAct）。\n"
+        f"请严格按 SKILL 中的 Persona、工具白名单与 SOP 执行（RoleExecutionAgent）。\n"
     )
 
     async def _body() -> None:
@@ -209,7 +209,7 @@ async def handle_run_skill(request):
             tail = (ans or "").strip()
             if len(tail) > 4000:
                 tail = tail[:4000] + "…"
-            await svc.emit_log(f"[gameqa][agent] Final Answer 摘要: {tail or '(empty)'}")
+            await svc.emit_log(f"[gameqa][agent] User-facing result 摘要: {tail or '(empty)'}")
         except asyncio.CancelledError:
             await svc.emit_log("[gameqa][run-skill] Agent 任务已取消")
             raise

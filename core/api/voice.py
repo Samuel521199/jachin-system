@@ -78,7 +78,7 @@ try:
     if stt_provider == STTProvider.OPENAI_WHISPER and settings.WHISPER_MODEL_PATH:
         stt_kwargs['model_path'] = settings.WHISPER_MODEL_PATH
         logger.info(f"Using custom Whisper model path: {settings.WHISPER_MODEL_PATH}")
-    
+
     stt = SpeechToText(provider=stt_provider, **stt_kwargs)
     # 检查provider是否可用
     if stt.provider and hasattr(stt.provider, 'available'):
@@ -236,7 +236,7 @@ async def recognize_audio(
 ):
     """
     语音识别接口
-    
+
     支持两种输入方式：
     1. 上传音频文件（multipart/form-data）
     2. Base64编码的音频数据（form-data）
@@ -249,11 +249,11 @@ async def recognize_audio(
             status_code=503,
             detail=error_detail
         )
-    
+
     try:
         # 获取音频数据
         audio_data = None
-        
+
         if audio_file:
             audio_data = await audio_file.read()
             format = format or audio_file.filename.split('.')[-1] if audio_file.filename else "wav"
@@ -261,18 +261,18 @@ async def recognize_audio(
             audio_data = base64.b64decode(audio_base64)
         else:
             raise HTTPException(status_code=400, detail="Either audio_file or audio_base64 must be provided")
-        
+
         if not audio_data:
             raise HTTPException(status_code=400, detail="Audio data is empty")
-        
+
         # 识别语音
         text = await stt.recognize(audio_data, format=format, language=language)
-        
+
         return RecognizeResponse(
             text=text,
             language=language
         )
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -284,7 +284,7 @@ async def recognize_audio(
 async def synthesize_speech(request: SynthesizeRequest):
     """
     语音合成接口
-    
+
     将文本合成为语音，返回音频数据
     """
     if not tts:
@@ -297,7 +297,7 @@ async def synthesize_speech(request: SynthesizeRequest):
             status_code=503,
             detail="TTS is disabled. Set JACHIN_TTS_ENABLED=true or TTS_ENABLED=true, or tts_enabled in ~/.jachin/nexus_config.json.",
         )
-    
+
     try:
         if _is_kokoro_voice(request.voice):
             audio_data = await _synthesize_with_jvs(request.text, request.voice, request.speed)
@@ -322,7 +322,7 @@ async def synthesize_speech(request: SynthesizeRequest):
                 "Content-Disposition": "attachment; filename=speech.wav"
             }
         )
-    
+
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -340,7 +340,7 @@ async def synthesize_speech(request: SynthesizeRequest):
 async def synthesize_speech_stream(request: SynthesizeRequest):
     """
     流式语音合成接口
-    
+
     将文本流式合成为语音，实时返回音频数据块
     """
     if not tts:
@@ -353,7 +353,7 @@ async def synthesize_speech_stream(request: SynthesizeRequest):
             status_code=503,
             detail="TTS is disabled. Set JACHIN_TTS_ENABLED=true or TTS_ENABLED=true, or tts_enabled in ~/.jachin/nexus_config.json.",
         )
-    
+
     try:
         async def generate_audio():
             if _is_kokoro_voice(request.voice):
@@ -367,7 +367,7 @@ async def synthesize_speech_stream(request: SynthesizeRequest):
                 pitch=request.pitch
             ):
                 yield chunk
-        
+
         return StreamingResponse(
             generate_audio(),
             media_type="audio/wav",
@@ -375,7 +375,7 @@ async def synthesize_speech_stream(request: SynthesizeRequest):
                 "Content-Disposition": "attachment; filename=speech.wav"
             }
         )
-    
+
     except Exception as e:
         logger.error(f"Error in streaming speech synthesis: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
@@ -471,7 +471,7 @@ async def voice_chat(
 ):
     """
     语音聊天接口
-    
+
     完整的语音对话流程：
     1. 接收语音输入
     2. 识别为文本（STT）
@@ -484,17 +484,17 @@ async def voice_chat(
             status_code=503,
             detail="Speech-to-Text service is not available."
         )
-    
+
     if not llm_provider:
         raise HTTPException(
             status_code=503,
             detail="LLM provider is not available."
         )
-    
+
     try:
         # 1. 获取音频数据
         audio_data = None
-        
+
         if audio_file:
             audio_data = await audio_file.read()
             format = format or audio_file.filename.split('.')[-1] if audio_file.filename else "wav"
@@ -502,10 +502,10 @@ async def voice_chat(
             audio_data = base64.b64decode(audio_base64)
         else:
             raise HTTPException(status_code=400, detail="Either audio_file or audio_base64 must be provided")
-        
+
         if not audio_data:
             raise HTTPException(status_code=400, detail="Audio data is empty")
-        
+
         # 2. 语音识别（STT）
         user_text = await stt.recognize(audio_data, format=format, language=language)
         logger.info(f"Recognized text: {user_text}")
@@ -541,9 +541,9 @@ async def voice_chat(
 
         if not reply_text:
             reply_text = "我在。"
-        
+
         logger.info(f"Generated reply: {reply_text}")
-        
+
         # 更新上下文 Token 估算
         try:
             from core.api.console import update_context_used
@@ -553,11 +553,11 @@ async def voice_chat(
             update_context_used(input_tokens + output_tokens)
         except Exception:
             pass
-        
+
         # 4. 语音合成（TTS，如果请求）
         audio_base64_result = None
         audio_format_result = None
-        
+
         if return_audio and tts and is_tts_globally_enabled(source="voice"):
             try:
                 reply_audio = await _synthesize_with_jvs(reply_text, voice, speed) if _is_kokoro_voice(voice) else await tts.synthesize(
@@ -573,14 +573,14 @@ async def voice_chat(
             except Exception as e:
                 logger.warning(f"Failed to synthesize speech: {e}")
                 # 即使TTS失败，也返回文本回复
-        
+
         return VoiceChatResponse(
             user_text=user_text,
             text=reply_text,
             audio_base64=audio_base64_result,
             audio_format=audio_format_result
         )
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -592,7 +592,7 @@ async def voice_chat(
 async def phonemize_text(request: PhonemizeRequest):
     """
     文本转音素（Split-Inference）
-    
+
     供 Tier 3 本地 TTS ONNX 使用：Tier 2 处理音素，Tier 3 仅负责 ONNX 推理。
     需安装 misaki: pip install "misaki[zh]" 或 pip install "misaki[en]"
     返回 phonemes（IPA 字符列表）和 tokens（TTS token IDs，若可用）
@@ -631,7 +631,7 @@ async def phonemize_text(request: PhonemizeRequest):
 async def list_voices(language: Optional[str] = None):
     """
     列出可用的语音列表
-    
+
     Args:
         language: 语言代码（可选，如 zh-CN）
     """
@@ -642,7 +642,7 @@ async def list_voices(language: Optional[str] = None):
         )
     if not is_tts_globally_enabled(source="voice"):
         return {"voices": []}
-    
+
     try:
         voices = await tts.list_voices(language=language)
         return {"voices": voices}

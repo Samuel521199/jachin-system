@@ -1,6 +1,6 @@
 # SKILL.md 声明式技能规范
 
-**版本**: v8.0 (The Singularity OS)  
+**版本**: v8.0 (The Singularity OS)
 **定位**: **四大原语**中的 **Skills**（`SKILL.md` 声明式领域知识卡）；与 **Tools**（`jpp`/`core` 原子）、**MCP** 区分见 **[Jachin 视角的「四大原语」终极架构规范.md](./Jachin%20视角的「四大原语」终极架构规范.md)**。
 
 ---

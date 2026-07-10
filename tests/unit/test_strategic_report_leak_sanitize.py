@@ -1,4 +1,4 @@
-﻿"""战略战报 LLM 泄漏/占位符检测与截断。"""
+"""战略战报 LLM 泄漏/占位符检测与截断。"""
 from __future__ import annotations
 
 import unittest

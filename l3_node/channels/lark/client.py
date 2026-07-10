@@ -1,4 +1,4 @@
-﻿"""
+"""
 Lark 通道 — 客户端与 Token 管理
 """
 from __future__ import annotations

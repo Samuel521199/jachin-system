@@ -1,10 +1,10 @@
-﻿"""PMO INIT staging write→import 交替守卫。"""
+"""PMO INIT staging write→import 交替守卫。"""
 from __future__ import annotations
 
 import json
 import unittest
 
-from l3_node.agent_core import (
+from l3_node.pmo_agent_policy import (
     _pmo_init_blocked_stacked_staging_write,
     _pmo_init_track_staging_io,
 )

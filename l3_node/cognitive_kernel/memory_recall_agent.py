@@ -438,7 +438,7 @@ def _unified_memory_provider_timeout_sec() -> float:
 
 
 async def _passive_nexus_memory_evidence(limit: int) -> tuple[list[MemoryEvidence], list[str]]:
-    """Load legacy passive Nexus prompt sources as structured evidence.
+    """Load passive Nexus prompt sources as structured evidence.
 
     L0/L1 are no longer allowed to inject directly into prompts. If available,
     they enter the same ranking/dedupe/conflict path as every other memory.
@@ -473,7 +473,7 @@ async def _passive_nexus_memory_evidence(limit: int) -> tuple[list[MemoryEvidenc
                 confidence=0.82,
                 confirmed_by_user=True,
                 ttl="long_term",
-                relevance_reason="legacy L0 persona source routed through unified MemoryRecallAgent",
+                relevance_reason="L0 persona source routed through unified MemoryRecallAgent",
             )
         )
     if isinstance(l1, Exception):
@@ -487,7 +487,7 @@ async def _passive_nexus_memory_evidence(limit: int) -> tuple[list[MemoryEvidenc
                 source="Memory Nexus passive system memory",
                 confidence=0.74,
                 ttl="long_term",
-                relevance_reason="legacy L1 system memory source routed through unified MemoryRecallAgent",
+                relevance_reason="L1 system memory source routed through unified MemoryRecallAgent",
             )
         )
     return items[: max(0, limit)], gaps
@@ -542,7 +542,7 @@ def _experience_memory_evidence(
                 updated_at=str(row.get("ts") or ""),
                 confidence=confidence,
                 ttl="long_term",
-                relevance_reason="legacy experience few-shot source routed through unified MemoryRecallAgent",
+                relevance_reason="experience few-shot source routed through unified MemoryRecallAgent",
             )
         )
     return items, gaps
@@ -637,8 +637,7 @@ def _detect_memory_state_conflicts(
     return conflicts
 
 
-# Stable overrides for the Section 6 recall plan. The older helpers above are
-# kept for compatibility with existing imports, but these definitions are the
+# Stable overrides for the Section 6 recall plan. These definitions are the
 # effective runtime implementations after module load.
 def _candidate_intents(text: str) -> list[str]:  # type: ignore[no-redef]
     low = (text or "").lower().strip()

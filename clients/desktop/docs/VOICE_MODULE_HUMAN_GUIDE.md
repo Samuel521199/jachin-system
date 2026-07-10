@@ -1,7 +1,7 @@
-﻿# Jachin 语音模块 — 人话版全链路说明
+# Jachin 语音模块 — 人话版全链路说明
 
-> **写给谁看**：产品、联调、新同学——想搞懂「喊一声 Jachin 到听见它回答」中间到底发生了什么，以及**为什么有时感觉不够流畅**。  
-> **状态**：2026-06 更新，描述**当前已落地实现**（含统一 Voice Core、声纹门禁、意图路由）。  
+> **写给谁看**：产品、联调、新同学——想搞懂「喊一声 Jachin 到听见它回答」中间到底发生了什么，以及**为什么有时感觉不够流畅**。
+> **状态**：2026-06 更新，描述**当前已落地实现**（含统一 Voice Core、声纹门禁、意图路由）。
 > **关联文档**：`VOICE_UNIFIED_PIPELINE_PROPOSAL.md`（架构 SSOT）、`VOICE_WAKE_ARCHITECTURE.md`、`VOICE_BARGE_IN_AND_WAKE_ACK.md`、`VOICE_INTENT_ROUTING_AND_TASK_ORCHESTRATION.md`、`VOICE_SPEAKER_VERIFICATION_PROPOSAL.md`
 
 ---

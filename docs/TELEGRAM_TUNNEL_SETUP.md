@@ -101,7 +101,7 @@ curl -X POST "http://localhost:3000/api/v1/agents/bind-im" \
 3. **Layer 2**：`python -m core.cli daemon` 或 `.\scripts\start-layer2.ps1` 选 Light
 4. **Telegram**：给你的机器人发一条消息，如「查一下天气」
 
-预期：Layer 2 终端出现 ReAct 循环，执行完成后结果会通过 Telegram 推回你的手机。
+预期：Layer 2 终端出现 WorkOrder 循环，执行完成后结果会通过 Telegram 推回你的手机。
 
 ---
 

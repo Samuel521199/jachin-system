@@ -338,7 +338,7 @@ def test_util_generate_office_doc_xlsx(tmp_path, monkeypatch) -> None:
     assert (tmp_path / "d.xlsx").stat().st_size > 50
 
 
-def test_util_generate_office_doc_legacy_aliases(tmp_path, monkeypatch) -> None:
+def test_util_generate_office_doc_archived_aliases(tmp_path, monkeypatch) -> None:
     """file_type + content_data 仍可用。"""
     pytest.importorskip("docx")
     import l3_node.workspace_context as wc
@@ -346,11 +346,11 @@ def test_util_generate_office_doc_legacy_aliases(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(wc, "get_effective_workspace_root", lambda: tmp_path)
     r = cut.run_generate_office_doc(
         file_type="docx",
-        file_path="legacy.docx",
+        file_path="archived.docx",
         content_data={"blocks": [{"type": "p", "text": "x"}]},
     )
     assert r["ok"] is True
-    assert (tmp_path / "legacy.docx").exists()
+    assert (tmp_path / "archived.docx").exists()
 
 
 def test_compose_long_document_mocked(tmp_path, monkeypatch) -> None:

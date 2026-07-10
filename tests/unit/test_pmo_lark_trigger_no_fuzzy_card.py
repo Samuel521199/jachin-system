@@ -1,4 +1,4 @@
-﻿"""PMO Lark：已移除模糊意图 1/2/3 确认卡片。"""
+"""PMO Lark：已移除模糊意图 1/2/3 确认卡片。"""
 from __future__ import annotations
 
 from unittest.mock import MagicMock

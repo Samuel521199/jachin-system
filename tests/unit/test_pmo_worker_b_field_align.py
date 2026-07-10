@@ -1,4 +1,4 @@
-﻿"""Worker B 字段对齐注入与 SQL 提示。"""
+"""Worker B 字段对齐注入与 SQL 提示。"""
 from __future__ import annotations
 
 import json

@@ -1,6 +1,6 @@
 # BI 并行开发 — 深度分析与风险控制
 
-**版本**: 1.0  
+**版本**: 1.0
 **定位**: 对 [01_PARALLEL_DEVELOPMENT_GUIDE.md](./01_PARALLEL_DEVELOPMENT_GUIDE.md) 的补充分析，回答「能否完全避免冲突」「流程如何编排」「还需哪些规范」
 
 ---

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Lark 通道 — Webhook 推送（无需 App 凭证）
 
 通过飞书机器人 Webhook URL 发送 Markdown 卡片。

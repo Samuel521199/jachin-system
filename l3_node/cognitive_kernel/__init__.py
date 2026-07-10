@@ -14,6 +14,7 @@ from .contracts import (
     ReviewSummary,
     RoleAgentReview,
     RoleAgentReviewInput,
+    RecoveryPlan,
     StateSnapshot,
     TaskLedgerEntry,
     TurnClosure,
@@ -21,11 +22,12 @@ from .contracts import (
     WorkOrder,
 )
 from .arbiter import arbitrate_review_summary, build_work_order_from_decision
+from .capability_recovery_registry import CapabilityRecoveryRegistry, RecoveryCandidate, load_recovery_manifests
 from .dispatcher import DispatchResult, dispatch_existing_work_order, dispatch_tool_work_order
 from .kernel_loop import KernelPlanningResult, plan_cognitive_turn
 from .kernel_prompts import (
     build_cognitive_kernel_system_prompt,
-    build_text_reasoning_role_system_prefix,
+    build_role_execution_system_prefix,
     build_user_facing_reply_agent_system_prompt,
 )
 from .memory_lifecycle import (
@@ -36,12 +38,17 @@ from .memory_lifecycle import (
 from .memory_tools import recall_memory_search
 from .pipeline import CognitiveTurnContext, build_cognitive_turn_context
 from .prompt_policies import SQL_DATA_SOP_PROMPT
-from .pseudo_actions import REACT_PSEUDO_ACTION_IDS, RECALL_MEMORY_TOOL_ID
+from .work_order_aliases import RECALL_MEMORY_TOOL_ID, WORK_ORDER_ALIAS_IDS
 from .recovery_guards import (
     build_fake_mcp_error_recovery_prompt,
     build_fake_weather_error_recovery_prompt,
     is_hallucinated_final_mcp_error_json,
     is_hallucinated_weather_service_error_json,
+)
+from .recovery_planner import (
+    RecoveryAttemptPlan,
+    RecoveryAttemptRecord,
+    RecoveryPlanner,
 )
 from .role_executors import (
     RoleExecutionContext,
@@ -64,6 +71,7 @@ from .task_guardian import TaskGuardian, get_task_guardian, scan_tasks_once, sta
 
 __all__ = [
     "AgentInputEnvelope",
+    "CapabilityRecoveryRegistry",
     "CognitiveTurnContext",
     "DecisionContract",
     "DispatchResult",
@@ -72,8 +80,8 @@ __all__ = [
     "MemoryRecallRequest",
     "MemoryWriteRequest",
     "RelevantMemoryBundle",
-    "REACT_PSEUDO_ACTION_IDS",
     "RECALL_MEMORY_TOOL_ID",
+    "WORK_ORDER_ALIAS_IDS",
     "RoleAgentRegistry",
     "RoleAgentReview",
     "RoleAgentReviewInput",
@@ -82,6 +90,11 @@ __all__ = [
     "RoleExecutorRegistry",
     "SQL_DATA_SOP_PROMPT",
     "RoleAgentSpec",
+    "RecoveryAttemptPlan",
+    "RecoveryAttemptRecord",
+    "RecoveryPlan",
+    "RecoveryPlanner",
+    "RecoveryCandidate",
     "ReviewSummary",
     "StateSnapshot",
     "StateFabricService",
@@ -99,7 +112,7 @@ __all__ = [
     "create_task_dag_from_work_orders",
     "build_fake_mcp_error_recovery_prompt",
     "build_fake_weather_error_recovery_prompt",
-    "build_text_reasoning_role_system_prefix",
+    "build_role_execution_system_prefix",
     "build_user_facing_reply_agent_system_prompt",
     "dispatch_tool_work_order",
     "dispatch_existing_work_order",
@@ -112,6 +125,7 @@ __all__ = [
     "is_hallucinated_final_mcp_error_json",
     "is_hallucinated_weather_service_error_json",
     "load_task_dag",
+    "load_recovery_manifests",
     "plan_cognitive_turn",
     "recall_lifecycle_memories",
     "recall_memory_search",

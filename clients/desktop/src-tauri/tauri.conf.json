@@ -1,6 +1,6 @@
-{
+﻿{
   "productName": "Jachin Desktop Sprite",
-  "version": "0.9.107",
+  "version": "0.9.108",
   "identifier": "com.jachin.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Jachin 控制台",
+        "title": "Jachin 鎺у埗鍙?,
         "width": 1280,
         "height": 800,
         "minWidth": 800,
@@ -65,7 +65,7 @@
       },
       {
         "label": "notification",
-        "title": "Jachin 哨兵",
+        "title": "Jachin 鍝ㄥ叺",
         "width": 380,
         "height": 88,
         "minWidth": 320,
@@ -84,7 +84,7 @@
       },
       {
         "label": "english_vocab",
-        "title": "Jachin 英语背词",
+        "title": "Jachin 鑻辫鑳岃瘝",
         "width": 368,
         "height": 430,
         "minWidth": 340,

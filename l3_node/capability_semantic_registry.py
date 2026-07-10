@@ -1,4 +1,4 @@
-﻿"""Semantic capability registry for MCP/Skill routing.
+"""Semantic capability registry for MCP/Skill routing.
 
 This module describes what a capability can *do*, independent from the code
 that executes it.  The descriptors are intentionally small and serializable so
@@ -468,6 +468,3 @@ def build_capability_registry(tools: list[dict[str, Any]] | None = None) -> list
 
 def capability_registry_as_dicts(tools: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     return [item.to_dict() for item in build_capability_registry(tools)]
-
-
-

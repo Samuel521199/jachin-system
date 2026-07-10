@@ -46,9 +46,9 @@ def temp_plugin_dirs():
     """创建临时插件目录"""
     plugins_dir = tempfile.mkdtemp(prefix="jachin_plugins_")
     skills_repo_dir = tempfile.mkdtemp(prefix="jachin_skills_")
-    
+
     yield Path(plugins_dir), Path(skills_repo_dir)
-    
+
     # 清理
     shutil.rmtree(plugins_dir, ignore_errors=True)
     shutil.rmtree(skills_repo_dir, ignore_errors=True)
@@ -78,14 +78,14 @@ def gateway_servicer(plugin_executor, temp_plugin_dirs):
     """创建 Gateway Servicer"""
     from core.transport.connection_manager import ConnectionManager
     from core.transport.mtls_manager import MTLSManager
-    
+
     # 创建临时证书目录
     cert_dir = temp_plugin_dirs[0] / "certs" / "test"
     cert_dir.mkdir(parents=True, exist_ok=True)
-    
+
     connection_manager = ConnectionManager()
     mtls_manager = MTLSManager(cert_dir=cert_dir)
-    
+
     servicer = JachinLinkGatewayServicer(
         mtls_manager=mtls_manager,
         connection_manager=connection_manager,
@@ -111,7 +111,7 @@ def create_test_plugin(
     """创建测试插件"""
     plugin_dir = skills_repo_dir / plugin_id
     plugin_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # 创建 manifest.yaml
     manifest = {
         "id": plugin_id,
@@ -133,12 +133,12 @@ def create_test_plugin(
         },
         "requirements": []
     }
-    
+
     manifest_file = plugin_dir / "manifest.yaml"
     import yaml
     with open(manifest_file, 'w', encoding='utf-8') as f:
         yaml.dump(manifest, f, allow_unicode=True)
-    
+
     # 创建 main.py
     main_py_content = '''
 import ray
@@ -149,7 +149,7 @@ class PluginActor:
     def __init__(self, plugin_id: str, manifest: dict):
         self.plugin_id = plugin_id
         self.manifest = manifest
-    
+
     def hello(self, payload: Dict[str, Any], trace_id: str = None) -> Dict[str, Any]:
         """简单的 hello 方法"""
         name = payload.get("name", "World")
@@ -167,7 +167,7 @@ class PluginActor:
                 ]
             }
         }
-    
+
     def process_data(self, payload: Dict[str, Any], trace_id: str = None) -> Dict[str, Any]:
         """处理数据方法"""
         data = payload.get("data", {})
@@ -177,7 +177,7 @@ class PluginActor:
             "data": result
         }
 '''
-    
+
     if has_stream_method:
         main_py_content += '''
     def process_data_stream(self, payload: Dict[str, Any], trace_id: str = None):
@@ -190,11 +190,11 @@ class PluginActor:
                 "done": i == len(data) - 1
             }
 '''
-    
+
     main_py_file = plugin_dir / "main.py"
     with open(main_py_file, 'w', encoding='utf-8') as f:
         f.write(main_py_content)
-    
+
     return plugin_dir
 
 
@@ -203,10 +203,10 @@ class MockContext:
     def __init__(self):
         self.code = None
         self.details = None
-    
+
     def set_code(self, code):
         self.code = code
-    
+
     def set_details(self, details):
         self.details = details
 
@@ -221,11 +221,11 @@ async def test_invoke_plugin_e2e(
 ):
     """端到端测试：InvokePlugin RPC 调用"""
     plugins_dir, skills_repo_dir = temp_plugin_dirs
-    
+
     # 创建测试插件
     plugin_id = "com.test.e2e-plugin"
     plugin_dir = create_test_plugin(plugin_id, skills_repo_dir)
-    
+
     # 创建请求
     request = jachin_link_pb2.PluginRequest(
         plugin_id=plugin_id,
@@ -233,22 +233,22 @@ async def test_invoke_plugin_e2e(
         payload=json.dumps({"name": "E2E Test"}).encode('utf-8'),
         trace_id="e2e-trace-001"
     )
-    
+
     # 创建模拟上下文
     context = MockContext()
-    
+
     # 调用 InvokePlugin
     response = await gateway_servicer.InvokePlugin(request, context)
-    
+
     # 验证响应
     assert response.status_code == 200
     assert response.payload is not None
     assert response.ui_render_schema is not None
-    
+
     # 解析 payload
     response_data = json.loads(response.payload.decode('utf-8'))
     assert response_data["message"] == "Hello, E2E Test!"
-    
+
     # 验证 UI Schema
     ui_schema = json.loads(response.ui_render_schema)
     assert ui_schema["type"] == "AdaptiveCard"
@@ -265,11 +265,11 @@ async def test_stream_plugin_e2e(
 ):
     """端到端测试：StreamPlugin RPC 调用"""
     plugins_dir, skills_repo_dir = temp_plugin_dirs
-    
+
     # 创建有流式方法的测试插件
     plugin_id = "com.test.stream-e2e-plugin"
     plugin_dir = create_test_plugin(plugin_id, skills_repo_dir, has_stream_method=True)
-    
+
     # 创建请求
     request = jachin_link_pb2.PluginRequest(
         plugin_id=plugin_id,
@@ -277,17 +277,17 @@ async def test_stream_plugin_e2e(
         payload=json.dumps({"data": [1, 2, 3, 4, 5]}).encode('utf-8'),
         trace_id="e2e-trace-002"
     )
-    
+
     # 创建模拟上下文
     context = MockContext()
-    
+
     # 收集流式响应
     chunks = []
     async for response in gateway_servicer.StreamPlugin(request, context):
         chunks.append(response)
         if response.status_code != 200:
             break
-    
+
     # 验证响应
     assert len(chunks) > 0
     # 第一个 chunk 应该是正常响应或错误响应
@@ -305,17 +305,17 @@ async def test_multiple_plugins_concurrent(
 ):
     """端到端测试：多个插件并发调用"""
     plugins_dir, skills_repo_dir = temp_plugin_dirs
-    
+
     # 创建多个测试插件
     plugin_ids = [
         "com.test.plugin-1",
         "com.test.plugin-2",
         "com.test.plugin-3"
     ]
-    
+
     for plugin_id in plugin_ids:
         create_test_plugin(plugin_id, skills_repo_dir)
-    
+
     # 并发调用多个插件
     async def call_plugin(plugin_id: str, name: str):
         request = jachin_link_pb2.PluginRequest(
@@ -326,15 +326,15 @@ async def test_multiple_plugins_concurrent(
         )
         context = MockContext()
         return await gateway_servicer.InvokePlugin(request, context)
-    
+
     # 并发调用
     tasks = [
         call_plugin(plugin_id, f"User-{i+1}")
         for i, plugin_id in enumerate(plugin_ids)
     ]
-    
+
     responses = await asyncio.gather(*tasks)
-    
+
     # 验证所有响应都成功
     for i, response in enumerate(responses):
         assert response.status_code == 200, f"Plugin {plugin_ids[i]} failed"
@@ -352,7 +352,7 @@ async def test_permission_violation_e2e(
 ):
     """端到端测试：权限违规场景"""
     plugins_dir, skills_repo_dir = temp_plugin_dirs
-    
+
     # 创建没有 file.write 权限的插件
     plugin_id = "com.test.no-permission-plugin"
     plugin_dir = create_test_plugin(
@@ -360,7 +360,7 @@ async def test_permission_violation_e2e(
         skills_repo_dir,
         permissions=[{"scope": "file.read"}]  # 只有读取权限
     )
-    
+
     # 调用需要 file.write 权限的方法
     request = jachin_link_pb2.PluginRequest(
         plugin_id=plugin_id,
@@ -368,10 +368,10 @@ async def test_permission_violation_e2e(
         payload=json.dumps({"data": "test"}).encode('utf-8'),
         trace_id="e2e-trace-003"
     )
-    
+
     context = MockContext()
     response = await gateway_servicer.InvokePlugin(request, context)
-    
+
     # 应该返回 403 错误
     assert response.status_code == 403
     assert "permission" in response.error_message.lower()
@@ -390,10 +390,10 @@ async def test_plugin_not_found_e2e(
         payload=b"{}",
         trace_id="e2e-trace-004"
     )
-    
+
     context = MockContext()
     response = await gateway_servicer.InvokePlugin(request, context)
-    
+
     # 应该返回 404 错误
     assert response.status_code == 404
     assert "not installed" in response.error_message.lower() or "not found" in response.error_message.lower()
@@ -412,21 +412,21 @@ async def test_connect_and_heartbeat_e2e(
         device_info="Test Device",
         client_certificate=b"mock_cert"
     )
-    
+
     context = MockContext()
     connect_response = await gateway_servicer.Connect(connect_request, context)
-    
+
     # Connect 应该成功（或返回需要配对）
     assert connect_response.success is not None
-    
+
     # 测试 SendHeartbeat
     heartbeat_request = jachin_link_pb2.Heartbeat(
         device_id="test-device-001",
         timestamp=1234567890
     )
-    
+
     heartbeat_response = await gateway_servicer.SendHeartbeat(heartbeat_request, context)
-    
+
     # Heartbeat 应该成功（或返回设备未注册）
     assert heartbeat_response.success is not None
 

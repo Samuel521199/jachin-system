@@ -6,8 +6,8 @@
 
 ```
 core/
-├── agent_memory.py   # Agent 持久化记忆（add_memory, get_context），供 ReAct 循环
-├── agent_loop.py     # ReAct 代理循环（Thought→Action→Observation），蓝图 Persona & Skillset
+├── agent_memory.py   # Agent 持久化记忆（add_memory, get_context），供 RoleExecutionAgent 循环
+├── agent_loop.py     # RoleExecutionAgent 代理循环（DecisionContract→WorkOrder→Verification），蓝图 Persona & Skillset
 ├── daemon.py         # 轻量版守护进程（心跳 + Agent Loop）
 ├── wasm_runner.py    # WASM 物理沙箱（Pure Compute + WASI stdin/stdout）
 ├── core/              # 核心模块

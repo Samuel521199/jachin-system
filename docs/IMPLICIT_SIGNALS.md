@@ -51,7 +51,7 @@
 
 ## 4. HTTP 埋点（Lark / Console / 自研 UI）
 
-`POST /api/v2/intelligence/implicit-signal`  
+`POST /api/v2/intelligence/implicit-signal`
 Header：`X-Sub-Account-Id`（与 v2 记忆 API 一致）
 
 ```json

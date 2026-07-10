@@ -1,4 +1,4 @@
-﻿"""
+"""
 PMO Sprint 大需求 + 开发/产品/美术子任务查询（案例 SSOT：PMO_DB_QUERY_CASE_STUDY_0511_SPRINT §5）。
 
 Python 解析 ``pmo_raw_records.fields``，避免 ``json_extract`` 在父记录混 string/array 时 malformed JSON。
@@ -145,7 +145,7 @@ def _pack_dev_row(fields: dict[str, Any], parent_epic: str | None) -> dict[str, 
 
 
 def _epic_child_from_task(task: dict[str, Any]) -> dict[str, Any]:
-    """Worker C Final Answer 使用 epic_children[] 时的字段形状。"""
+    """Worker C User-facing result 使用 epic_children[] 时的字段形状。"""
     return {
         "department": task.get("department"),
         "parent_epic": task.get("parent_epic"),
@@ -768,4 +768,3 @@ def apply_war_report_current_sprint(
     worker_b["_war_report_sprint_meta"] = meta
     worker_c["_war_report_sprint_meta"] = meta
     return cs, cs_date
-

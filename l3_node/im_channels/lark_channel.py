@@ -1,4 +1,4 @@
-﻿"""
+"""
 Lark 入站通道 — 长连接优先，支持多机共享 chat_id 绑定
 """
 from __future__ import annotations
@@ -141,7 +141,7 @@ def create_lark_send_reply(
         if not chat_id or not text:
             return False
         try:
-            from l3_node.react_ui_sanitize import sanitize_final_answer_for_lark_im
+            from l3_node.role_output_sanitize import sanitize_final_answer_for_lark_im
 
             text = sanitize_final_answer_for_lark_im(str(text))
             if not text.strip():

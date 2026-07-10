@@ -11,6 +11,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from l3_node.cognitive_kernel.recovery_playbook_schema import validate_recovery_playbook_manifest
+
 
 DEFAULT_L1_BASE_URL = "http://47.86.39.173:3000"
 
@@ -100,6 +102,10 @@ def _install_single(base_url: str, item: dict[str, Any], item_id: str) -> dict[s
         _extract_zip(downloaded, staging)
         package_root = _detect_package_root(staging)
         meta = _read_package_meta(package_root)
+        playbook_errors = validate_recovery_playbook_manifest(meta)
+        if playbook_errors:
+            preview = "; ".join(playbook_errors[:8])
+            raise RuntimeError(f"invalid recovery_playbook in package {item_id}: {preview}")
         installed_id = str(meta.get("id") or item.get("plugin_id") or item.get("id") or item_id).strip()
         kind = _normalize_kind(meta.get("kind") or item.get("item_type") or item.get("kind") or "skill")
         version = str(meta.get("version") or item.get("version") or "0.0.0")

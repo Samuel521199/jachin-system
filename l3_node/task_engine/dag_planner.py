@@ -1,7 +1,7 @@
 """
 TaskDAG Planner — LLM 自动维护（AV）
 
-在 ReAct 循环开始前（或用户显式要求时），对复杂意图调用 LLM 生成结构化任务图
+在 RoleExecutionAgent 循环开始前（或用户显式要求时），对复杂意图调用 LLM 生成结构化任务图
 并自动写回 ~/.jachin/workspace/task_dags/active.json，驱动 DAG 进度展示与续跑。
 
 工作流：
@@ -12,7 +12,7 @@ TaskDAG Planner — LLM 自动维护（AV）
 
   2. LLM 生成结构化 JSON（节点列表 + 依赖关系）
   3. 写回 active.json（已存在时更新 title + nodes，保留已完成节点状态）
-  4. 返回 PlannerResult 供调用方展示或注入 Observation
+  4. 返回 PlannerResult 供调用方展示或注入 Verification evidence
 
 启发式判断"复杂任务"（auto-trigger）：
   - 意图字符数 > JACHIN_DAG_AUTO_PLAN_MIN_CHARS（默认 60）

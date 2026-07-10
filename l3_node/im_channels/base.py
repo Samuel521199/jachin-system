@@ -1,4 +1,4 @@
-﻿"""
+"""
 IM 通道抽象 — Lark/Telegram 等同维度
 
 各通道实现 InboundIMChannel 接口，L3 启动时按配置启动入站接收。

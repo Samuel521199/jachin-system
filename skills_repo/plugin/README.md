@@ -1,6 +1,6 @@
 # HR 招聘插件 (jachin-hr-plugins)
 
-基于 **Jachin 四大原语**（MCP / Skills / Tools / Agent Tasks）与 **原子架构** 的 HR 招聘筛选插件。  
+基于 **Jachin 四大原语**（MCP / Skills / Tools / Agent Tasks）与 **原子架构** 的 HR 招聘筛选插件。
 独立工程结构，规范对齐 jachin-system v8.0 `docs/PLUGIN_DEVELOPMENT_GUIDE.md` v2.0（技能发现：SemanticRouter 向量检索）。
 
 > **主仓（jachin-system）当前招聘执行架构**（`com.jachin.hr.recruitment` MCP、`hr_recruitment_dag`、调度走 DAG、`task_planning` HR 路径等）以仓库根目录 **`docs/HR_RECRUITMENT.md`** 为单一事实来源；术语 SSOT：**`docs/Jachin 视角的「四大原语」终极架构规范.md`**。
@@ -131,7 +131,7 @@ plugin/
 ├── tests/
 │   └── mock_v8_runner.py   # 本地全链路测试舱
 ├── install.py              # 一键安装脚本
-├── src/                    # 兼容层：llm_client（阿里百炼 + Gemini 回退）
+├── src/                    # 适配层：llm_client（阿里百炼 + Gemini 回退）
 ├── .env.example
 ├── requirements.txt
 └── README.md

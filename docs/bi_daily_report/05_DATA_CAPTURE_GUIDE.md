@@ -1,6 +1,6 @@
 # BI 数据抓取使用指南
 
-**适用**: A 系统（mcp:atom_web_scraper）  
+**适用**: A 系统（mcp:atom_web_scraper）
 **契约**: [01_PARALLEL_DEVELOPMENT_GUIDE.md](./01_PARALLEL_DEVELOPMENT_GUIDE.md)
 
 ---

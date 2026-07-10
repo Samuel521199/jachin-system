@@ -1,4 +1,4 @@
-﻿"""
+"""
 /test 模拟 Skill 的 L3 进程内定时（APScheduler 一次性任务）。
 
 与 ``util:schedule_desktop_reminder``（仅桌面右下角弹窗）不同：到点会调用

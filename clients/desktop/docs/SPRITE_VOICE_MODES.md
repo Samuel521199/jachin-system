@@ -40,7 +40,7 @@
 - **主界面**：
   - **设置** 页（`/preferences`，`SettingsPanel.tsx`）：Chat 流式、桌面精灵语音模式（A/B/C）。
   - **唤醒模式** 页（`/wake`，`WakeModePanel.tsx`）：唤醒词/名字、启动/停止监听、模拟唤醒；仅在此处设置并保存 `wake_word`。
-- **持久化**：Tauri 应用数据目录下的 `settings.json`（与 UserSettings 一致，见 `src-tauri/src/config/user_settings.rs`）。  
+- **持久化**：Tauri 应用数据目录下的 `settings.json`（与 UserSettings 一致，见 `src-tauri/src/config/user_settings.rs`）。
   - 字段：`chat_stream_via_direct`、`sprite_voice_mode`、`wake_word`（唤醒词/名字，默认 "Jachin"）。
   - Windows：`%LOCALAPPDATA%\com.jachin.desktop\` 或便携目录 `_portable_data/settings.json`。
 - **运行时**：Chat 流式在每次发起流式请求时通过 `get_user_settings` 读取；精灵模式由前端根据 `sprite_voice_mode` 决定是否启用唤醒监听；启动监听时从「唤醒模式」页或 `wake_word` 配置读取当前唤醒词。

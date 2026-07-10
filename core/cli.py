@@ -1,7 +1,7 @@
 """
 Jachin Nexus Layer 2 CLI
 python -m core.cli pair — L1↔L2 **辅助**配对（无头/SSH/恢复）；主路径见 L2 /gateway：
-Legacy optional L2 pairing CLI. L3 packaged mode uses L1 profiles directly.
+Archived optional L2 pairing CLI. L3 packaged mode uses L1 profiles directly.
 refresh-tenant：租户字段修复
 """
 from __future__ import annotations
@@ -410,20 +410,20 @@ def shell(user_input: str, use_daemon: bool) -> None:
         console.print("[dim]  → 注入全息感官总线，brain_worker 处理中...[/dim]")
     console.print()
 
-    def _react_step_printer(step_type: str, content: str, run_id: str = "") -> None:
+    def _kernel_step_printer(step_type: str, content: str, run_id: str = "") -> None:
         c = (content or "")[:200] + ("..." if len(content or "") > 200 else "")
         prefix = f"[RunID:{run_id[:8]}] " if run_id else ""
         if step_type == "thought":
-            console.print(f"  {prefix}[dim][Thought][/dim] {c}")
+            console.print(f"  {prefix}[dim][Reasoning][/dim] {c}")
         elif step_type == "action":
-            console.print(f"  {prefix}[purple][Action][/purple] {c}")
+            console.print(f"  {prefix}[purple][WorkOrder][/purple] {c}")
         elif step_type == "observation":
-            console.print(f"  {prefix}[cyan][Observation][/cyan] {c}")
+            console.print(f"  {prefix}[cyan][Verification evidence][/cyan] {c}")
 
     async def _go_standalone() -> None:
         """ standalone：本进程启动 brain_worker（无 HITL 弹窗，core:shell_exec 会挂起）"""
         bus = get_bus()
-        bus.set_step_callback(_react_step_printer)
+        bus.set_step_callback(_kernel_step_printer)
         bus.start_brain_worker()
 
         done = asyncio.Event()
@@ -432,7 +432,7 @@ def shell(user_input: str, use_daemon: bool) -> None:
             if ev.source_ref != "cli":
                 return
             if ev.action_type == "text":
-                console.print(Panel(ev.content, title="[green]Final Answer[/green]", border_style="green"))
+                console.print(Panel(ev.content, title="[green]User-facing result[/green]", border_style="green"))
             done.set()
 
         bus.subscribe("output.cli", output_handler)
@@ -462,7 +462,7 @@ def shell(user_input: str, use_daemon: bool) -> None:
                         st = (data.get("step_type") or "").lower()
                         content = data.get("content", "")
                         if st in ("answer", "rejected", "error"):
-                            title = "[green]Final Answer[/green]" if st == "answer" else f"[red]{st}[/red]"
+                            title = "[green]User-facing result[/green]" if st == "answer" else f"[red]{st}[/red]"
                             console.print(Panel(content, title=title, border_style="green" if st == "answer" else "red"))
                             return
                         elif st == "hitl_required":

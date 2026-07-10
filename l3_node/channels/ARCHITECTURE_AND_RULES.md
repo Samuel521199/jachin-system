@@ -1,4 +1,4 @@
-# channels 通道层 — 架构说明与规则约定
+﻿# channels 通道层 — 架构说明与规则约定
 
 本文档说明 `l3_node/channels/` 的设计意图、核心规则及使用约束。
 
@@ -123,7 +123,7 @@ Webhook 与 IM 是两种不同的「出站」方式，分别对应 `LarkWebhookC
 ## 六、与上下游的约定
 
 - **mcp_tools**：保持对外的 MCP ID、参数、返回值不变，内部改为委托 channels。
-- **plugin tools**：`_get_tenant_access_token`、`_send_lark_message` 等保留为兼容层，内部委托 channels。
+- **plugin tools**：`_get_tenant_access_token`、`_send_lark_message` 等保留为适配层，内部委托 channels。
 - **契约测试**：`scripts/test_bi_mcp_contract.py` 仍针对 mcp_tools 的公开函数校验，channels 变更不得破坏契约。
 
 ---

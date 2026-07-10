@@ -1,4 +1,4 @@
-﻿"""
+"""
 飞书 IM 发送前：接收者 ID 校验，以及邮箱/手机 → open_id（contact/v3/users/batch_get_id）。
 
 避免模型把人名（如 vivian）当作 chat_id 直接调用发送接口。

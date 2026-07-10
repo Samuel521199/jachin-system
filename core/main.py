@@ -508,7 +508,7 @@ web_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web")
 if os.path.exists(web_dir):
     from fastapi.staticfiles import StaticFiles
     app.mount("/static", StaticFiles(directory=web_dir), name="static")
-    
+
     @app.get("/chat")
     async def chat_page():
         """聊天页面"""
@@ -516,7 +516,7 @@ if os.path.exists(web_dir):
         if os.path.exists(index_path):
             return FileResponse(index_path)
         return {"error": "Chat page not found"}
-    
+
     @app.get("/voice-test")
     async def voice_test_page():
         """语音测试页面"""

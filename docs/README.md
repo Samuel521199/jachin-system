@@ -7,7 +7,7 @@ Jachin = Cognitive Kernel + Role Agent Network + Tool Execution Layer
        + State Fabric + Memory Learning Layer
 ```
 
-The old ReAct-first, hybrid-agent-first, and L1/L2/L3-first architecture
+The old WorkOrder-first, hybrid-agent-first, and L1/L2/L3-first architecture
 documents have been removed. `run_agent` is now treated as compatibility
 execution infrastructure behind the Memory-first Cognitive Kernel.
 

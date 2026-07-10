@@ -19,6 +19,111 @@
     "$JACHIN_HOME/data/os_mission",
     "$JACHIN_HOME/logs/os_mission"
   ],
+  "recovery_playbook": {
+    "targets": [
+      {
+        "id": "desktop_app_control",
+        "role_agent": "AppControlExecutorAgent",
+        "tools": [
+          "mcp:windows_open_app",
+          "mcp:windows_window_switch",
+          "mcp:windows_window_close"
+        ],
+        "max_attempts": 5,
+        "steps": [
+          {
+            "strategy": "retry_same_path",
+            "tool": "$same",
+            "when": {
+              "failure_any": ["timeout", "focus", "window", "not found", "unverified"]
+            },
+            "action_patch": {
+              "recovery_strategy": "retry_same_path"
+            },
+            "rationale": "desktop app state may be transient; retry the same operation once",
+            "priority": 10
+          },
+          {
+            "strategy": "switch_existing_window",
+            "tool": "mcp:windows_window_switch",
+            "when": {
+              "failure_any": ["focus", "window", "not found", "unverified"]
+            },
+            "action_template": {
+              "keywords": "$window_hint",
+              "timeout": 8.0
+            },
+            "rationale": "try focusing an already-open desktop window before relaunching",
+            "priority": 30
+          },
+          {
+            "strategy": "open_app_then_verify",
+            "tool": "mcp:windows_open_app",
+            "when": {
+              "failure_any": ["window", "not found", "launch", "focus", "unverified"],
+              "tool_not_contains": ["windows_open_app"]
+            },
+            "action_template": {
+              "app_name": "$app_name",
+              "args_json": "[]"
+            },
+            "rationale": "launch or focus the requested app, then verify foreground state",
+            "priority": 40
+          },
+          {
+            "strategy": "longer_timeout_same_tool",
+            "tool": "$same",
+            "when": {
+              "failure_any": ["timeout", "focus", "window", "unverified"]
+            },
+            "action_patch": {
+              "timeout": 12.0,
+              "recovery_strategy": "longer_timeout"
+            },
+            "rationale": "use a longer verification window for slow UI state changes",
+            "priority": 60
+          }
+        ]
+      },
+      {
+        "id": "desktop_file_ops",
+        "role_agent": "FileExecutorAgent",
+        "tools": [
+          "mcp:windows_file_*",
+          "core:fs_*"
+        ],
+        "max_attempts": 5,
+        "steps": [
+          {
+            "strategy": "normalize_path_retry",
+            "tool": "$same",
+            "when": {
+              "failure_any": ["path", "not found", "permission", "unverified"]
+            },
+            "action_patch": {
+              "normalize_path": true,
+              "expand_env": true,
+              "recovery_strategy": "normalize_path"
+            },
+            "rationale": "retry file operation after path normalization and env expansion",
+            "priority": 10
+          },
+          {
+            "strategy": "reveal_parent_for_user_confirmation",
+            "tool": "mcp:windows_file_reveal_in_explorer",
+            "when": {
+              "failure_any": ["path", "not found"]
+            },
+            "action_patch": {
+              "reveal_parent": true
+            },
+            "rationale": "reveal parent folder when the target file path cannot be verified",
+            "priority": 50
+          }
+        ]
+      }
+    ]
+  },
   "tags": [
     "business-skill",
     "os-assistant",

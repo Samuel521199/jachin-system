@@ -1,4 +1,4 @@
-﻿"""PMO 对外回复脱敏：监控群 / chat_id 不得泄漏。"""
+"""PMO 对外回复脱敏：监控群 / chat_id 不得泄漏。"""
 from __future__ import annotations
 
 from l3_node.pmo_user_visible_sanitize import sanitize_pmo_confidential_wording

@@ -33,9 +33,9 @@ def test_valid_manifest_yaml():
             }
         ]
     }
-    
+
     manifest = ManifestParser.load_from_dict(manifest_data)
-    
+
     assert manifest.name == "test-skill"
     assert manifest.version == "1.0.0"
     assert manifest.skill_id == "test-skill-1.0.0"
@@ -49,7 +49,7 @@ def test_invalid_manifest_missing_required():
         "name": "test-skill",
         # 缺少version和runtime
     }
-    
+
     with pytest.raises(ManifestError):
         ManifestParser.load_from_dict(manifest_data)
 
@@ -69,11 +69,11 @@ def test_manifest_from_file():
             }
         ]
     }
-    
+
     with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
         yaml.dump(manifest_data, f)
         temp_path = f.name
-    
+
     try:
         manifest = ManifestParser.load_from_file(temp_path)
         assert manifest.name == "test-skill"
@@ -98,12 +98,12 @@ def test_get_capability():
             }
         ]
     }
-    
+
     manifest = ManifestParser.load_from_dict(manifest_data)
-    
+
     cap1 = manifest.get_capability("action1")
     assert cap1 is not None
     assert cap1["name"] == "action1"
-    
+
     cap_none = manifest.get_capability("nonexistent")
     assert cap_none is None

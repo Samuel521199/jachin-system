@@ -1,4 +1,4 @@
-"""TurnClosure memory write execution through MemoryWriteAgent."""
+﻿"""TurnClosure memory write execution through MemoryWriteAgent."""
 
 from __future__ import annotations
 
@@ -70,7 +70,7 @@ async def execute_turn_closure_memory_writes(
                     "error": str(exc),
                 },
             )
-        action_input = json.dumps(
+        work_order_input = json.dumps(
             {
                 "content": request.content,
                 "tags": _memory_tags(closure, request.memory_type),
@@ -88,7 +88,7 @@ async def execute_turn_closure_memory_writes(
                     turn_id=closure.turn_id,
                     goal=f"write TurnClosure memory request {index + 1}",
                     tool="core:local_memory_append",
-                    action_input=action_input,
+                    work_order_input=work_order_input,
                     executor=executor or _missing_memory_executor_should_not_run,
                 ),
                 timeout=timeout,

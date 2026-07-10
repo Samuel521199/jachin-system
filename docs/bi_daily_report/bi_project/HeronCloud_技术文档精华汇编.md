@@ -1,6 +1,6 @@
 # HeronCloud / HeronCloud-Game 技术文档精华汇编
 
-> **来源**：`HeronCloud 项目架构设计文档.pdf`、`HeronCloud 项目开发文档.pdf`、`HeronCloud-Game 项目架构总结.pdf`（本地路径抽取文本后整理）。  
+> **来源**：`HeronCloud 项目架构设计文档.pdf`、`HeronCloud 项目开发文档.pdf`、`HeronCloud-Game 项目架构总结.pdf`（本地路径抽取文本后整理）。
 > **性质**：要点摘要与结构归纳，**非**全文照搬，便于 BI 与 Agent 理解服务端技术语境。
 
 ---

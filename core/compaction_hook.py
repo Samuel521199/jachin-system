@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin Nexus v8.0 — 神盾 Compaction Hook（上下文时空折叠）
 
 注册到 HOOK_BEFORE_LLM_THINK，当 ctx.messages 超 token 阈值时：

@@ -297,7 +297,7 @@ def build_schema_v2_card_from_markdown(
                 elements.append(
                     {
                         "tag": "markdown",
-                        "content": "（下文表格数量已达上限，余下见 Observation / Wiki）",
+                        "content": "（下文表格数量已达上限，余下见 Verification evidence / Wiki）",
                     }
                 )
                 break

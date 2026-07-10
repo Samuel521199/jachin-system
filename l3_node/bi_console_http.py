@@ -1,4 +1,4 @@
-﻿"""
+"""
 BI 分析控制台 HTTP：手动 SSE 跑 ``scripts/run_bi_daily_report.py`` + 定时配置（``bi_console_scheduler``）。
 
 与 ``l3_node/primitives/skills/bi/scheduler.py``（YAML 配置）独立。

@@ -1,6 +1,6 @@
 # K11 游戏平台全局知识库 (K11 Game Platform Knowledge Base)
 
-> **收录说明**：由 Gemini 根据业务材料整理，供 BI 分析与 L3 Agent 理解「分析对象」产品背景。  
+> **收录说明**：由 Gemini 根据业务材料整理，供 BI 分析与 L3 Agent 理解「分析对象」产品背景。
 > **Cursor 提示**：下文已覆盖 K11 微服务网关结构（Kratos+Actor）、核心数据域（User, Room, Task, Level, Coin）、游戏交互与业务流转（买量 → 游客体验 → 激励注册 → 充值/游戏 → 风控水池）。生成代码时请遵守 Go+Kratos 目录分层，禁止在 Service 层直接操作数据库，参数与错误需符合框架统一规范。
 
 ---
@@ -137,7 +137,7 @@
 
 ### 3. 市场与运营 (Marketing & Ops)
 
-- **成员**：Berlin (Berlith), Jovi, Donnie, David, Rence  
+- **成员**：Berlin (Berlith), Jovi, Donnie, David, Rence
 - **职责**：菲律宾、印尼等市场网赚投放、eCPM 广告、TikTok 主播 MCN、ROI 转化追踪。
 
 ---

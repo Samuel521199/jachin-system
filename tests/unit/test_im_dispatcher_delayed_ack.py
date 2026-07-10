@@ -1,4 +1,4 @@
-﻿"""飞书 IM 延时安抚：寒暄不触发，默认 40s。"""
+"""飞书 IM 延时安抚：寒暄不触发，默认 40s。"""
 from __future__ import annotations
 
 from l3_node.im_channels.dispatcher import (

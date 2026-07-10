@@ -1,12 +1,12 @@
-[package]
+﻿[package]
 name = "jachin-desktop"
-version = "0.9.107"
+version = "0.9.108"
 description = "Jachin-System Desktop Console"
 authors = ["Jachin Team"]
 license = ""
 repository = ""
 edition = "2021"
-# 与 [[bin]] jachin-updater-helper 并存时须指定默认目标，否则 `cargo run` / `tauri dev` 报错
+# 涓?[[bin]] jachin-updater-helper 骞跺瓨鏃堕』鎸囧畾榛樿鐩爣锛屽惁鍒?`cargo run` / `tauri dev` 鎶ラ敊
 default-run = "jachin-desktop"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -56,7 +56,7 @@ path = "src/bin/jachin_updater_helper.rs"
 [features]
 default = []
 tts-local = ["dep:ort", "dep:ndarray"]
-# 全天候陪伴：cpal + 重采样(rubato) + Silero-VAD(ort) + 线程通道(crossbeam-channel)
+# 鍏ㄥぉ鍊欓櫔浼达細cpal + 閲嶉噰鏍?rubato) + Silero-VAD(ort) + 绾跨▼閫氶亾(crossbeam-channel)
 ambient = ["dep:cpal", "dep:rubato", "dep:ort", "dep:ndarray", "dep:crossbeam-channel", "dep:hound"]
 # This feature is used for production builds or when `devPath` points to the filesystem
 # DO NOT REMOVE!!

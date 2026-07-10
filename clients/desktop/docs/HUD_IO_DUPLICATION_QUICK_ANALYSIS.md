@@ -1,8 +1,8 @@
-﻿# HUD 临时交互窗 — 输入/输出重复与乱序快速分析
+# HUD 临时交互窗 — 输入/输出重复与乱序快速分析
 
-> **状态**：问题分析稿 v2（不含代码实现）  
-> **关联**：`VOICE_COMPANION_MODULE_PLAN.md`（目标态设计）、`HUDMessagePanel.tsx`（现状实现）  
-> **现象参考**：同一句用户话（如「我不跟你说了」）出现 3 条；助手回复出现结巴式重复 + 多条几乎相同的全文气泡。  
+> **状态**：问题分析稿 v2（不含代码实现）
+> **关联**：`VOICE_COMPANION_MODULE_PLAN.md`（目标态设计）、`HUDMessagePanel.tsx`（现状实现）
+> **现象参考**：同一句用户话（如「我不跟你说了」）出现 3 条；助手回复出现结巴式重复 + 多条几乎相同的全文气泡。
 > **v2 补充要点**：sendQuick 发出后 user 气泡永远不显示、`registerUserInputHandler` 触发时机误区、`voiceSessionActive` 门锁造成流式输出完全沉默、`voiceSessionStore` 与 HUD React state 双头维护、`activeRunId` 陈旧闭包、HUD WS 被 chat WS 的 register 系列覆盖等共 6 处新漏洞。
 
 ---
@@ -56,7 +56,7 @@ HUD（`hud_panel` / `SYSTEM.HUD.V2`）的设计目标是 **临时、轻量、单
 | `hud-panel-message` | `--jachin-voice-sim` 助手角色模拟 | assistant（带 title 前缀） |
 | `hud-voice-session` | 语音会话开始/结束 | 仅改 `voiceSessionActive`，不直接写气泡 |
 
-哨兵通知（`show_sentry_toast_inner`）**已刻意与 HUD 解耦**（注释写明避免「实时陪伴/回复完成」回灌）。  
+哨兵通知（`show_sentry_toast_inner`）**已刻意与 HUD 解耦**（注释写明避免「实时陪伴/回复完成」回灌）。
 因此 **当前 assistant 重复主要不是哨兵路径**，而是 **B + D + E 的组合**，以及 **listener 重复触发**。
 
 ### 2.3 与主聊天窗（chat）的并行关系
@@ -93,7 +93,7 @@ const sensory = useSensoryWebSocket({ desktopSessionIdRef: sessionRef });
 
 > STT 后 **立刻上屏 HUD**，再 `sendInput` 进 L3
 
-若实现时 **既** 通过 Tauri 事件上屏 **又** 在 `sendInput` 里触发 `registerUserInputHandler` 上屏，**同一句 user 必然双份**。  
+若实现时 **既** 通过 Tauri 事件上屏 **又** 在 `sendInput` 里触发 `registerUserInputHandler` 上屏，**同一句 user 必然双份**。
 再叠加 listener 重复（见根因 C），就会出现 **3 条**。
 
 **现状代码对应关系**
@@ -131,8 +131,8 @@ useEffect(() => {
 
 这是典型的 React 流式 UI 反模式，会导致：
 
-1. **第一个 chunk 到达时** `streamingAssistantId === null` → 创建气泡 #1  
-2. `setStreamingAssistantId` 尚未 commit → **第二个 chunk 仍看到 null** → 创建气泡 #2  
+1. **第一个 chunk 到达时** `streamingAssistantId === null` → 创建气泡 #1
+2. `setStreamingAssistantId` 尚未 commit → **第二个 chunk 仍看到 null** → 创建气泡 #2
 3. effect 因 state 变化反复重注册 handler → 与 `streamAccRef` 累加器交错 → **单条内结巴**（`mergeStreamChunk` 的 prev 与 UI 气泡内容不同步）
 
 `streamChunkMerge.ts` 的注释已说明误用会出「用户用户用户说」式结巴；HUD 当前用法 **正好触发该注释描述的场景**。
@@ -151,7 +151,7 @@ useEffect(() => {
 </React.StrictMode>
 ```
 
-HUD 内多个 `useEffect` 采用「`listen().then(fn => unlisten = fn)` + `disposed` 标志」模式。  
+HUD 内多个 `useEffect` 采用「`listen().then(fn => unlisten = fn)` + `disposed` 标志」模式。
 在 **开发模式 StrictMode 双挂载** 或 **依赖项频繁变化**（如 `voiceSessionActive` 切换导致 handler effect 重建）时，存在竞态：
 
 - cleanup 执行时 `unlisten` 仍为 `undefined`（listen 尚未 resolve）
@@ -196,12 +196,12 @@ if (!voiceSessionActive) return;  // chunk / answer / userInput handler 均如�
 | chat (`chat.tsx`) | 用户会话 UUID（持久化） | 实例 #1 |
 | HUD (`HUDMessagePanel`) | `hud-panel-${Date.now()}`（每次加载新建） | 实例 #2 |
 
-L3 `ws_server.py` 按 `chat_id` / `session_id` 分区会话。  
+L3 `ws_server.py` 按 `chat_id` / `session_id` 分区会话。
 **一次只在 chat 发起的 run，其 chunk/answer 不会自动出现在 HUD 的 session 上。**
 
 于是出现两种「离谱」极端：
 
-1. **HUD 空回复 / 只有 user**：话是从 chat 发的，HUD 等 WS 但等不到  
+1. **HUD 空回复 / 只有 user**：话是从 chat 发的，HUD 等 WS 但等不到
 2. **HUD 重复回复**：Rust 事件灌一条 + HUD 自己又 `sendInput` 收到一条 + chunk 乱流再多条
 
 这与 JVS 方案 §1.3「桌面端负责缝合」冲突——**缝合层尚未实现**，HUD 与 chat 各写各的。
@@ -212,7 +212,7 @@ L3 `ws_server.py` 按 `chat_id` / `session_id` 分区会话。
 
 目标态（`VOICE_COMPANION_MODULE_PLAN.md` §7.2、验收 §597-598）要求：
 
-- 单条 assistant 气泡内流式增长  
+- 单条 assistant 气泡内流式增长
 - **无重复全文、无哨兵标题污染**
 
 现状缺失：
@@ -244,9 +244,9 @@ L3 `ws_server.py` 按 `chat_id` / `session_id` 分区会话。
 
 ### Phase 0 — 先定规则（1 天内可共识）
 
-1. **Single Writer 原则**：每一轮对话 **只有一个模块** 有权往 HUD `messages[]` 写 user/assistant（建议：`voiceOrchestrator` 或等价中枢，见 JVS 方案 §2 目录结构）。  
-2. **Single Session 原则**：HUD 不单独维护 `hud-panel-*` session；语音轮次 **复用 chat 当前 session_id**，或 run 级 id 由 orchestrator 显式下发。  
-3. **禁止双写 user**：STT/模拟事件 **要么** 只通知 orchestrator **要么** 只触发一次 `sendInput`，**不可两者各 append 一次**。  
+1. **Single Writer 原则**：每一轮对话 **只有一个模块** 有权往 HUD `messages[]` 写 user/assistant（建议：`voiceOrchestrator` 或等价中枢，见 JVS 方案 §2 目录结构）。
+2. **Single Session 原则**：HUD 不单独维护 `hud-panel-*` session；语音轮次 **复用 chat 当前 session_id**，或 run 级 id 由 orchestrator 显式下发。
+3. **禁止双写 user**：STT/模拟事件 **要么** 只通知 orchestrator **要么** 只触发一次 `sendInput`，**不可两者各 append 一次**。
 4. **流式 state 用 ref 不用 state 驱动 effect**（根因 B 的对策）。
 
 ### Phase 1 — 止血（最小改动面，优先消除截图级问题）
@@ -262,18 +262,18 @@ L3 `ws_server.py` 按 `chat_id` / `session_id` 分区会话。
 
 按 `VOICE_COMPANION_MODULE_PLAN.md` 落地：
 
-1. `voiceOrchestrator.ts` 成为 **唯一** STT → HUD 展示 → `sendInput(L3)` → chunk → HUD 流式 → TTS 的编排点  
-2. Rust 仅发 **控制面** 事件（`hud-voice-session`、PTT 状态），**不再** 直接 `hud-panel-message` 灌业务正文（模拟脚本改为调 orchestrator API）  
-3. HUD 组件 **退化为纯展示**：订阅 orchestrator store，不再自己 `useSensoryWebSocket`  
+1. `voiceOrchestrator.ts` 成为 **唯一** STT → HUD 展示 → `sendInput(L3)` → chunk → HUD 流式 → TTS 的编排点
+2. Rust 仅发 **控制面** 事件（`hud-voice-session`、PTT 状态），**不再** 直接 `hud-panel-message` 灌业务正文（模拟脚本改为调 orchestrator API）
+3. HUD 组件 **退化为纯展示**：订阅 orchestrator store，不再自己 `useSensoryWebSocket`
 4. chat 历史与 HUD 显示 **同源**（方案 §6.1：「主聊天历史与 HUD 共用同一 user 消息，避免双份」）
 
 ### Phase 3 — 验收（对应 JVS 文档 §597+）
 
-- [ ] 用户说/输入一次 → HUD **仅 1 条** user 气泡  
-- [ ] L3 回复 → HUD **仅 1 条** assistant 气泡内流式增长，无结巴、无第二遍全文  
-- [ ] 连续 3 轮对话，`messages.length` 符合预期（≤ `MAX_MESSAGES`，无幽灵重复）  
-- [ ] 开发模式 StrictMode 下重复次数 = 生产模式  
-- [ ] chat 与 HUD 内容一致，session 查询 L3 只有一条 run  
+- [ ] 用户说/输入一次 → HUD **仅 1 条** user 气泡
+- [ ] L3 回复 → HUD **仅 1 条** assistant 气泡内流式增长，无结巴、无第二遍全文
+- [ ] 连续 3 轮对话，`messages.length` 符合预期（≤ `MAX_MESSAGES`，无幽灵重复）
+- [ ] 开发模式 StrictMode 下重复次数 = 生产模式
+- [ ] chat 与 HUD 内容一致，session 查询 L3 只有一条 run
 
 ---
 
@@ -281,16 +281,16 @@ L3 `ws_server.py` 按 `chat_id` / `session_id` 分区会话。
 
 ### 6.1 用户气泡重复
 
-1. DevTools → HUD webview → 数 `listen("hud-panel-user-message")` 注册次数（应在日志中打 `[HUD] listener registered` 一类标记，**当前无**，建议 Phase 1 加）  
-2. 发一句话，看 L3 log / `l3_debug.log` 有几次 `intent` 且 `session_id` 是否多个  
-3. 若 3 次 intent、1 个 session → 前端 listener 或 handler 三重触发  
+1. DevTools → HUD webview → 数 `listen("hud-panel-user-message")` 注册次数（应在日志中打 `[HUD] listener registered` 一类标记，**当前无**，建议 Phase 1 加）
+2. 发一句话，看 L3 log / `l3_debug.log` 有几次 `intent` 且 `session_id` 是否多个
+3. 若 3 次 intent、1 个 session → 前端 listener 或 handler 三重触发
 4. 若 1 次 intent、3 个 session → chat/HUD 各发 + 模拟脚本重复
 
 ### 6.2 助手气泡重复 / 结巴
 
-1. 观察重复气泡内容是否 **完全相同**（全文重复 → append/事件重复）还是 **递进片段**（流式多气泡 → 根因 B）  
-2. 单条内结巴 → 查 chunk 是 delta 还是 cumulative；对照 `streamChunkMerge.ts`  
-3. 查 L3 WS 帧是否 `hadStreamChunks` 与 HUD answer handler 是否仍 append  
+1. 观察重复气泡内容是否 **完全相同**（全文重复 → append/事件重复）还是 **递进片段**（流式多气泡 → 根因 B）
+2. 单条内结巴 → 查 chunk 是 delta 还是 cumulative；对照 `streamChunkMerge.ts`
+3. 查 L3 WS 帧是否 `hadStreamChunks` 与 HUD answer handler 是否仍 append
 
 ### 6.3 建议日志锚点（实现 Phase 1 时）
 
@@ -326,7 +326,7 @@ L3 `ws_server.py` 按 `chat_id` / `session_id` 分区会话。
 
 ### 补充根因 G：`sendQuick` 发出后 user 气泡永远不出现（高概率复现）
 
-`sendQuick` 调用 `sendInput(text)`，而 `sendInput` 内部会触发 `onUserInputRef.current?.(intentTrim, { source: "local" })`。  
+`sendQuick` 调用 `sendInput(text)`，而 `sendInput` 内部会触发 `onUserInputRef.current?.(intentTrim, { source: "local" })`。
 HUD 的 `registerUserInputHandler` 会接到这次回调，**但回调内的第一行是**：
 
 ```typescript
@@ -355,7 +355,7 @@ v1 将 `registerUserInputHandler` 列为「路径 C：`sendInput` 内部触发�
 1. **WS `mirror_input` 帧**：L3 推送的 Lark 镜像输入（`source: "mirror"`）
 2. **`sendInput` 本地发送成功后**（`source: "local"`）
 
-HUD 的 `useSensoryWebSocket` 是一个**独立 WS 实例**，挂着 `hud-panel-*` session。  
+HUD 的 `useSensoryWebSocket` 是一个**独立 WS 实例**，挂着 `hud-panel-*` session。
 当用户通过 HUD 底部输入框 `sendInput` 时：
 
 - HUD WS 向 L3 发出 intent，同时本地调 `onUserInputRef.current?.(text, { source: "local" })`
@@ -394,7 +394,7 @@ v1 提到 `voiceSessionActive` 门槛不一致，但没有分析**这个值多�
 
 ### 补充根因 J：`voiceSessionStore`（`voice/voiceSessionStore.ts`）与 HUD React state `voiceSessionActive` 是两套互不知情的状态
 
-`voiceOrchestrator.ts` 通过 `voiceSessionStore.setState()` 管理语音会话状态（idle / listening / thinking / speaking / error）。  
+`voiceOrchestrator.ts` 通过 `voiceSessionStore.setState()` 管理语音会话状态（idle / listening / thinking / speaking / error）。
 HUD 使用的是完全独立的 `const [voiceSessionActive, setVoiceSessionActive] = useState(false)`。
 
 两者之间**没有任何订阅关系**：
@@ -483,7 +483,7 @@ L3 `ws_server.py` 按 `session_id` 分区回复——只有 `chat_id`（即 `ses
 
 ## 8. 一句话结论
 
-HUD 输入/输出「离谱」的根因不是某个按钮或某行 CSS，而是 **缺少统一的 utterance 编排层**：  
-**5 条独立写入路径、2 套 L3 session、1 个有缺陷的流式 state 机、以及异步事件订阅竞态** 叠加，导致修局部永远漏全局。  
+HUD 输入/输出「离谱」的根因不是某个按钮或某行 CSS，而是 **缺少统一的 utterance 编排层**：
+**5 条独立写入路径、2 套 L3 session、1 个有缺陷的流式 state 机、以及异步事件订阅竞态** 叠加，导致修局部永远漏全局。
 
 **正确方向**是按 `VOICE_COMPANION_MODULE_PLAN.md` 让 `voiceOrchestrator` 成为唯一 writer，HUD 只做展示；在此之前，Phase 1 的 listener 去重 + 流式 ref 改造即可显著缓解截图中的三重 user 与多条 assistant 问题。

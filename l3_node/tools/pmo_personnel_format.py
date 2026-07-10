@@ -1,5 +1,5 @@
 ﻿"""
-PMO 人员任务矩阵 · 可读输出（Observation / 探针）。
+PMO 人员任务矩阵 · 可读输出（Verification evidence / 探针）。
 
 - 人员标题用【姓名】，不用 Markdown ``####``
 - 任务明细用 GFM 表（避免 CJK 与等宽空格错位）

@@ -1,4 +1,4 @@
-﻿"""
+"""
 TTS Models API - 供 Tier 3 获取 TTS 模型文件
 
 GET /api/v2/tts/models/{filename} 返回模型资源文件
@@ -26,7 +26,7 @@ def _models_dir() -> Path:
 async def get_model_file(filename: str):
     """
     获取 TTS 模型文件（供 Tier 3 桌面客户端下载）
-    
+
     支持: tts 模型文件白名单
     """
     if filename not in ALLOWED_FILES:

@@ -1,8 +1,4 @@
-"""
-ReAct 工具 Observation → 多模态 user 消息（text + image_url）。
-
-阶段一「视神经」：截图类 MCP 返回的图片注入下一轮 messages，触发 VL 模型路由。
-"""
+"""Convert WorkOrder observations into multimodal user messages."""
 from __future__ import annotations
 
 import base64
@@ -24,9 +20,9 @@ logger = logging.getLogger(__name__)
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024
 _MAX_IMAGES_PER_OBS = 2
 
-_REACT_OBSERVATION_VISION_HINT = (
-    "\n\n【截图观测】本条 Observation 附有工具返回的屏幕/页面截图（image_url），"
-    "请直接根据图像描述所见并继续 ReAct；不要声称无法读图或缺少视觉能力。"
+_ROLE_OBSERVATION_VISION_HINT = (
+    "\n\n【截图观测】本条 Verification evidence 附有工具返回的屏幕/页面截图（image_url），"
+    "请直接根据图像描述所见并继续 RoleExecutor；不要声称无法读图或缺少视觉能力。"
     "请勿仅因历史中的 http(s) 链接去调用网页抓取替代读图。"
 )
 
@@ -69,7 +65,7 @@ def _maybe_resize_image_bytes(data: bytes, mime: str) -> tuple[bytes, str]:
 
         return _maybe_resize_image(data, mime)
     except Exception as e:
-        logger.debug("[react_observation_vision] resize skip: %s", e)
+        logger.debug("[observation_vision_adapter] resize skip: %s", e)
         return data, mime or "image/png"
 
 
@@ -78,7 +74,7 @@ def _bytes_to_data_url(data: bytes, mime: str = "image/png") -> str | None:
         return None
     if len(data) > _MAX_IMAGE_BYTES:
         logger.warning(
-            "[react_observation_vision] 图片过大已跳过 bytes=%d max=%d",
+            "[observation_vision_adapter] 图片过大已跳过 bytes=%d max=%d",
             len(data),
             _MAX_IMAGE_BYTES,
         )
@@ -96,7 +92,7 @@ def _load_image_path_as_data_url(path_str: str) -> str | None:
         if not p.is_file():
             return None
         if p.stat().st_size > _MAX_IMAGE_BYTES:
-            logger.warning("[react_observation_vision] 路径图片过大: %s", p)
+            logger.warning("[observation_vision_adapter] 路径图片过大: %s", p)
             return None
         raw = p.read_bytes()
         mime = "image/png"
@@ -109,7 +105,7 @@ def _load_image_path_as_data_url(path_str: str) -> str | None:
             mime = "image/gif"
         return _bytes_to_data_url(raw, mime)
     except OSError as e:
-        logger.debug("[react_observation_vision] 读图失败 path=%s err=%s", p, e)
+        logger.debug("[observation_vision_adapter] 读图失败 path=%s err=%s", p, e)
         return None
 
 
@@ -205,7 +201,7 @@ def extract_observation_image_data_urls(
     tool_id: str,
 ) -> list[str]:
     """
-    从工具 Observation（含 MCP 多模态 JSON 信封）提取可送入 LLM 的 data URL 列表。
+    从工具 Verification evidence（含 MCP 多模态 JSON 信封）提取可送入 LLM 的 data URL 列表。
     """
     text, envelope_urls = parse_multimodal_observation_payload(observation_full)
     urls = [_normalize_data_url_for_llm(u) for u in envelope_urls]
@@ -222,7 +218,7 @@ def extract_observation_image_data_urls(
     return urls[:_MAX_IMAGES_PER_OBS]
 
 
-def build_react_observation_user_content(
+def build_observation_user_content(
     observation_text: str,
     tool_id: str,
     *,
@@ -231,7 +227,7 @@ def build_react_observation_user_content(
     """
     构建工具后写入 messages 的 user content。
 
-    followup_builder:  Callable[[str, str], str] — 通常为 agent_core._react_observation_followup_user_text
+    followup_builder:  Callable[[str, str], str] — 通常为 role executor follow-up builder
     """
     obs_full = str(observation_text or "")
     data_urls = extract_observation_image_data_urls(obs_full, tool_id)
@@ -244,14 +240,14 @@ def build_react_observation_user_content(
     else:
         short_obs = strip_huge_data_urls_from_text(obs_full)
     tail = followup_builder(short_obs, tool_id)
-    if _REACT_OBSERVATION_VISION_HINT not in tail:
-        tail = f"{tail}{_REACT_OBSERVATION_VISION_HINT}"
+    if _ROLE_OBSERVATION_VISION_HINT not in tail:
+        tail = f"{tail}{_ROLE_OBSERVATION_VISION_HINT}"
 
     parts: list[dict[str, Any]] = [{"type": "text", "text": tail}]
     for u in data_urls:
         parts.append({"type": "image_url", "image_url": {"url": u}})
     logger.info(
-        "[L3 Agent][react_observation_vision] tool=%s 已注入 %d 张截图到 Observation user 消息",
+        "[L3 Agent][observation_vision_adapter] tool=%s 已注入 %d 张截图到 Verification evidence user 消息",
         (tool_id or "")[:80],
         len(data_urls),
     )

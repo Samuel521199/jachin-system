@@ -1,4 +1,4 @@
-﻿"""BI SPA filters → actions：单时间段 / 对比页日期展开。"""
+"""BI SPA filters → actions：单时间段 / 对比页日期展开。"""
 from __future__ import annotations
 
 import unittest

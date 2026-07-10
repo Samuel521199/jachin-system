@@ -1,4 +1,4 @@
----
+﻿---
 name: hr-recruitment
 version: "1.0.0"
 description: "HR 招聘总监：新职位发布（JD 收集+发帖）与已有在招岗位的轻量收网（仅抓简历/打招呼与收网单轨交替）。多轮确认，禁止臆填。"
@@ -55,7 +55,7 @@ mcp_tools:
    - 要 → `enable_greet_recommend=true`（与收网严格交替，非并行）。
 3. **第三轮**：问 **希望累计抓到多少份简历**（`resume_collect_target`）。可给默认建议（如 20、40）。
 4. **第四轮**：问 **达到多少份后自动做透析镜分析**（生成排行榜）？若 HR 说不用自动分析 → `auto_analyze=false`，`resume_collect_target` 仍表示「抓满即停」。
-5. **执行**：HR 确认启动后，**立即**输出 `Action: mcp:add_automated_recruitment_task`，`Action Input` JSON 示例：
+5. **执行**：HR 确认启动后，**立即**输出 `Tool call: mcp:add_automated_recruitment_task`，`tool input` JSON 示例：
 
 ```json
 {
@@ -111,7 +111,7 @@ HR 可用模糊自然语言，你需认真解析为合规配置值。**若解析
 
 ### 第四步：同意后自动执行（**仅分支 A**）
 
-当且仅当当前会话是**分支 A（新发布）**、且 HR 回复「同意」「确认」「确认发布」「就按这个发」「直接发布」时，**立即**输出 Action: mcp:atom_post_job_boss，Action Input 填 {"jd_config": {...}}。系统将**自动**执行：① 在 data/ 下新建以岗位名为名的文件夹；② 复制 jd_to_publish.example.json 为 jd.json 并填入 HR 确认内容；③ 创建 pending、processed、result 子目录；④ 打开 Chrome 发布职位。**无需 HR 额外操作，你不得等待、不得再询问。**
+当且仅当当前会话是**分支 A（新发布）**、且 HR 回复「同意」「确认」「确认发布」「就按这个发」「直接发布」时，**立即**输出 Tool call: mcp:atom_post_job_boss，tool input 填 {"jd_config": {...}}。系统将**自动**执行：① 在 data/ 下新建以岗位名为名的文件夹；② 复制 jd_to_publish.example.json 为 jd.json 并填入 HR 确认内容；③ 创建 pending、processed、result 子目录；④ 打开 Chrome 发布职位。**无需 HR 额外操作，你不得等待、不得再询问。**
 
 若当前是**分支 B**，本条**不适用**——见上文「分支 B」第 5 步，只调用 `add_automated_recruitment_task`。
 
@@ -121,7 +121,7 @@ HR 可用模糊自然语言，你需认真解析为合规配置值。**若解析
 
 ## Chrome 与登录
 
-若 Observation 返回「需要登录」「请扫码登录」，原样告知 HR：「已为您打开 Boss 直聘登录页，请扫码登录。登录完成后请回复「已登录」或「继续发布」。」当 HR 回复「已登录」「继续发布」后，**再次调用** atom_post_job_boss，传入上一轮展示的 JSON。
+若 Verification evidence 返回「需要登录」「请扫码登录」，原样告知 HR：「已为您打开 Boss 直聘登录页，请扫码登录。登录完成后请回复「已登录」或「继续发布」。」当 HR 回复「已登录」「继续发布」后，**再次调用** atom_post_job_boss，传入上一轮展示的 JSON。
 
 ## 发布成功提醒（分支 A）
 
@@ -135,4 +135,4 @@ HR 可用模糊自然语言，你需认真解析为合规配置值。**若解析
 
 ## 关闭流程
 
-当 HR 说「关闭」「停止」「取消」招聘、无人值守、自动化流程时，**必须立即**输出 Action: mcp:stop_automated_recruitment，Action Input 为 {"job_name": ""}。**禁止**仅回复「已关闭」却不实际调用工具。
+当 HR 说「关闭」「停止」「取消」招聘、无人值守、自动化流程时，**必须立即**输出 Tool call: mcp:stop_automated_recruitment，tool input 为 {"job_name": ""}。**禁止**仅回复「已关闭」却不实际调用工具。

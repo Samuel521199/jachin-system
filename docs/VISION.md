@@ -1,6 +1,6 @@
 # Jachin System 产品愿景与身份设计
 
-**版本**: 1.0  
+**版本**: 1.0
 **定位**: 产品灵魂与需求总纲
 
 ---
@@ -118,9 +118,9 @@ Jachin System 是一个**本地优先、可无限扩展的 AI 智能体生态系
 | 数字资产 | SQLite 生物学记忆（v8.0 已废弃旧版云端关系库 + 独立向量栈） |
 | 云端能力 | Layer 1 Jachin Market、技能商店 |
 | 插件化扩展 | JPP 技能、WASM 沙箱 |
-| Agent 协同 | ReAct 循环、HTTP 心跳拉取 |
+| Agent 协同 | WorkOrder 循环、HTTP 心跳拉取 |
 
 ---
 
-**文档版本**: 1.0  
+**文档版本**: 1.0
 **维护者**: Jachin-System Team

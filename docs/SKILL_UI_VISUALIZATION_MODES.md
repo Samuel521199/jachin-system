@@ -30,7 +30,7 @@
 
 - **适用**：不需要表单、仅由模型在气泡里说明即可；或工具尚未接前端面板。
 - **实现**：**不要**在 `SKILL_UI_REGISTRY` 中注册该工具名。
-- **表现**：未注册时，未解决的 `tool_call` 会走 **LegacyToolCallPlaceholder**（转圈 +「正在执行工具」类文案），不渲染 Markdown 正文，避免与后台状态冲突。
+- **表现**：未注册时，未解决的 `tool_call` 会走 **ArchivedToolCallPlaceholder**（转圈 +「正在执行工具」类文案），不渲染 Markdown 正文，避免与后台状态冲突。
 
 ---
 

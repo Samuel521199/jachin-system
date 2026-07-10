@@ -1,15 +1,15 @@
-﻿"""
+"""
 终端 / WebSocket 每轮用户提问的本地调试日志：**默认每次新对话单独一个文件**（不覆盖）。
 
 文件名形如 ``terminal_turn_20260410T083905Z_ab12cd_ef4091a2.log``（UTC 时间 + run_id 摘要 + 随机后缀），
-与当轮内所有 ``append_*`` / ReAct 轨迹写入同一文件。多 WebSocket 并发时按 asyncio 任务隔离路径
+与当轮内所有 ``append_*`` / RoleExecutionAgent 轨迹写入同一文件。多 WebSocket 并发时按 asyncio 任务隔离路径
 （``contextvars``），避免互相串写。
 
 **人类可读分区**（搜索 ``【人类可读】``）：
 - 会话导读：用户问了什么、渠道、最多几轮
 - 按轮展开：模型在想什么 → 调什么工具、在哪执行 → 返回摘要
 - 会话复盘：共几轮、用了哪些工具、最终回答、效果简述
-- 其下 ``[ReAct 第 N 轮]`` 等为技术细节（完整 JSON / Observation）
+- 其下 ``[RoleExecutionAgent 第 N 轮]`` 等为技术细节（完整 JSON / Verification evidence）
 
 若需恢复旧行为（始终写入并覆盖 ``terminal_turn_debug.log``），设置
 ``JACHIN_TERMINAL_DEBUG_OVERWRITE=1``。
@@ -46,7 +46,7 @@ _ENV_KEYS_FOR_SNAPSHOT = (
     "JACHIN_LLM_COMPLEX_DISABLE",
     "JACHIN_L3_DEEP_LOG",
     "JACHIN_TERMINAL_DEBUG_LOG",
-    "JACHIN_REACT_STREAM_DISABLE_TOOLS",
+    "JACHIN_ROLE_EXECUTION_STREAM_DISABLE_TOOLS",
     "JACHIN_TERMINAL_DEBUG_MAX_CHARS",
     "JACHIN_TERMINAL_DEBUG_STREAM_MAX",
     "JACHIN_TERMINAL_DEBUG_OVERWRITE",
@@ -59,7 +59,7 @@ _turn_log_by_lark_chat: dict[str, Path] = {}
 # 当前仍在执行的顶层用户 turn。内部线程/任务若丢失 contextvar，可在只有一个活跃 turn
 # 时安全落回同一日志文件，避免把同一用户请求拆成多个 orphan 文件。
 _active_turn_paths: dict[Path, int] = {}
-_LEGACY_FILE_NAME = "terminal_turn_debug.log"
+_ARCHIVED_FILE_NAME = "terminal_turn_debug.log"
 # 当前 asyncio 任务对应的日志文件（per-turn 模式）；单文件模式不使用
 _turn_log_path: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
     "jachin_terminal_turn_log_path",
@@ -221,8 +221,8 @@ def _dir() -> Path:
     return Path.home() / ".jachin" / "terminal_debug"
 
 
-def _legacy_path() -> Path:
-    return _dir() / _LEGACY_FILE_NAME
+def _archived_path() -> Path:
+    return _dir() / _ARCHIVED_FILE_NAME
 
 
 def _lazy_orphan_turn_path() -> Path:
@@ -253,7 +253,7 @@ def _path() -> Path | None:
     if not _enabled():
         return None
     if _single_file_overwrite_mode():
-        return _legacy_path()
+        return _archived_path()
     p = _turn_log_path.get()
     if p is not None:
         return p
@@ -510,7 +510,7 @@ def _append_human_block(lines: list[str]) -> None:
 def _tool_where_line(tool_id: str, *, mcp: bool = False) -> str:
     tid = (tool_id or "").strip()
     if tid == "delegate":
-        return "子 Agent 编排（宿主内再开一轮 ReAct）"
+        return "子 Agent 编排（宿主内再开一轮 RoleExecutionAgent）"
     if tid.startswith("core:"):
         hint = _TOOL_WHERE_HINTS.get(tid, "宿主本机 Python 执行（Native 工具）")
         return f"{hint} · 路径：L3 进程内 run_tool"
@@ -522,8 +522,8 @@ def _tool_where_line(tool_id: str, *, mcp: bool = False) -> str:
     return "工具运行时"
 
 
-def _brief_action_input(tool_id: str, action_input: str, *, max_len: int = 900) -> str:
-    raw = (action_input or "").strip()
+def _brief_work_order_input(tool_id: str, work_order_input: str, *, max_len: int = 900) -> str:
+    raw = (work_order_input or "").strip()
     if not raw:
         return "（无参数）"
     tid = (tool_id or "").strip()
@@ -583,9 +583,9 @@ def _write_human_session_intro(j: _HumanJournal) -> None:
         "",
         "【系统怎么接这个活】",
         "  先进入 Cognitive Kernel 主循环做理解、状态/记忆读取、裁决与授权。",
-        "  低风险明确任务可能走 cognitive_kernel_direct_mainline 直接执行；复杂或未命中任务会交给 TextReasoningAgent 文本角色循环。",
+        "  低风险明确任务可能走 cognitive_kernel_direct_mainline 直接执行；复杂或未命中任务会交给 RoleExecutionAgent 文本角色循环。",
         f"  · 来源渠道：{ch_human}",
-        f"  · TextReasoningAgent 最大轮数：{max_it} 轮（若走 direct mainline，可能为 0 轮）",
+        f"  · RoleExecutionAgent 最大轮数：{max_it} 轮（若走 direct mainline，可能为 0 轮）",
     ]
     if j.run_id:
         lines.append(f"  · 运行 ID：{j.run_id}")
@@ -612,7 +612,7 @@ def _write_human_session_intro(j: _HumanJournal) -> None:
             "",
             "【日志怎么读】",
             "  先看「Cognitive Kernel 主循环」分区：输入/状态/记忆 → 会审/裁决/工单 → 执行/验证/闭环。",
-            "  如果本轮进入 TextReasoningAgent，再看「第 1 轮 / 第 2 轮 …」以及 [ReAct 第 N 轮] 技术分区（该标签仅代表内部工具协议格式）。",
+            "  如果本轮进入 RoleExecutionAgent，再看「第 1 轮 / 第 2 轮 …」以及 [RoleExecutionAgent 第 N 轮] 技术分区（该标签仅代表内部工具协议格式）。",
             "",
         ]
     )
@@ -800,12 +800,12 @@ def _write_human_session_recap(j: _HumanJournal) -> None:
         [
             "【一共跑了几轮】",
             (
-                f"  共 {n_rounds} 轮 TextReasoningAgent 工具协议步骤。"
+                f"  共 {n_rounds} 轮 RoleExecutionAgent 工具协议步骤。"
                 if n_rounds
                 else (
-                    "  共 0 轮 TextReasoningAgent 步骤；本轮由 Cognitive Kernel direct mainline 直接完成。"
+                    "  共 0 轮 RoleExecutionAgent 步骤；本轮由 Cognitive Kernel direct mainline 直接完成。"
                     if tools
-                    else "  共 0 轮 TextReasoningAgent 步骤；本轮未进入文本角色工具循环。"
+                    else "  共 0 轮 RoleExecutionAgent 步骤；本轮未进入文本角色工具循环。"
                 )
             ),
             "",
@@ -823,7 +823,7 @@ def _write_human_session_recap(j: _HumanJournal) -> None:
         preview = _truncate(ans.replace("\n", "\n  "), 4000)
         lines.append(f"  {preview}")
     else:
-        lines.append("  （未捕获 Final Answer，见技术区 [本轮结束]）")
+        lines.append("  （未捕获 User-facing result，见技术区 [本轮结束]）")
     lines.extend(["", "【效果简述】"])
     if j.end_tag and "exception" in j.end_tag.lower():
         lines.append("  运行异常结束，请查看技术区错误栈。")
@@ -939,7 +939,7 @@ def reset_stream_accumulator() -> None:
 
 
 def begin_turn(user_text: str, *, extra: dict[str, Any] | None = None) -> None:
-    """新一轮用户提问：新建日志文件并写文件头（默认每轮独立文件；单文件模式则覆盖 legacy 文件）。"""
+    """新一轮用户提问：新建日志文件并写文件头（默认每轮独立文件；单文件模式则覆盖 archived 文件）。"""
     if not _enabled():
         return
     _mark_turn_inactive(_turn_log_path.get())
@@ -986,7 +986,7 @@ def begin_turn(user_text: str, *, extra: dict[str, Any] | None = None) -> None:
         root = _dir()
         root.mkdir(parents=True, exist_ok=True)
         if _single_file_overwrite_mode():
-            p = _legacy_path()
+            p = _archived_path()
             _turn_log_path.set(None)
             lines[0] = f"=== terminal turn debug | log_path={p.name} (overwrite) ==="
         else:
@@ -1477,7 +1477,7 @@ def flush_stream_summary() -> None:
     append_section(f"[流式输出累计全文] {note}", blob)
 
 
-def log_react_iteration_start(
+def log_role_execution_iteration_start(
     iteration: int,
     trace: str,
     *,
@@ -1500,12 +1500,12 @@ def log_react_iteration_start(
             )
         except Exception:
             body += f"\n\ncontext={context!r}"
-    append_section(f"[ReAct 第 {iteration} 轮] 开始", body)
+    append_section(f"[RoleExecutionAgent 第 {iteration} 轮] 开始", body)
 
 
 def log_llm_assistant_raw(iteration: int, trace: str, response: str) -> None:
     append_section(
-        f"[ReAct 第 {iteration} 轮] 模型完整输出（含 Thought / Action / Final Answer 等，未截断）",
+        f"[RoleExecutionAgent 第 {iteration} 轮] 模型完整输出（含 Reasoning / WorkOrder / User-facing result 等，未截断）",
         f"trace={trace}\n\n{response or ''}",
     )
 
@@ -1549,7 +1549,7 @@ def log_llm_round_summary(
         body = json.dumps(meta, ensure_ascii=False, indent=2)
     except Exception:
         body = repr(meta)
-    append_section(f"[ReAct 第 {iteration} 轮] LLM 调用摘要", body)
+    append_section(f"[RoleExecutionAgent 第 {iteration} 轮] LLM 调用摘要", body)
 
 
 def log_tool_dispatch_summary(
@@ -1560,7 +1560,7 @@ def log_tool_dispatch_summary(
     mcp: bool,
     elapsed_ms: float,
     output_len: int,
-    action_input_len: int,
+    work_order_input_len: int,
     used_foreground_timeout: bool,
     sync_timeout_sec: float | None,
 ) -> None:
@@ -1570,7 +1570,7 @@ def log_tool_dispatch_summary(
         "tool_id": tool,
         "mcp": mcp,
         "elapsed_ms": round(elapsed_ms, 2),
-        "action_input_len": action_input_len,
+        "work_order_input_len": work_order_input_len,
         "output_len": output_len,
         "foreground_timeout_enforced": used_foreground_timeout,
         "sync_timeout_sec": sync_timeout_sec,
@@ -1579,7 +1579,7 @@ def log_tool_dispatch_summary(
         body = json.dumps(meta, ensure_ascii=False, indent=2)
     except Exception:
         body = repr(meta)
-    append_section(f"[ReAct 第 {iteration} 轮] 工具调度完成（耗时与通道）", body)
+    append_section(f"[RoleExecutionAgent 第 {iteration} 轮] 工具调度完成（耗时与通道）", body)
     try:
         j = _journal()
         if j is not None:
@@ -1593,7 +1593,7 @@ def log_tool_dispatch_summary(
                 f"  耗时：{elapsed_ms:.0f} ms",
                 f"  通道：{'MCP' if mcp else 'Native'}",
                 f"  说明：{where}",
-                f"  返回数据约 {output_len} 字（详见下方 Observation）",
+                f"  返回数据约 {output_len} 字（详见下方 Verification evidence）",
             ])
     except Exception:
         pass
@@ -1601,7 +1601,7 @@ def log_tool_dispatch_summary(
 
 def log_event(iteration: int | None, title: str, detail: str) -> None:
     """通用打点：iteration 可为 None 表示与轮次无关。"""
-    tag = f"[{title}]" if iteration is None else f"[ReAct 第 {iteration} 轮] {title}"
+    tag = f"[{title}]" if iteration is None else f"[RoleExecutionAgent 第 {iteration} 轮] {title}"
     append_section(tag, detail)
 
 
@@ -1624,12 +1624,12 @@ def log_parsed_action_detail(
             raw = repr(parsed)
     lines = [f"trace={trace or '(n/a)'}", f"summary={summary or '(empty)'}"]
     if (thought_excerpt or "").strip():
-        lines.append("--- Thought 节选 ---")
+        lines.append("--- Reasoning 节选 ---")
         lines.append(_truncate(_redact(thought_excerpt.strip()), 24_000))
     lines.append("--- raw parsed ---")
     lines.append(raw)
     body = "\n".join(lines)
-    append_section(f"[ReAct 第 {iteration} 轮] 解析结果 parsed_action", body)
+    append_section(f"[RoleExecutionAgent 第 {iteration} 轮] 解析结果 parsed_action", body)
     try:
         j = _journal()
         if j is not None:
@@ -1646,7 +1646,7 @@ def log_parsed_action_detail(
                     human_lines = [
                         "",
                         "【模型在想什么】",
-                        f"  {rd.thought or '（本轮回合未单独写出 Thought）'}",
+                        f"  {rd.thought or '（本轮回合未单独写出 Reasoning）'}",
                         "",
                         "【这一步决定做什么】",
                         f"  {rd.decision}",
@@ -1664,7 +1664,7 @@ def log_parsed_action_detail(
                     human_lines = [
                         "",
                         "【模型在想什么】",
-                        f"  {rd.thought or '（本轮回合未单独写出 Thought）'}",
+                        f"  {rd.thought or '（本轮回合未单独写出 Reasoning）'}",
                         "",
                         "【这一步决定做什么】",
                         f"  {rd.decision}",
@@ -1680,7 +1680,7 @@ def log_parsed_action_detail(
                     _append_human_block([
                         "",
                         "【模型在想什么】",
-                        f"  {rd.thought or '（未写 Thought）'}",
+                        f"  {rd.thought or '（未写 Reasoning）'}",
                         "",
                         "【这一步决定做什么】",
                         f"  {rd.decision}",
@@ -1689,15 +1689,15 @@ def log_parsed_action_detail(
         pass
 
 
-def log_tool_call_full(iteration: int, tool: str, action_input: str, *, note: str = "") -> None:
-    body = f"tool_id={tool or ''}\n{note}\n\n--- Action Input 全文 ---\n{action_input or ''}"
-    append_section(f"[ReAct 第 {iteration} 轮] 工具调用（完整入参）", body)
+def log_tool_call_full(iteration: int, tool: str, work_order_input: str, *, note: str = "") -> None:
+    body = f"tool_id={tool or ''}\n{note}\n\n--- tool input 全文 ---\n{work_order_input or ''}"
+    append_section(f"[RoleExecutionAgent 第 {iteration} 轮] 工具调用（完整入参）", body)
     try:
         j = _journal()
         if j is not None:
             rd = j.current_round(iteration)
             rd.tool_id = tool or rd.tool_id
-            rd.tool_input_brief = _brief_action_input(tool, action_input)
+            rd.tool_input_brief = _brief_work_order_input(tool, work_order_input)
             if tool and tool not in j.tools_used:
                 j.tools_used.append(tool)
             _append_human_block([
@@ -1722,8 +1722,8 @@ def log_observation_full(
         note += f"\n截断后供 LLM 长度={sent_to_llm_len}（原始 {truncated_from_len}）"
     else:
         note += f"\n传入 LLM 的 observation 长度={sent_to_llm_len}"
-    body = f"{note}\n\n--- Observation 全文（写入日志前未做截断） ---\n{observation_full or ''}"
-    append_section(f"[ReAct 第 {iteration} 轮] 工具返回 Observation", body)
+    body = f"{note}\n\n--- Verification evidence 全文（写入日志前未做截断） ---\n{observation_full or ''}"
+    append_section(f"[RoleExecutionAgent 第 {iteration} 轮] 工具返回 Verification evidence", body)
     try:
         j = _journal()
         if j is not None:
@@ -1734,7 +1734,7 @@ def log_observation_full(
                 "【工具返回了什么（人话摘要）】",
                 f"  {rd.observation_brief}",
                 "",
-                "  → 以上内容会作为「Observation」喂回模型，进入下一轮推理。",
+                "  → 以上内容会作为「Verification evidence」喂回模型，进入下一轮推理。",
             ])
     except Exception:
         pass

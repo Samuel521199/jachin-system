@@ -1,4 +1,4 @@
-﻿"""MCP 配置 env 中 ${VAR} 展开。"""
+"""MCP 配置 env 中 ${VAR} 展开。"""
 
 import os
 

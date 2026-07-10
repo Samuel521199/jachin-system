@@ -1,6 +1,6 @@
 # Jachin 项目文件结构
 
-**版本**: V2 (2026-03)  
+**版本**: V2 (2026-03)
 **基准**: [ARCHITECTURE.md](./ARCHITECTURE.md)
 
 ---
@@ -84,7 +84,7 @@ clients/desktop/
     └── stt/, tts/        # 语音
 
 l3_node/
-├── agent_core.py         # ReAct Agent
+├── agent_core.py         # Cognitive Kernel chat transport / RoleExecutor entry
 ├── bootstrap.py          # 注册、拉 Key、skill_sync、mcp_sync
 ├── llm_client.py         # LiteLLM 直连
 ├── skill_sync.py         # 从 L2 拉取技能到 l3_skill_cache

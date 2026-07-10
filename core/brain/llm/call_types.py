@@ -114,28 +114,28 @@ class CallResponse:
 
 class CallHandler(ABC):
     """调用处理器抽象基类"""
-    
+
     @abstractmethod
     async def handle(self, request: CallRequest) -> Union[CallResponse, AsyncIterator[str]]:
         """
         处理调用请求
-        
+
         Args:
             request: 调用请求
-            
+
         Returns:
             调用响应或流式迭代器
         """
         pass
-    
+
     @abstractmethod
     def supports(self, call_type: CallType) -> bool:
         """
         检查是否支持某种调用方式
-        
+
         Args:
             call_type: 调用方式
-            
+
         Returns:
             是否支持
         """

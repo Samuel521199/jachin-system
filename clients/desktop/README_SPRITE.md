@@ -109,7 +109,7 @@ npm run tauri:build
 
 ### 问题3: Rive 动画不显示
 
-**解决方案**: 
+**解决方案**:
 1. 检查 `public/jachin_sprite.riv` 文件是否存在
 2. 检查状态机名称是否匹配
 3. 查看浏览器控制台错误信息

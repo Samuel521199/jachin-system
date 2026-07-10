@@ -1,4 +1,4 @@
-﻿"""
+"""
 PMO 飞书会话 chat_id 与项目根 ``.env`` 加载 SSOT。
 
 **打包机配置（与 Jachin Desktop.exe 同级 ``.env``）** 建议填写：

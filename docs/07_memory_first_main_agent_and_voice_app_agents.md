@@ -1,8 +1,8 @@
 # 07 Jarvis 目标下的记忆优先认知内核与角色化 Agent 网络设计
 
-生成时间：2026-07-08  
-文档性质：设计规格，不涉及代码改动  
-项目目标：把 Jachin 逐步建设成类似钢铁侠 Jarvis 的智能 AI 助手  
+生成时间：2026-07-08
+文档性质：设计规格，不涉及代码改动
+项目目标：把 Jachin 逐步建设成类似钢铁侠 Jarvis 的智能 AI 助手
 适用范围：语音输入、文字输入、桌面 APP 控制、闲聊、复杂任务拆分、角色化 Agent 编排、环境感知、记忆检索、认知内核提示词设计
 
 ## 0. 总目标：Jachin 要成为 Jarvis 型助手
@@ -169,12 +169,12 @@ TurnClosure
 
 
 
-## 2.1 单纯 ReAct 不够
+## 2.1 单纯 ???????? 不够
 
-普通 ReAct 只能做到：
+普通 ???????? 只能做到：
 
 ```text
-Thought -> Action -> Observation -> Thought -> ...
+Reasoning trace -> Action -> Verification evidence -> Reasoning trace -> ...
 ```
 
 Jarvis 级认知内核需要额外具备：
@@ -1050,7 +1050,7 @@ PendingDecision
 会审流程结束后，至少写入四类记忆：
 
 ```text
-ActionMemory
+WorkOrderMemory
   user_input
   final_intent
   final_target
@@ -1088,7 +1088,7 @@ FailureMemory
   target=Calculator
   work_order=AppControlExecutorAgent.open(Calculator)
   verify=Calculator visible
-  write ActionMemory(last_opened_app=Calculator)
+  write WorkOrderMemory(last_opened_app=Calculator)
 ```
 
 第二轮：
@@ -2456,10 +2456,10 @@ MemoryRecallAgent 输出：
 
 
 
-## 6.3 ActionMemory 结构
+## 6.3 WorkOrderMemory 结构
 
 ```text
-ActionMemory
+WorkOrderMemory
   action_id
   user_text
   normalized_intent

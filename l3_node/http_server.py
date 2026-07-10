@@ -816,13 +816,13 @@ async def _k11_smoke_subprocess_sse_stream(
         response = _stream_response()
         keepalive_sec = 15.0
         ended_with_error_event: bool = False
-    
+
         async def _write_line_obj(line: str) -> None:
             payload = {"line": line}
             await response.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
             if hasattr(response, "drain"):
                 await response.drain()
-    
+
         try:
             await response.prepare(request)
             all_runs_ok = True
@@ -832,7 +832,7 @@ async def _k11_smoke_subprocess_sse_stream(
                     await _write_line_obj("> 已按停止请求结束，不再执行后续轮次。")
                     break
                 line_q: asyncio.Queue[str] = asyncio.Queue()
-    
+
                 async def _pump() -> int:
                     global _k11_unified_smoke_proc
                     proc = await asyncio.create_subprocess_exec(
@@ -900,7 +900,7 @@ async def _k11_smoke_subprocess_sse_stream(
                     finally:
                         _k11_unified_smoke_proc = None
                     return code
-    
+
                 if run_count > 1:
                     await _write_line_obj(
                         f"[K11] ========== 第 {run_idx} / {run_count} 轮 =========="
@@ -923,14 +923,14 @@ async def _k11_smoke_subprocess_sse_stream(
                         if time.monotonic() - last_keepalive >= keepalive_sec:
                             await response.write(b": keepalive\n\n")
                             last_keepalive = time.monotonic()
-    
+
                 while True:
                     try:
                         l2 = line_q.get_nowait()
                         await _write_line_obj(l2)
                     except asyncio.QueueEmpty:
                         break
-    
+
                 assert sub_task is not None
                 if sub_task.cancelled():
                     last_code = 130
@@ -956,7 +956,7 @@ async def _k11_smoke_subprocess_sse_stream(
                     if last_code != 0:
                         all_runs_ok = False
                 sub_task = None
-    
+
                 if _k11_unified_smoke_user_abort:
                     await _write_line_obj("> 已按停止请求结束，不再执行后续轮次。")
                     break
@@ -970,7 +970,7 @@ async def _k11_smoke_subprocess_sse_stream(
                     await _write_line_obj(
                         f"> 第 {run_idx} 轮结束 (exit {last_code})，立即开始下一轮…"
                     )
-    
+
             cancelled = _k11_unified_smoke_user_abort
             if sub_task is not None and not sub_task.done():
                 sub_task.cancel()
@@ -2457,7 +2457,7 @@ async def _handle_mcp_execute(request) -> "aiohttp.web.Response":
 
     目标态跨节点投递见 docs/ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md（L2 下行队列 + L3 Pull，非依赖入站 HTTP）。
     入站 HTTP 为 **NAT 降级路径**；须携带 L2 签发的 ``task_id`` + ``task_token``（与 Pull 队列一致）。
-    开发排障可设 ``JACHIN_L3_MCP_EXECUTE_ALLOW_LEGACY=1`` 跳过令牌（不安全）。
+    开发排障可设 ``JACHIN_L3_MCP_EXECUTE_ALLOW_ARCHIVED=1`` 跳过令牌（不安全）。
     """
     import os
 
@@ -2470,7 +2470,7 @@ async def _handle_mcp_execute(request) -> "aiohttp.web.Response":
     if not tool_name:
         return _json_response({"ok": False, "error": "tool_name 不能为空"}, status=400)
 
-    allow_legacy = os.environ.get("JACHIN_L3_MCP_EXECUTE_ALLOW_LEGACY", "0").strip().lower() in (
+    allow_archived = os.environ.get("JACHIN_L3_MCP_EXECUTE_ALLOW_ARCHIVED", "0").strip().lower() in (
         "1",
         "true",
         "yes",
@@ -2478,13 +2478,13 @@ async def _handle_mcp_execute(request) -> "aiohttp.web.Response":
     ) or (_is_loopback_http_peer(request) and _pmo_mcp_delegate_request(request))
     task_id = str(body.get("task_id") or "").strip()
     task_token = str(body.get("task_token") or "").strip()
-    if not allow_legacy:
+    if not allow_archived:
         if not task_token or not task_id:
             return _json_response(
                 {
                     "ok": False,
                     "error": "缺少 task_id/task_token；L2 委托须带 Task Token。NAT 场景请优先使用 Redis Pull。"
-                    " 开发可设 JACHIN_L3_MCP_EXECUTE_ALLOW_LEGACY=1（不安全）。",
+                    " 开发可设 JACHIN_L3_MCP_EXECUTE_ALLOW_ARCHIVED=1（不安全）。",
                 },
                 status=401,
             )
@@ -2521,8 +2521,8 @@ async def _handle_mcp_execute(request) -> "aiohttp.web.Response":
     try:
         from l3_node.primitives.mcp.registry import get_mcp_registry
         registry = get_mcp_registry()
-        action_input = json.dumps(arguments, ensure_ascii=False) if isinstance(arguments, dict) else str(arguments)
-        result = await registry.invoke(f"mcp:{tool_name}" if not tool_name.startswith("mcp:") else tool_name, action_input)
+        work_order_input = json.dumps(arguments, ensure_ascii=False) if isinstance(arguments, dict) else str(arguments)
+        result = await registry.invoke(f"mcp:{tool_name}" if not tool_name.startswith("mcp:") else tool_name, work_order_input)
         return _json_response({"ok": True, "tool_name": tool_name, "result": result})
     except Exception as e:
         logger.warning("[L3 HTTP] mcp/execute 失败 tool=%s: %s", tool_name, e)

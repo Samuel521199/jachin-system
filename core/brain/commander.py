@@ -48,7 +48,7 @@ FALLBACK_SYSTEM_PROMPT_BASE = """你叫 Jachin，是主人的专属全息智能�
 请用简短、温柔、有感情的语言回复用户。回复要自然、口语化，适合语音播报。"""
 
 
-def _build_system_prompt(ltm_context: str) -> str:
+def _build_commander_prompt(ltm_context: str) -> str:
     """融合长期记忆到 System Prompt"""
     if not ltm_context or not ltm_context.strip():
         return SYSTEM_PROMPT_BASE
@@ -207,7 +207,7 @@ class CommanderAgent:
             except Exception as e:
                 logger.error("Commander: RAG 检索异常，继续无记忆对话: %s", e)
 
-        system_content = _build_system_prompt(ltm_context)
+        system_content = _build_commander_prompt(ltm_context)
         stm_messages = self.memory_manager.get_short_term_messages(user_id) if self.memory_manager else []
 
         # 构建 messages：System + 短期历史（已含当前 user_text）

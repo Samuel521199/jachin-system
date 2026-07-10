@@ -1,4 +1,4 @@
-﻿# 桌面端下载站与热更新（OTA）部署指南
+# 桌面端下载站与热更新（OTA）部署指南
 
 本文面向运维与后端同事，说明 **下载网站**、**Tauri 热更新** 的架构、依赖、环境变量与上线步骤，便于在测试/生产环境一次性部署成功。
 
@@ -61,7 +61,7 @@
 - **版本**：建议 14+（仓库 `docker-compose.postgres.yml` 使用 16-alpine）。
 - **仅需一个库/一个连接串**：例如 `postgres://postgres:postgres@localhost:5432/postgres`。
 - **表结构**：在 `cloud/nexus` 下用 Drizzle 推表（与团队现有流程一致）：
-  - `npm run db:push`  
+  - `npm run db:push`
   - 或按项目迁移流程执行；确保存在表 **`desktop_app_releases`**（定义见 `cloud/nexus/src/db/schema.ts`）。
 
 > **注意**：`docker compose down -v` 会删掉 Postgres 数据卷，**发行记录会清空**，勿在生产随意执行。
@@ -89,7 +89,7 @@
 
 - **`AUTH_SECRET`**（NextAuth）：Nexus 与 jachin-downloads **生产必须设置**（开发与文档说明可能允许占位，生产勿用默认值）。
 - **`NEXUS_ADMIN_SECRET`**：登记新版本 `POST /api/v1/admin/desktop-releases` 时使用。服务端校验见 `cloud/nexus/src/lib/admin-auth.ts`：请求头 **`X-Admin-Token`**、**`Authorization: Bearer <secret>`**，或 Cookie **`nexus_admin_token=<secret>`** 三者之一与 `NEXUS_ADMIN_SECRET` 完全一致即视为 root。`scripts/publish_desktop_release.py` 使用的 **`NEXUS_ADMIN_SECRET`** 须与此相同。
-- **`DESKTOP_UPDATE_BEARER`**（可选但生产强烈建议）：与桌面端 **`~/.jachin/nexus_config.json` → `desktop_update_token`** 一致，用于 `GET /api/v1/update/desktop` 的 **Bearer**。  
+- **`DESKTOP_UPDATE_BEARER`**（可选但生产强烈建议）：与桌面端 **`~/.jachin/nexus_config.json` → `desktop_update_token`** 一致，用于 `GET /api/v1/update/desktop` 的 **Bearer**。
   - 另一种合法身份是 **edge_agents** 表中的 Bearer（舰队场景）；普通桌面用户用共享 secret 即可。
 
 ### 3.4 构建与签名（发布安装包时）
@@ -102,8 +102,8 @@
 ## 4. 热更新如何实现（给非客户端同事的版本）
 
 1. **登记**：发布脚本把构建产物上传到 S3，并调用 Nexus **Admin API** 写入 `desktop_app_releases`（每平台 `artifacts[platformKey] = { objectKey, signature }`）。
-2. **检查更新**：桌面端 Tauri Updater 请求  
-   `GET /api/v1/update/desktop?target=...&arch=...&current_version=...`  
+2. **检查更新**：桌面端 Tauri Updater 请求
+   `GET /api/v1/update/desktop?target=...&arch=...&current_version=...`
    请求头：`Authorization: Bearer <desktop_update_token 或 edge token>`。
 3. **服务端逻辑**（`cloud/nexus/src/app/api/v1/update/desktop/route.ts`）：
    - 校验 Bearer；
@@ -173,8 +173,8 @@ jachin-downloads 额外见 **`cloud/jachin-downloads/.env.example`**（`JACHIN_D
 
 ## 7. 客户端（桌面）侧配置（部署验收用）
 
-- **`clients/desktop/src-tauri/tauri.conf.json`**  
-  - `plugins.updater.endpoints`：指向线上 **`.../api/v1/update/desktop?target={{target}}&arch={{arch}}&current_version={{current_version}}`**。  
+- **`clients/desktop/src-tauri/tauri.conf.json`**
+  - `plugins.updater.endpoints`：指向线上 **`.../api/v1/update/desktop?target={{target}}&arch={{arch}}&current_version={{current_version}}`**。
   - 生产必须 **HTTPS**；开发可用 `dangerousInsecureTransportProtocol`（仅本地）。
 - **用户机器**：`~/.jachin/nexus_config.json` 中 **`desktop_update_token`** 与 **`DESKTOP_UPDATE_BEARER`** 一致（或由运维下发 edge token）。
 
@@ -183,8 +183,8 @@ jachin-downloads 额外见 **`cloud/jachin-downloads/.env.example`**（`JACHIN_D
 ## 8. 发布一条新版本（运维/发版同学）
 
 1. 构建 Tauri 安装包并完成 **minisign**（见 `scripts/publish_desktop_release.py` 头注释）。
-2. 在仓库根执行发布脚本（自动上传 S3 + 调 Admin API）：  
-   `python scripts/publish_desktop_release.py`  
+2. 在仓库根执行发布脚本（自动上传 S3 + 调 Admin API）：
+   `python scripts/publish_desktop_release.py`
    或 `clients/desktop` 下 `npm run publish-desktop-release`。
 3. 确认 Nexus（或独立站）`/desktop-downloads` 能看到新版本；桌面端触发检查更新后能拉到 JSON。
 
@@ -204,14 +204,14 @@ jachin-downloads 额外见 **`cloud/jachin-downloads/.env.example`**（`JACHIN_D
 
 ## 10. 部署检查清单（可复制到工单）
 
-- [ ] PostgreSQL 已启动，`DATABASE_URL` 可达  
-- [ ] 已执行 schema 同步，存在 `desktop_app_releases`  
-- [ ] MinIO/S3 Bucket 已创建，`DESKTOP_RELEASES_S3_*` 已配置  
-- [ ] `AUTH_SECRET`、`NEXUS_ADMIN_SECRET`、`DESKTOP_UPDATE_BEARER` 已设（生产）  
-- [ ] Nexus 或 jachin-downloads 已构建并监听正确端口  
-- [ ] 至少一次成功执行 `publish_desktop_release.py` 或 Admin 登记  
-- [ ] 桌面 `tauri.conf.json` endpoints 与 `desktop_update_token` 与线上一致  
-- [ ] HTTPS、防火墙、反向代理已放行 `/api/v1/update/desktop` 与登录回调  
+- [ ] PostgreSQL 已启动，`DATABASE_URL` 可达
+- [ ] 已执行 schema 同步，存在 `desktop_app_releases`
+- [ ] MinIO/S3 Bucket 已创建，`DESKTOP_RELEASES_S3_*` 已配置
+- [ ] `AUTH_SECRET`、`NEXUS_ADMIN_SECRET`、`DESKTOP_UPDATE_BEARER` 已设（生产）
+- [ ] Nexus 或 jachin-downloads 已构建并监听正确端口
+- [ ] 至少一次成功执行 `publish_desktop_release.py` 或 Admin 登记
+- [ ] 桌面 `tauri.conf.json` endpoints 与 `desktop_update_token` 与线上一致
+- [ ] HTTPS、防火墙、反向代理已放行 `/api/v1/update/desktop` 与登录回调
 
 ---
 

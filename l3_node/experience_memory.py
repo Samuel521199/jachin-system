@@ -204,12 +204,12 @@ def _normalize_record(obj: dict[str, Any]) -> dict[str, Any] | None:
     if isinstance(ca, dict):
         tid = str(ca.get("tool_id") or "").strip()
         if tid:
-            inp = ca.get("action_input")
+            inp = ca.get("work_order_input")
             payload: dict[str, Any]
             if isinstance(inp, dict):
                 payload = dict(inp)
             else:
-                payload = {"action_input": str(inp or "")}
+                payload = {"work_order_input": str(inp or "")}
             return {"user_intent": ui, "executed_tool": tid, "action_payload": payload, "ts": obj.get("ts")}
     return None
 
@@ -357,7 +357,7 @@ def format_experience_block_for_prompt(user_intent: str, *, top_k: int = 2) -> s
 def save_experience(user_intent: str, executed_tool: str, action_payload: dict[str, Any]) -> None:
     """
     追加一条成功经验。action_payload 建议含查询参数/SQL 等可序列化字段。
-    任意失败静默返回，不抛到 ReAct 主循环。
+    任意失败静默返回，不抛到 RoleExecutionAgent 主循环。
     """
     if not experience_rag_enabled():
         return
@@ -401,17 +401,17 @@ def save_experience(user_intent: str, executed_tool: str, action_payload: dict[s
 
 
 def save_successful_action(user_intent: str, correct_action: dict[str, Any]) -> None:
-    """兼容旧 API：correct_action = {tool_id, action_input}。"""
+    """兼容旧 API：correct_action = {tool_id, work_order_input}。"""
     if not isinstance(correct_action, dict):
         return
     tid = str(correct_action.get("tool_id") or "").strip()
     if not tid:
         return
-    inp = correct_action.get("action_input")
+    inp = correct_action.get("work_order_input")
     if isinstance(inp, dict):
         save_experience(user_intent, tid, inp)
     else:
-        save_experience(user_intent, tid, {"action_input": str(inp or "")[:16000]})
+        save_experience(user_intent, tid, {"work_order_input": str(inp or "")[:16000]})
 
 
 def _trim_file_if_needed_unlocked(path: Path) -> None:

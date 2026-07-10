@@ -1,4 +1,4 @@
-﻿"""PMO 飞书推送审计：写入标准日志 + PMO 人类可读 debug 文件。"""
+"""PMO 飞书推送审计：写入标准日志 + PMO 人类可读 debug 文件。"""
 from __future__ import annotations
 
 import logging

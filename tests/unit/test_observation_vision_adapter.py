@@ -1,17 +1,17 @@
-"""ReAct Observation 多模态注入（阶段一视神经）。"""
+"""RoleExecutor Verification evidence 多模态注入（阶段一视神经）。"""
 from __future__ import annotations
 
 import json
 
-from core.llm_provider import l3_react_full_messages_need_vision_model
+from core.llm_provider import l3_role_execution_full_messages_need_vision_model
 from core.mcp_multimodal_result import (
     JACHIN_MCP_MULTIMODAL_KEY,
     build_multimodal_observation_payload,
     encode_image_bytes_as_data_url,
     parse_multimodal_observation_payload,
 )
-from l3_node.react_observation_vision import (
-    build_react_observation_user_content,
+from l3_node.observation_vision_adapter import (
+    build_observation_user_content,
     extract_observation_image_data_urls,
     tool_may_return_screenshot,
 )
@@ -33,14 +33,14 @@ def test_tool_may_return_screenshot():
     assert not tool_may_return_screenshot("mcp:fetch")
 
 
-def test_build_react_observation_user_content_multimodal():
+def test_build_observation_user_content_multimodal():
     du = encode_image_bytes_as_data_url(b"\xff\xd8\xff" + b"y" * 80, "image/jpeg")
 
     def _followup(obs: str, _tool: str) -> str:
-        return f"Observation: {obs}\n\n请继续:"
+        return f"Verification evidence: {obs}\n\n请继续:"
 
     obs = build_multimodal_observation_payload(text_parts=["ok"], image_data_urls=[du])
-    content = build_react_observation_user_content(
+    content = build_observation_user_content(
         obs,
         "mcp:screenshot",
         followup_builder=_followup,
@@ -52,7 +52,7 @@ def test_build_react_observation_user_content_multimodal():
         {"role": "system", "content": "s"},
         {"role": "user", "content": content},
     ]
-    assert l3_react_full_messages_need_vision_model(msgs)
+    assert l3_role_execution_full_messages_need_vision_model(msgs)
 
 
 def test_extract_from_plain_base64_field():

@@ -2,7 +2,7 @@
 SQLite 类 MCP 写操作签批门控：防止「统帅让我用工具」时模型绕过 System Prompt 直接 write_query。
 
 - 默认开启；设置环境变量 JACHIN_MCP_SQLITE_WRITE_GUARD=0 可关闭。
-- 批准后由模型在 Action Input 中附带 jachin_mcp_write_ack: true（该键在发往 MCP 子进程前会被剔除）。
+- 批准后由模型在 tool input 中附带 jachin_mcp_write_ack: true（该键在发往 MCP 子进程前会被剔除）。
 """
 from __future__ import annotations
 
@@ -84,7 +84,7 @@ _ACK_USER_RE = re.compile(
 
 def user_text_grants_mcp_write_ack(text: str) -> bool:
     """
-    检测用户是否在聊天中明确授权 SQLite 写签批（与 Action Input 内带键等价）。
+    检测用户是否在聊天中明确授权 SQLite 写签批（与 tool input 内带键等价）。
     匹配示例：jachin_mcp_write_ack: true、「添加 jachin_mcp_write_ack: true」等。
     """
     s = (text or "").strip()
@@ -188,7 +188,7 @@ def check_sqlite_mcp_blocked(
             return False, ""
         return True, (
             "【签批门禁】已拦截 MCP SQLite 的 write_query：须先向统帅展示风险与待执行 SQL，"
-            "待统帅明确同意后在**同一条** Action Input JSON 内加入 "
+            "待统帅明确同意后在**同一条** tool input JSON 内加入 "
             f'"{WRITE_ACK_KEY}": true 再调用（该字段不会传给数据库），'
             "或在对话中发送「jachin_mcp_write_ack: true」后由系统自动注入。"
             "若需只读，请改用 read_query 且仅使用 SELECT。"
@@ -210,7 +210,7 @@ def check_sqlite_mcp_blocked(
 
     if rn in ("update_records", "delete_records", "create_record") and not ack:
         return True, (
-            f"【签批门禁】已拦截 {rn}：请在 Action Input 中加入 \"{WRITE_ACK_KEY}\": true，"
+            f"【签批门禁】已拦截 {rn}：请在 tool input 中加入 \"{WRITE_ACK_KEY}\": true，"
             "或由统帅在聊天中发送「jachin_mcp_write_ack: true」以自动签批后续写操作。"
         )
 

@@ -1,4 +1,4 @@
-﻿"""
+"""
 L3 进程内启动官方/侧载 stdio MCP（复用 core.mcp_client.MCPManager）。
 
 长期架构下 L2 默认不拉起 MCPManager；与 ``~/.jachin/mcp_servers.json`` 及

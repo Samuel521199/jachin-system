@@ -1,4 +1,4 @@
-"""Complex task DAG model for the Memory-first Cognitive Kernel."""
+﻿"""Complex task DAG model for the Memory-first Cognitive Kernel."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ class TaskDagNode:
     title: str
     role_agent: str = ""
     tool: str = ""
-    action_input: str = ""
+    work_order_input: str = ""
     depends_on: list[str] = field(default_factory=list)
     verification_criteria: list[str] = field(default_factory=list)
     rollback_hint: str = ""
@@ -44,7 +44,7 @@ class TaskDagNode:
             "title": self.title,
             "role_agent": self.role_agent,
             "tool": self.tool,
-            "action_input": self.action_input,
+            "work_order_input": self.work_order_input,
             "depends_on": list(self.depends_on),
             "verification_criteria": list(self.verification_criteria),
             "rollback_hint": self.rollback_hint,
@@ -98,7 +98,7 @@ def create_task_dag_from_work_orders(
             title=work_order.task or f"Execute {tool}",
             role_agent=work_order.role_agent,
             tool=tool,
-            action_input=str(work_order.inputs.get("action_input") or ""),
+            work_order_input=str(work_order.inputs.get("work_order_input") or ""),
             depends_on=[prior] if prior else [],
             verification_criteria=list(work_order.verification_criteria or []),
             status="ready" if not prior else "pending",

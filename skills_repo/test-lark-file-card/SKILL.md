@@ -1,4 +1,4 @@
-﻿---
+---
 name: test-lark-file-card
 description: |
   模拟 Skill：仅用于 Lark / IM 联调。发「/test」时在 JACHIN_HOME/workspace 下创建带时间戳的 txt，
@@ -25,7 +25,7 @@ mcp_tools: []
 
 1. 在 `{{JACHIN_HOME}}/workspace` 下新建文件，文件名为：`现在是YYYY-MM-DD_HHMMSS.txt`（本地时间，文件名无冒号）。
 2. 文件正文固定为：`我是一个测试文件`
-3. 向会话 `oc_367e7998b7dfe39c67d1598101defdfe` 发送一张飞书交互卡片（标题 + Markdown 区 + 脚注）。  
+3. 向会话 `oc_367e7998b7dfe39c67d1598101defdfe` 发送一张飞书交互卡片（标题 + Markdown 区 + 脚注）。
    可通过环境变量覆盖目标会话：`TEST_SKILL_LARK_CHAT_ID`。
 
 ## 实现位置

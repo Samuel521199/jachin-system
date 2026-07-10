@@ -1,5 +1,5 @@
 """
-§12.3 JIT 实体解析：工具调用前解析 resource_ref / 助理编号列表与当前 Action Input 中的序数指代。
+§12.3 JIT 实体解析：工具调用前解析 resource_ref / 助理编号列表与当前 tool input 中的序数指代。
 """
 from __future__ import annotations
 

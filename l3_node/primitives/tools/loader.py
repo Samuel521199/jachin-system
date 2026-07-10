@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin Nexus V2 - L3 技能加载器
 
 扫描并加载 Native Core、JPP Wasm 插件与本地技能，转化为 LiteLLM 可用的 tools 格式。
@@ -16,9 +16,9 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 
-def _parse_react_xml_tool_params(inp: str) -> dict[str, Any]:
+def _parse_work_order_xml_tool_params(inp: str) -> dict[str, Any]:
     """
-    解析 ReAct 常见的 XML 风格参数块（非 JSON 时模型仍可能输出）：
+    解析 RoleExecutor 常见的 XML 风格参数块（非 JSON 时模型仍可能输出）：
     <parameter=file_path>~/Desktop/x.md</parameter>
     <parameter=topic>标题</parameter>
     <parameter=outline_sections>["a","b"]</parameter>
@@ -139,7 +139,7 @@ NATIVE_TOOLS: list[dict[str, Any]] = [
     {
         "id": "core:local_memory_search",
         "label": "core:local_memory_search",
-        "desc": "L3 Memory Nexus：SQLite+FastEmbed deep_search 语义检索（~/.jachin/palace_db）。JSON：query；可选 top_k（legacy mmr/half_life 字段兼容忽略）",
+        "desc": "L3 Memory Nexus：SQLite+FastEmbed deep_search 语义检索（~/.jachin/palace_db）。JSON：query；可选 top_k（archived mmr/half_life 字段兼容忽略）",
         "params": ["query"],
     },
     {
@@ -165,7 +165,7 @@ NATIVE_TOOLS: list[dict[str, Any]] = [
     {
         "id": "core:safety_lock_list_pending",
         "label": "core:safety_lock_list_pending",
-        "desc": "列出安全锁待审批条目（pending）。无参数或 Action Input: {}。",
+        "desc": "列出安全锁待审批条目（pending）。无参数或 tool input: {}。",
         "params": [],
     },
     {
@@ -1124,7 +1124,7 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
 
 def run_tool(
     tool_id: str,
-    action_input: str,
+    work_order_input: str,
     allowed_skills: Optional[list[str]] = None,
     ndjson_queue: Optional[Any] = None,
 ) -> str:
@@ -1135,7 +1135,7 @@ def run_tool(
     """
     import sys
     tool_id = (tool_id or "").strip().lower()
-    inp = (action_input or "").strip()
+    inp = (work_order_input or "").strip()
     print(f"[Skill Execute] run_tool 入口 tool_id={tool_id} input_len={len(inp)}", file=sys.stderr, flush=True)
 
     if not is_tool_allowed(tool_id, allowed_skills):
@@ -1176,7 +1176,7 @@ def run_tool(
                     util_params = o
             except json.JSONDecodeError:
                 pass
-        _merge_xml_params_into_util(util_params, _parse_react_xml_tool_params(inp))
+        _merge_xml_params_into_util(util_params, _parse_work_order_xml_tool_params(inp))
         print(
             f"[Skill Execute] [Native util/sys] tool_id={tool_id} params_keys={list(util_params.keys())}",
             file=sys.stderr,
@@ -1357,7 +1357,7 @@ def run_tool(
                 pass
     elif tool_id == "core:safety_lock_append":
         params["body"] = ""
-        params["source"] = "react"
+        params["source"] = "work_order"
         params["tags"] = None
         params["token"] = None
         params["category"] = None
@@ -1367,7 +1367,7 @@ def run_tool(
                 if isinstance(o, dict):
                     params["body"] = str(o.get("body") or o.get("content") or o.get("text") or "")
                     if o.get("source") is not None:
-                        params["source"] = str(o.get("source") or "react")
+                        params["source"] = str(o.get("source") or "work_order")
                     if o.get("tags") is not None:
                         params["tags"] = o.get("tags")
                     if o.get("token") is not None:
@@ -1503,7 +1503,7 @@ def run_tool(
                 if isinstance(o, dict):
                     fp = str(o.get("file_path") or o.get("path") or "").strip()
                     ct = o.get("content")
-                    # 与 ReAct 常见输出对齐：整段 JSON 即一次写入
+                    # 与 RoleExecutor 常见输出对齐：整段 JSON 即一次写入
                     if fp or ct is not None:
                         params["file_path"] = fp
                         params["content"] = "" if ct is None else str(ct)
@@ -1525,15 +1525,15 @@ def run_tool(
             from l3_node.primitives.tools.native_extensions import (
                 dispatch_native_extension_tool,
                 is_native_extension_tool,
-                parse_native_extension_action_input,
+                parse_native_extension_work_order_input,
             )
         except Exception:
             dispatch_native_extension_tool = None  # type: ignore[assignment]
             is_native_extension_tool = None  # type: ignore[assignment]
-            parse_native_extension_action_input = None  # type: ignore[assignment]
+            parse_native_extension_work_order_input = None  # type: ignore[assignment]
 
         if is_native_extension_tool and is_native_extension_tool(tool_id):
-            params = parse_native_extension_action_input(tool_id, inp) if parse_native_extension_action_input else {}
+            params = parse_native_extension_work_order_input(tool_id, inp) if parse_native_extension_work_order_input else {}
             print(
                 f"[Skill Execute] [Native Extension] 调用 tool_id={tool_id}",
                 file=sys.stderr,
@@ -1607,7 +1607,7 @@ def run_tool(
                 jid = result.get("job_id")
                 return (
                     f"[后台 shell 已启动] job_id={jid} pid={result.get('pid')} log={result.get('log_path')}\n"
-                    f"查询状态请使用 Action: core:shell_job_status，Action Input: "
+                    f"查询状态请使用 WorkOrder: core:shell_job_status，tool input: "
                     f"{json.dumps({'job_id': jid}, ensure_ascii=False)}"
                 )
             out = result.get("stdout", "")
@@ -1809,7 +1809,7 @@ _FILE_MCP_RAW = frozenset(
 
 
 def build_tools_description(tools: list[dict[str, Any]]) -> str:
-    """生成 Agent system prompt 中的工具描述段落。含 id 供 Action 精确匹配。"""
+    """生成 Agent system prompt 中的工具描述段落。含 id 供 WorkOrder 精确匹配。"""
     _HR_IDS = ("jpp:com.jachin.hr.analyzer4",)
     lines = []
     for t in tools:
@@ -1824,13 +1824,13 @@ def build_tools_description(tools: list[dict[str, Any]]) -> str:
             keys = list(isc["properties"].keys())
             req = isc.get("required")
             if isinstance(req, list) and req:
-                param_hint = f" Action Input 为 JSON；必填键：{', '.join(str(x) for x in req)}。"
+                param_hint = f" tool input 为 JSON；必填键：{', '.join(str(x) for x in req)}。"
             else:
-                param_hint = f" Action Input 为 JSON；字段：{', '.join(keys)}。"
+                param_hint = f" tool input 为 JSON；字段：{', '.join(keys)}。"
         else:
             params = t.get("params")
             if isinstance(params, list) and params:
-                param_hint = f" Action Input 为 JSON，键名（须与 schema 一致）：{', '.join(str(p) for p in params)}。"
+                param_hint = f" tool input 为 JSON，键名（须与 schema 一致）：{', '.join(str(p) for p in params)}。"
         if raw in _FILE_MCP_RAW:
             param_hint += " 【文件类 MCP】键名须为 `path`，不要用 `file_path`。"
             if raw in ("write_file", "edit_file", "create_file"):

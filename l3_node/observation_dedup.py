@@ -1,4 +1,4 @@
-"""同一次 run 内大块 Observation 内容 hash 去重（替换为短引用）。"""
+﻿"""同一次 run 内大块 Verification evidence 内容 hash 去重（替换为短引用）。"""
 from __future__ import annotations
 
 import hashlib
@@ -32,9 +32,9 @@ def maybe_replace_duplicate_observation(
     for i, (prev_h, _) in enumerate(lst):
         if prev_h == h:
             ref = i + 1
-            logger.debug("[ObservationDedup] 重复 hash=%s 引用 #%s", h[:12], ref)
+            logger.debug("[Verification evidenceDedup] 重复 hash=%s 引用 #%s", h[:12], ref)
             return (
-                f"【Observation 去重】与本轮第 {ref} 条大块 Observation 内容相同（sha256[:24]={h}），"
+                f"【Verification evidence 去重】与本轮第 {ref} 条大块 Verification evidence 内容相同（sha256[:24]={h}），"
                 "请直接引用上文完整块，勿重复全文。\n"
             )
     lst.append((h, len(obs)))

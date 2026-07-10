@@ -51,40 +51,40 @@ def get_plugin_manager(plugins_dir: Optional[Path] = None, skills_repo_dir: Opti
 class PluginManager:
     """
     插件管理器 - 技能生命周期唯一入口
-    
+
     负责：
     - load_skills(): 扫描 skills_repo，为每个技能启动 Ray Actor
     - get_actor(skill_id): 返回 Ray Actor 句柄
     - list_capabilities(filter_tag): 遍历已加载 Actor，返回能力列表
     - .jsp 包的安装/卸载
     """
-    
+
     def __init__(self, plugins_dir: Path, skills_repo_dir: Path):
         """
         初始化插件管理器
-        
+
         Args:
             plugins_dir: 插件包存储目录（.jsp 文件）
             skills_repo_dir: 技能存储目录（含 _bundled）
         """
         self.plugins_dir = Path(plugins_dir)
         self.skills_repo_dir = Path(skills_repo_dir)
-        
+
         self.plugins_dir.mkdir(parents=True, exist_ok=True)
         self.skills_repo_dir.mkdir(parents=True, exist_ok=True)
-        
+
         self.installed_plugins: Dict[str, PluginManifest] = {}
         self._actors: Dict[str, Any] = {}  # skill_id -> Ray Actor handle
         self._manifests: Dict[str, Dict[str, Any]] = {}  # skill_id -> manifest dict
-        
+
     def install_plugin(self, jsp_path: Path, license_key: Optional[str] = None) -> bool:
         """
         安装插件
-        
+
         Args:
             jsp_path: .jsp 文件路径
             license_key: License Key（如果插件需要）
-            
+
         Returns:
             是否安装成功
         """
@@ -93,17 +93,17 @@ class PluginManager:
             if not jsp_path.suffix == ".jsp":
                 logger.error(f"Invalid plugin format: {jsp_path}")
                 return False
-                
+
             # 2. 解压并读取 manifest.yaml
             with zipfile.ZipFile(jsp_path, 'r') as zip_ref:
                 # 验证签名
                 if not self._verify_signature(zip_ref):
                     logger.error("Plugin signature verification failed")
                     return False
-                    
+
                 # 读取 manifest (v3.2 格式)
                 manifest_data = yaml.safe_load(zip_ref.read("manifest.yaml"))
-                
+
                 # 使用 Pydantic 模型验证和解析
                 # 将 YAML 数据转换为字典，然后创建 PluginManifest
                 manifest_dict = {
@@ -114,7 +114,7 @@ class PluginManager:
                     "author": manifest_data.get("author"),
                     "author_email": manifest_data.get("author_email"),
                 }
-                
+
                 # 处理价格信息
                 price_data = manifest_data.get("price", {})
                 if isinstance(price_data, dict):
@@ -125,14 +125,14 @@ class PluginManager:
                     }
                 else:
                     manifest_dict["price"] = {"amount": 0.0, "currency": "USD", "type": "free"}
-                
+
                 # 处理权限列表
                 permissions_data = manifest_data.get("permissions", [])
                 manifest_dict["permissions"] = [
                     {"scope": p.get("scope") if isinstance(p, dict) else p}
                     for p in permissions_data
                 ]
-                
+
                 # 处理运行时配置
                 runtime_data = manifest_data.get("runtime", {})
                 manifest_dict["runtime"] = {
@@ -140,14 +140,14 @@ class PluginManager:
                     "python_version": runtime_data.get("python_version", "3.10"),
                     "resources": runtime_data.get("resources", {})
                 }
-                
+
                 # 其他字段
                 manifest_dict["developer_signature"] = manifest_data.get("developer_signature")
                 manifest_dict["requirements"] = manifest_data.get("requirements", [])
-                
+
                 # 创建 PluginManifest 对象（Pydantic 会自动验证）
                 manifest = PluginManifest(**manifest_dict)
-                
+
                 # 3. 验证 License（如果需要）
                 if manifest.price.type != PriceType.FREE:
                     if not license_key:
@@ -160,59 +160,59 @@ class PluginManager:
                     manifest_dict = manifest.dict()
                     manifest_dict["license_key"] = license_key
                     manifest = PluginManifest(**manifest_dict)
-                    
+
                 # 4. 解压到 skills_repo
                 plugin_dir = self.skills_repo_dir / manifest.id
                 zip_ref.extractall(plugin_dir)
-                
+
                 # 5. 注册插件
                 self.installed_plugins[manifest.id] = manifest
-                
+
                 logger.info(f"Plugin '{manifest.name}' (id: {manifest.id}) installed successfully")
                 return True
-                
+
         except Exception as e:
             logger.error(f"Failed to install plugin: {e}", exc_info=True)
             return False
-            
+
     def uninstall_plugin(self, plugin_id: str) -> bool:
         """
         卸载插件
-        
+
         Args:
             plugin_id: 插件 ID（如 "com.developer.deep-research"）
-            
+
         Returns:
             是否卸载成功
         """
         if plugin_id not in self.installed_plugins:
             logger.warning(f"Plugin '{plugin_id}' not installed")
             return False
-            
+
         try:
             # 删除插件目录
             plugin_dir = self.skills_repo_dir / plugin_id
             if plugin_dir.exists():
                 import shutil
                 shutil.rmtree(plugin_dir)
-                
+
             # 从注册表中移除
             del self.installed_plugins[plugin_id]
-            
+
             logger.info(f"Plugin '{plugin_id}' uninstalled successfully")
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to uninstall plugin: {e}")
             return False
-            
+
     def _verify_signature(self, zip_ref: zipfile.ZipFile) -> bool:
         """
         验证插件签名
-        
+
         Args:
             zip_ref: ZIP 文件引用
-            
+
         Returns:
             签名是否有效
         """
@@ -220,23 +220,23 @@ class PluginManager:
             # 读取 manifest.yaml
             manifest_data = zip_ref.read("manifest.yaml")
             developer_signature = yaml.safe_load(manifest_data).get("developer_signature")
-            
+
             if not developer_signature:
                 logger.warning("No developer signature found in manifest")
                 # 开发环境允许无签名，生产环境应拒绝
                 return True  # TODO: 生产环境应返回 False
-            
+
             # 读取需要签名的文件
             files_to_verify = []
             for file_name in zip_ref.namelist():
                 if file_name in ["manifest.yaml", "main.py", "requirements.txt"]:
                     files_to_verify.append((file_name, zip_ref.read(file_name)))
-            
+
             # TODO: 实现签名验证逻辑
             # - 解码 base64 签名
             # - 使用 Tier 1 Market 的公钥验证
             # - 验证签名是否匹配文件内容
-            
+
             # 临时实现：检查签名格式
             try:
                 base64.b64decode(developer_signature)
@@ -245,22 +245,22 @@ class PluginManager:
             except Exception as e:
                 logger.error(f"Invalid signature format: {e}")
                 return False
-                
+
         except KeyError as e:
             logger.error(f"Required file not found in package: {e}")
             return False
         except Exception as e:
             logger.error(f"Signature verification error: {e}")
             return False
-            
+
     def _verify_license(self, plugin_id: str, license_key: str) -> bool:
         """
         验证 License Key
-        
+
         Args:
             plugin_id: 插件 ID
             license_key: License Key
-            
+
         Returns:
             License 是否有效
         """
@@ -270,36 +270,36 @@ class PluginManager:
         # - 检查 License 是否被撤销
         # - 检查 License 是否匹配插件 ID
         logger.info(f"Verifying license for plugin '{plugin_id}'...")
-        
+
         # 临时实现：基本格式检查
         if not license_key or len(license_key) < 16:
             logger.error("Invalid license key format")
             return False
-            
+
         return True
-        
+
     def list_installed_plugins(self) -> List[str]:
         """列出已安装的插件 ID"""
         return list(self.installed_plugins.keys())
-        
+
     def get_plugin_manifest(self, plugin_id: str) -> Optional[PluginManifest]:
         """
         获取插件清单
-        
+
         首先从内存缓存中查找，如果不存在，则从 skills_repo_dir 读取 manifest.yaml
         """
         # 先从内存缓存中查找
         if plugin_id in self.installed_plugins:
             return self.installed_plugins[plugin_id]
-        
+
         # 如果缓存中没有，尝试从文件系统读取（用于测试或手动安装的插件）
         plugin_dir = self.skills_repo_dir / plugin_id
         manifest_file = plugin_dir / "manifest.yaml"
-        
+
         if manifest_file.exists():
             try:
                 manifest_data = yaml.safe_load(manifest_file.read_text(encoding='utf-8'))
-                
+
                 # 转换为 PluginManifest
                 manifest_dict = {
                     "id": manifest_data.get("id", manifest_data.get("name", "unknown")),
@@ -309,7 +309,7 @@ class PluginManager:
                     "author": manifest_data.get("author"),
                     "author_email": manifest_data.get("author_email"),
                 }
-                
+
                 # 处理价格信息
                 price_data = manifest_data.get("price", {})
                 if isinstance(price_data, dict):
@@ -320,14 +320,14 @@ class PluginManager:
                     }
                 else:
                     manifest_dict["price"] = {"amount": 0.0, "currency": "USD", "type": "free"}
-                
+
                 # 处理权限列表
                 permissions_data = manifest_data.get("permissions", [])
                 manifest_dict["permissions"] = [
                     {"scope": p.get("scope") if isinstance(p, dict) else p}
                     for p in permissions_data
                 ]
-                
+
                 # 处理运行时配置
                 runtime_data = manifest_data.get("runtime", {})
                 manifest_dict["runtime"] = {
@@ -335,34 +335,34 @@ class PluginManager:
                     "python_version": runtime_data.get("python_version", "3.10"),
                     "resources": runtime_data.get("resources", {"cpu": 1, "gpu": False})
                 }
-                
+
                 # 处理依赖
                 manifest_dict["requirements"] = manifest_data.get("requirements", [])
-                
+
                 # 创建 PluginManifest 对象
                 manifest = PluginManifest(**manifest_dict)
-                
+
                 # 缓存到内存中
                 self.installed_plugins[plugin_id] = manifest
-                
+
                 logger.debug(f"Loaded plugin manifest from file system: {plugin_id}")
                 return manifest
-                
+
             except Exception as e:
                 logger.error(f"Failed to load manifest from file system for '{plugin_id}': {e}")
                 return None
-        
+
         return None
-        
+
     def check_plugin_license(self, plugin_id: str) -> bool:
         """
         检查插件 License 是否有效（DRM 校验，分发前调用）
-        
+
         优先使用 L1 sync_licenses 的本地缓存；若无则回退到 manifest.license_key 校验。
-        
+
         Args:
             plugin_id: 插件 ID
-            
+
         Returns:
             License 是否有效
         """
@@ -383,11 +383,11 @@ class PluginManager:
         if not manifest.license_key:
             return False
         return self._verify_license(plugin_id, manifest.license_key)
-    
+
     def scan_bundled_skills(self) -> List[str]:
         """
         扫描 _bundled/ 目录，发现所有预装技能
-        
+
         Returns:
             List[str]: 技能ID列表
         """
@@ -395,12 +395,12 @@ class PluginManager:
         if not bundled_dir.exists():
             logger.warning(f"Bundled skills directory not found: {bundled_dir}")
             return []
-        
+
         skill_ids = []
         for skill_dir in bundled_dir.iterdir():
             if not skill_dir.is_dir():
                 continue
-            
+
             manifest_file = skill_dir / "manifest.yaml"
             if manifest_file.exists():
                 try:
@@ -411,7 +411,7 @@ class PluginManager:
                         logger.debug(f"Found bundled skill: {skill_id}")
                 except Exception as e:
                     logger.warning(f"Failed to read manifest from {manifest_file}: {e}")
-        
+
         logger.info(f"Scanned {len(skill_ids)} bundled skills")
         return skill_ids
 
@@ -590,21 +590,21 @@ class PluginManager:
                     "tag": cap_tag,
                 })
         return result
-    
+
     def _load_skill(self, skill_id: str) -> Optional[Any]:
         """
         加载技能并创建 Ray Actor
-        
+
         步骤：
         1. 读取 manifest.yaml
         2. 检查权限（调用 permission.py）
         3. 动态加载 main.py 模块
         4. 使用 ray.remote 创建 Actor 实例
         5. 返回 Actor 句柄
-        
+
         Args:
             skill_id: 技能ID（如 "com.jachin.sys-monitor"）
-            
+
         Returns:
             Ray Actor Handle，如果加载失败则返回 None
         """
@@ -619,11 +619,11 @@ class PluginManager:
             if skill_dir is None:
                 logger.error(f"Skill directory not found: {skill_id}")
                 return None
-            
+
             # 2. 读取 manifest.yaml
             manifest_file = skill_dir / "manifest.yaml"
             manifest_data = yaml.safe_load(manifest_file.read_text(encoding='utf-8'))
-            
+
             # 转换为 SkillManifest（含 deployment_strategy，默认 cached）
             _ds_raw = manifest_data.get("deployment_strategy", "cached")
             try:
@@ -645,13 +645,13 @@ class PluginManager:
                 runtime=manifest_data.get("runtime", {"type": "ray", "python_version": "3.10"}),
                 deployment_strategy=_ds,
             )
-            
+
             logger.info(f"Loaded manifest for skill: {skill_id}")
-            
+
             # 3. 检查权限
             from core.system.permission import get_permission_checker
             permission_checker = get_permission_checker()
-            
+
             raw = skill_manifest.permissions
             # 提取 scope 字符串（Permission 对象不可哈希，不能作为 dict key）
             required_permissions = [
@@ -661,28 +661,28 @@ class PluginManager:
             if not permission_checker.validate_permissions(skill_id, required_permissions):
                 logger.error(f"Permission check failed for skill: {skill_id}")
                 return None
-            
+
             logger.info(f"Permission check passed for skill: {skill_id}")
-            
+
             # 4. 动态加载 main.py 模块
             main_file = skill_dir / "main.py"
             if not main_file.exists():
                 logger.error(f"main.py not found: {main_file}")
                 return None
-            
+
             # 使用 importlib 动态加载模块
             module_name = f"skill_{skill_id.replace('.', '_')}"
             spec = importlib.util.spec_from_file_location(module_name, main_file)
             if spec is None or spec.loader is None:
                 logger.error(f"Failed to create module spec for {skill_id}")
                 return None
-            
+
             module = importlib.util.module_from_spec(spec)
             sys.modules[module_name] = module
             spec.loader.exec_module(module)
-            
+
             logger.info(f"Loaded module for skill: {skill_id}")
-            
+
             # 5. 创建 Ray Actor
             # 检查是否有 execute 函数或继承 BaseSkill 的类
             from core.skills.base_skill import BaseSkill as _BaseSkill
@@ -694,16 +694,16 @@ class PluginManager:
             if not has_execute and not has_skill_class:
                 logger.error(f"Module {skill_id} needs 'execute' function or class(BaseSkill)")
                 return None
-            
+
             # 创建技能 Actor 包装类
             # 延迟导入避免循环依赖。Ray 不支持继承 actor 类，故 SkillActorWrapper 继承 BaseSkill（非 actor）
             from core.skills.base_skill import BaseSkill
-            
+
             # 创建动态 Actor 类（继承 BaseSkill，然后应用 @ray.remote）
             # 注意：不序列化函数，而是序列化技能目录路径，在 Actor 内部重新加载模块
             class SkillActorWrapper(BaseSkill):
                 """动态创建的技能 Actor 包装类（继承 BaseSkill，manifest 含 id）"""
-                
+
                 def __init__(self, skill_id: str, manifest: Dict[str, Any], skill_dir_path: str):
                     manifest = dict(manifest) if manifest else {}
                     manifest.setdefault("id", skill_id)
@@ -712,7 +712,7 @@ class PluginManager:
                     self._module = None
                     self._execute_func = None
                     self._skill_class = None
-                
+
                 def _load_module(self):
                     """延迟加载模块（在 Actor 内部执行）。支持类继承 BaseSkill 或 execute 函数。"""
                     if self._module is None:
@@ -720,20 +720,20 @@ class PluginManager:
                         import inspect
                         import sys
                         from pathlib import Path
-                        
+
                         main_file = Path(self.skill_dir_path) / "main.py"
                         if not main_file.exists():
                             raise FileNotFoundError(f"main.py not found: {main_file}")
-                        
+
                         module_name = f"skill_{self.skill_id.replace('.', '_')}"
                         spec = importlib.util.spec_from_file_location(module_name, main_file)
                         if spec is None or spec.loader is None:
                             raise ValueError(f"Failed to create module spec for {self.skill_id}")
-                        
+
                         self._module = importlib.util.module_from_spec(spec)
                         sys.modules[module_name] = self._module
                         spec.loader.exec_module(self._module)
-                        
+
                         # 优先查找继承 BaseSkill 的类（Ray 不支持继承 actor，技能应继承 BaseSkill）
                         self._skill_class = None
                         for _, obj in inspect.getmembers(self._module):
@@ -746,7 +746,7 @@ class PluginManager:
                             self._execute_func = self._module.execute
                         else:
                             raise AttributeError(f"Module {self.skill_id} needs class(BaseSkill) or execute()")
-                
+
                 async def execute(
                     self,
                     capability: str,
@@ -768,10 +768,10 @@ class PluginManager:
                     except Exception as e:
                         logger.error(f"Error executing capability '{capability}': {e}", exc_info=True)
                         return {"success": False, "error": str(e)}
-            
+
             # 应用 @ray.remote 装饰器创建 Ray Actor 类
             SkillActorClass = ray.remote(SkillActorWrapper)
-            
+
             manifest_dict = skill_manifest.model_dump() if hasattr(skill_manifest, "model_dump") else dict(skill_manifest)
             self._manifests[skill_id] = manifest_dict
 
@@ -781,10 +781,10 @@ class PluginManager:
                 manifest=manifest_dict,
                 skill_dir_path=str(skill_dir)
             )
-            
+
             logger.info(f"Created Ray Actor for skill: {skill_id}")
             return actor_handle
-            
+
         except Exception as e:
             logger.error(f"Failed to load skill {skill_id}: {e}", exc_info=True)
             return None

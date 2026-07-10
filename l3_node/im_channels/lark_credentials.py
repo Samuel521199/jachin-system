@@ -1,4 +1,4 @@
-﻿"""IM 长连接凭证解析 — im_channels.yaml 与环境变量回落。"""
+"""IM 长连接凭证解析 — im_channels.yaml 与环境变量回落。"""
 from __future__ import annotations
 
 import os

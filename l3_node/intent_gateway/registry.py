@@ -1,6 +1,6 @@
 """
 §4 插件化意图注册表：L1 级 preflight 短路（优先级排序）。
-支持 required_slots：命中意图但缺槽时拦截 ReAct，返回追问文案并进入 AWAITING_CLARIFICATION。
+支持 required_slots：命中意图但缺槽时拦截 RoleExecutionAgent，返回追问文案并进入 AWAITING_CLARIFICATION。
 """
 from __future__ import annotations
 
@@ -32,8 +32,8 @@ class PreflightEntry:
     """
     每项：name（必填）、pattern（正则，推荐）、prompt_template（追问句）、hint/description（可选）。
     """
-    defer_to_react_on_success: bool = field(compare=False, default=False)
-    """match 且槽位已齐、handle 返回 None 时，终止整条 preflight 链，交给 ReAct（不继续尝试后续条目）。"""
+    defer_to_role_execution_on_success: bool = field(compare=False, default=False)
+    """match 且槽位已齐、handle 返回 None 时，终止整条 preflight 链，交给 RoleExecutionAgent（不继续尝试后续条目）。"""
 
 
 class IntentRegistry:
@@ -49,7 +49,7 @@ class IntentRegistry:
         handle: HandleFn,
         l1_tier: str = "first_party",
         required_slots: list[dict[str, Any]] | None = None,
-        defer_to_react_on_success: bool = False,
+        defer_to_role_execution_on_success: bool = False,
     ) -> None:
         try:
             from l3_node.intent_gateway.config import get_intent_gateway_config
@@ -72,7 +72,7 @@ class IntentRegistry:
                 handle,
                 l1_tier,
                 rs,
-                defer_to_react_on_success,
+                defer_to_role_execution_on_success,
             )
         )
         self._preflights.sort()
@@ -146,8 +146,8 @@ class IntentRegistry:
                 if out is not None:
                     logger.info("[IntentRegistry] preflight hit skill=%s", ent.skill_id)
                     return out
-                if ent.defer_to_react_on_success:
-                    logger.info("[IntentRegistry] preflight defer ReAct skill=%s", ent.skill_id)
+                if ent.defer_to_role_execution_on_success:
+                    logger.info("[IntentRegistry] preflight defer RoleExecutionAgent skill=%s", ent.skill_id)
                     return None
             except Exception as e:
                 logger.warning("[IntentRegistry] preflight %s 异常: %s", ent.skill_id, e)

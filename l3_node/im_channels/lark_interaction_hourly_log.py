@@ -1,4 +1,4 @@
-﻿"""
+"""
 Lark 机器人交互调试日志：按「本地时钟整点小时」分文件，写入
 ``~/.jachin/jachin_debug/健康skill/lark_interaction_YYYYMMDD_HH.log``。
 

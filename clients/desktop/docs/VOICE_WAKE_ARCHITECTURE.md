@@ -1,8 +1,8 @@
-﻿# 语音唤起（Voice Wake）架构方案
+# 语音唤起（Voice Wake）架构方案
 
-> **状态**：已编码（ambient 特性）— KWS 当前为 **STT 辅助回退**（JVS 短窗 STT + 短语匹配）；Porcupine 低功耗门卫待 Windows 原生库就绪后接入  
-> **前置完成**：陪伴态语音输入（JVS STT）+ 语音输出（JVS TTS + 系统扬声器）已打通  
-> **关联文档**：`VOICE_COMPANION_MODULE_PLAN.md`、`AMBIENT_AUDIO_ARCHITECTURE.md`、`docs/VOICE_AND_TTS_GUIDE.md`、**`VOICE_BARGE_IN_AND_WAKE_ACK.md`**（打断与唤醒口头确认）  
+> **状态**：已编码（ambient 特性）— KWS 当前为 **STT 辅助回退**（JVS 短窗 STT + 短语匹配）；Porcupine 低功耗门卫待 Windows 原生库就绪后接入
+> **前置完成**：陪伴态语音输入（JVS STT）+ 语音输出（JVS TTS + 系统扬声器）已打通
+> **关联文档**：`VOICE_COMPANION_MODULE_PLAN.md`、`AMBIENT_AUDIO_ARCHITECTURE.md`、`docs/VOICE_AND_TTS_GUIDE.md`、**`VOICE_BARGE_IN_AND_WAKE_ACK.md`**（打断与唤醒口头确认）
 > **代码锚点**：`src-tauri/src/stt/wake_pipeline.rs`、`wake_listener.rs`、`wake_kws.rs`、`voice_wake_bridge.rs`、`keyword_spotting.rs`、`stt_start_wake_listener`、`WakeModePanel.tsx`、`UserSettings.wake_word`、`voiceSessionStore.ts`、`chat.tsx`（WAKE_UP）
 
 ---
