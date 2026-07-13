@@ -148,6 +148,15 @@ def _stt_cloud_soft_timeout_seconds(hard_timeout_sec: float) -> float:
     return max(1.0, min(value, max(1.0, hard_timeout_sec - 2.0)))
 
 
+def _stt_fallback_grace_seconds() -> float:
+    raw = os.getenv("JACHIN_STT_FALLBACK_GRACE_SEC", "").strip()
+    try:
+        value = float(raw or "8")
+    except ValueError:
+        value = 8.0
+    return max(0.0, min(value, 12.0))
+
+
 def _stt_stream_final_timeout_seconds() -> float:
     raw = os.getenv("JACHIN_STT_STREAM_FINAL_TIMEOUT_SEC", "").strip()
     try:
@@ -537,7 +546,25 @@ def _transcribe_with_local_fallback_sync(audio_bytes: bytes, reason: str, cloud_
         )
         return None
     started = time.monotonic()
-    fallback = local_stt_fallback_service.transcribe(audio_bytes)
+    logger.warning(
+        "Local STT fallback start reason=%s cloud_elapsed_ms=%s bytes=%s model=%s",
+        reason,
+        cloud_elapsed_ms,
+        len(audio_bytes or b""),
+        getattr(local_stt_fallback_service, "model_name", "unknown"),
+    )
+    try:
+        fallback = local_stt_fallback_service.transcribe(audio_bytes)
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        logger.exception(
+            "Local STT fallback failed reason=%s cloud_elapsed_ms=%s fallback_elapsed_ms=%s error=%s",
+            reason,
+            cloud_elapsed_ms,
+            elapsed_ms,
+            e,
+        )
+        return None
     elapsed_ms = int((time.monotonic() - started) * 1000)
     logger.warning(
         "Local STT fallback used reason=%s cloud_elapsed_ms=%s fallback_elapsed_ms=%s text_len=%s",
@@ -695,7 +722,20 @@ async def _transcribe_stt_with_local_fallback(
                 break
             for task in done:
                 if task is fallback_task:
-                    fallback = task.result()
+                    try:
+                        fallback = task.result()
+                    except Exception as e:
+                        fallback = None
+                        fallback_exhausted = True
+                        orchestration_events.append(
+                            _orchestration_event("fallback_exception", started, error=type(e).__name__)
+                        )
+                        logger.exception(
+                            "Local STT fallback task failed stage=%s bytes=%s elapsed_ms=%s",
+                            stage,
+                            len(audio_bytes),
+                            int((time.monotonic() - started) * 1000),
+                        )
                     if fallback is not None:
                         orchestration_events.append(
                             _orchestration_event(
@@ -767,16 +807,81 @@ async def _transcribe_stt_with_local_fallback(
                     _attach_understanding_events(result, "stt_orchestration", orchestration_events)
                     return result
 
+        fallback_grace_sec = _stt_fallback_grace_seconds()
+        if fallback_task in pending and not fallback_exhausted and fallback_grace_sec > 0:
+            orchestration_events.append(
+                _orchestration_event(
+                    "fallback_grace_wait_start",
+                    started,
+                    hard_timeout_sec=timeout_sec,
+                    fallback_grace_sec=fallback_grace_sec,
+                )
+            )
+            logger.warning(
+                "STT hard timeout reached but local fallback still running stage=%s bytes=%s hard_timeout_sec=%.1f fallback_grace_sec=%.1f elapsed_ms=%s",
+                stage,
+                len(audio_bytes),
+                timeout_sec,
+                fallback_grace_sec,
+                int((time.monotonic() - started) * 1000),
+            )
+            try:
+                fallback = await asyncio.wait_for(fallback_task, timeout=fallback_grace_sec)
+            except asyncio.TimeoutError:
+                fallback = None
+                orchestration_events.append(
+                    _orchestration_event("fallback_grace_timeout", started, fallback_grace_sec=fallback_grace_sec)
+                )
+            except Exception as e:
+                fallback = None
+                orchestration_events.append(
+                    _orchestration_event("fallback_exception", started, error=type(e).__name__)
+                )
+                logger.exception(
+                    "Local STT fallback failed during grace wait stage=%s bytes=%s elapsed_ms=%s",
+                    stage,
+                    len(audio_bytes),
+                    int((time.monotonic() - started) * 1000),
+                )
+            if fallback is not None:
+                orchestration_events.append(
+                    _orchestration_event(
+                        "fallback_result_after_grace",
+                        started,
+                        reason="cloud_soft_timeout",
+                        text_len=len(str(getattr(fallback, "text", "") or "")),
+                        backend=str(getattr(fallback, "backend", "") or ""),
+                        cloud_still_running=not cloud_task.done(),
+                    )
+                )
+                if not cloud_task.done():
+                    orchestration_events.append(
+                        _orchestration_event("cloud_late_observer_started", started, reason="fallback_grace_returned")
+                    )
+                    _observe_late_cloud_result(cloud_task, started, stage, len(audio_bytes))
+                _attach_understanding_events(fallback, "stt_orchestration", orchestration_events)
+                return fallback
+
         for task in pending:
-            task.cancel()
-        orchestration_events.append(_orchestration_event("stt_timeout", started, timeout_sec=timeout_sec))
+            if not task.done():
+                task.cancel()
+        orchestration_events.append(
+            _orchestration_event(
+                "stt_timeout",
+                started,
+                timeout_sec=timeout_sec,
+                fallback_grace_sec=fallback_grace_sec,
+            )
+        )
         logger.warning(
-            "STT timed out stage=%s bytes=%s timeout_sec=%.1f elapsed_ms=%s fallback_started=%s",
+            "STT timed out stage=%s bytes=%s timeout_sec=%.1f fallback_grace_sec=%.1f elapsed_ms=%s fallback_started=%s fallback_exhausted=%s",
             stage,
             len(audio_bytes),
             timeout_sec,
+            fallback_grace_sec,
             int((time.monotonic() - started) * 1000),
             True,
+            fallback_exhausted,
         )
         raise asyncio.TimeoutError()
     except asyncio.CancelledError:
