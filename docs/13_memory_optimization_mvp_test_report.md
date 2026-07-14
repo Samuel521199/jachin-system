@@ -123,6 +123,25 @@ l3_node/cognitive_kernel/memory_growth_recall.py
 l3_node/cognitive_kernel/memory_confidence.py
 ```
 
+### 2.6 深度记忆影响决策链路
+
+验证点：
+
+- 用户确认的实体纠错能写入 durable correction store 和 lifecycle memory。
+- 下一次相似输入会直接命中纠错记忆，不再重复询问。
+- Memory Growth playbook 能从 Markdown Wiki 召回为 `failure_hint`。
+- RecoveryPlanner 能把召回的 playbook evidence 转成下一次恢复尝试。
+- 第二次恢复尝试会结合第一次失败历史选择不同策略，而不是预先固定 B/C/D。
+
+涉及模块：
+
+```text
+l3_node/cognitive_kernel/entity_corrections.py
+l3_node/cognitive_kernel/memory_growth_recall.py
+l3_node/cognitive_kernel/recovery_planner.py
+tests/unit/test_memory_deep_mvp.py
+```
+
 ## 3. 已执行测试命令
 
 ### 3.1 核心记忆与认知内核测试
@@ -144,6 +163,35 @@ python -m pytest -o addopts= tests\unit\test_memory_growth.py tests\unit\test_co
 - `test_memory_growth.py` 覆盖 Memory Growth scaffold、raw event、DailyReview、ConceptCurator、PlaybookBuilder、OutputReview、WeeklyReview、GrowthScheduler。
 - `test_cognitive_kernel_architecture.py` 覆盖 Capability semantic registry、ReviewBoard、Arbiter、TaskDecomposer、direct mainline。
 - `test_cognitive_kernel_runtime.py` 覆盖 TurnClosure、MemoryWriteAgent、Recovery、MemoryRecall、RoleExecutor、pending confirmation 等 runtime 链路。
+
+### 3.1.1 深度记忆链路补充测试
+
+命令：
+
+```powershell
+python -m pytest -o addopts= tests\unit\test_memory_deep_mvp.py tests\unit\test_memory_growth.py tests\unit\test_cognitive_kernel_architecture.py tests\unit\test_cognitive_kernel_runtime.py
+```
+
+结果：
+
+```text
+102 passed, 5 warnings
+```
+
+新增覆盖：
+
+- `test_confirmed_entity_correction_feeds_review_board_and_memory`
+  - 模拟用户确认 `lock -> Lark`。
+  - 验证纠错写入 durable correction store。
+  - 验证纠错写入 lifecycle memory。
+  - 再次输入“打开 lock”时，ReviewBoard 直接识别为打开 Lark，且不再要求澄清。
+
+- `test_memory_growth_playbook_recall_drives_recovery_next_attempt`
+  - 写入 Memory Growth playbook Markdown。
+  - 通过 `recall_memory_growth` 召回为 `failure_hint`。
+  - 将召回证据注入 DecisionContract。
+  - RecoveryPlanner 第一次选择 `memory_growth_longer_timeout`。
+  - 第二次结合第一次失败历史，切换为 `memory_growth_retry_same_path`。
 
 ### 3.2 提交前格式检查
 
@@ -266,6 +314,8 @@ test_turn_closure_memory_requests_execute_via_memory_agent
 | MemoryRecallAgent | 通过 | 经验记忆可召回进 RelevantMemoryBundle |
 | TurnClosure MemoryWriteAgent | 通过 | 记忆写入走 WorkOrder 通道 |
 | Recovery 记忆基础 | 通过 | failure hint 可进入后续恢复证据 |
+| 用户纠错记忆影响 ReviewBoard | 通过 | `lock -> Lark` 确认后，下次直接识别为 Lark |
+| Memory Growth Playbook 影响 RecoveryPlanner | 通过 | playbook 召回后驱动恢复策略，并结合上次失败切换下一策略 |
 
 ## 6. 仍需补的深度测试
 
@@ -307,7 +357,7 @@ test_turn_closure_memory_requests_execute_via_memory_agent
 
 ### 6.3 RecoveryPlanner 使用失败经验
 
-待测场景：
+已覆盖的单测场景：
 
 ```text
 路径 A 失败
@@ -321,6 +371,11 @@ B 失败后结合 A+B 原因再尝试 C
 - 不是预先写死 B/C/D。
 - 每次新尝试都引用上一轮失败原因。
 - 最多重试次数达到后输出失败总结和下一步建议。
+
+当前状态：
+
+- 单测已覆盖 Memory Growth playbook -> recall -> DecisionContract refs -> RecoveryPlanner next_attempt。
+- 尚需补真实工具执行中的 live smoke，确认 recovery attempt 真的会重新下发到 RoleExecutor 并写入 Evidence Console。
 
 ### 6.4 Daily / Weekly Review 长周期测试
 
