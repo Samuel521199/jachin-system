@@ -280,3 +280,220 @@ Jachin 记忆优化 MVP 已经通过更深层次压力测试：
 - Recovery 有最大尝试上限和失败摘要。
 
 当前结论：记忆 MVP 的单元级和组合级闭环已经成立。下一步应进入真实 OS 任务压力测试，把这些记忆能力放进桌面 App、Lark、文件系统、计算器等 live workflow 中验证。
+
+## 9. OS Live Stress Matrix 补充验证
+
+本轮新增 `scripts/os_live_stress_matrix.py`，用于把记忆能力放进更接近真实 OS 助手的链路中验证。默认模式不触碰桌面，只验证规划、学习、阻断、恢复和证据生成；`--live-safe` 模式会桥接安全的真实 Windows 能力探针，Lark 仍然保持 dry-run，不会真实发送消息。
+
+### 9.1 新增脚本
+
+```text
+scripts/os_live_stress_matrix.py
+tests/unit/test_os_live_stress_matrix.py
+```
+
+脚本覆盖：
+
+- 常用 App 泛化：WeChat、Chrome、Edge、Excel、WPS、Cursor、VS Code。
+- 用户指点后学习：`lock -> Lark` 被确认后，`lok` 这类相似误识别能直接命中 Lark，不再反复追问。
+- 负反馈回滚：已学会的纠错如果连续执行失败，会重新进入 review_required，不再盲目自动执行。
+- 省略指令记忆：用户只说“close”时，结合最近打开 App 记忆，优先关闭最新目标，而不是误关旧目标。
+- 长历史压力：120 条 recent action 中仍能选中最新 App，而不是被旧历史污染。
+- 计算器复合任务拆解：`open calculator and calculate 99+100` 拆成打开 Calculator + 执行计算两个 WorkOrder。
+- Lark 消息任务拆解：`send to Neil: hello` 拆成打开 Lark + MessageExecutorAgent 发送。
+- 缺槽阻断：`open L A R K send message` 没有收件人或内容时，不允许虚假执行，必须澄清。
+- 文件任务规划：read / open / reveal 三类文件操作分别路由到对应工具。
+- Recovery 极端场景：连续失败达到最大尝试次数后停止盲目重试，并输出失败摘要。
+- 存储韧性：lifecycle memory JSONL 混入坏 JSON 行后仍能忽略坏行并召回有效记忆。
+
+### 9.2 Dry-run 结果
+
+命令：
+
+```powershell
+python scripts\os_live_stress_matrix.py
+```
+
+结果：
+
+```text
+11/11 passed
+```
+
+Evidence：
+
+```text
+output\os_live_stress_matrix\20260714_161329\os_live_stress_matrix_20260714_161329.evidence.json
+```
+
+### 9.3 Live-safe 结果
+
+命令：
+
+```powershell
+python scripts\os_live_stress_matrix.py --live-safe
+```
+
+结果：
+
+```text
+12/12 passed
+```
+
+Evidence：
+
+```text
+output\os_live_stress_matrix\20260714_161342\os_live_stress_matrix_20260714_161342.evidence.json
+```
+
+关键通过项：
+
+| 类别 | 场景 | 结果 |
+| --- | --- | --- |
+| planning | common_apps_generalize | 通过 |
+| learning | guided_app_correction_generalizes | 通过 |
+| learning | negative_feedback_reopens_review | 通过 |
+| memory | close_uses_latest_recent_app | 通过 |
+| memory | close_uses_latest_under_long_recent_history | 通过 |
+| workflow | calculator_open_then_calculate_dag | 通过 |
+| workflow | lark_message_open_then_send_slots | 通过 |
+| safety | missing_message_slots_block_execution | 通过 |
+| workflow | file_read_open_reveal_planning | 通过 |
+| recovery | attempt_limit_and_failure_summary | 通过 |
+| resilience | lifecycle_store_corrupt_line | 通过 |
+| live_safe | capability_live_matrix_bridge | 通过 |
+
+### 9.4 可学习泛化结论
+
+本轮重点补上了“初期不会用，但被用户指点后会慢慢学会”的机制验证：
+
+- 第一次误识别：系统可以提出候选确认。
+- 用户确认：纠错写入 durable correction store 和 lifecycle memory。
+- 相似输入：后续 `lok` 这类相似拼写/听写结果直接映射到 Lark。
+- 成功反馈：纠错记忆会增加置信度。
+- 失败反馈：如果相同纠错连续失败，会重新进入 review_required，避免错误记忆永久污染。
+- 泛化边界：确认成功的相似拼写可以自动泛化；一旦该记忆被负反馈降权，相似拼写不再自动吞掉，直接回到谨慎确认路径。
+
+这让 App 泛化不只是 alias 表，而是进入统一记忆闭环：用户指点 -> 记忆写入 -> ReviewBoard 召回 -> Arbiter 门控 -> WorkOrder 执行 -> Verification 反馈 -> Memory 再更新。
+
+### 9.5 仍需继续的真实验收
+
+下一阶段可以继续扩大 live-safe 到 live-confirmed：
+
+- 真实打开/关闭更多 App，并验证前台窗口。
+- 真实计算器输入表达式，截图/OCR 校验表达式和结果。
+- Lark 真实发送只在明确用户授权下开启，并要求发送后 OCR/API 证据。
+- 文件 open/reveal 可以在用户允许后真实触发 Explorer。
+- 对同一任务连续制造失败，验证 Recovery 是否每次吸收上一轮失败原因后再选择下一步。
+
+### 9.6 Live-confirmed 真实压测结果
+
+本轮在用户明确授权后执行了真实桌面动作，并强制所有步骤进入 `DecisionContract -> WorkOrder -> RoleExecutor -> Verification -> TurnClosure -> MemoryWriteRequest` 链路。
+
+命令：
+
+```powershell
+python scripts\os_live_stress_matrix.py --live-confirmed --confirmed-lark-recipients "Neil,测试备注冒烟草稿"
+```
+
+结果：
+
+```text
+14/14 passed
+```
+
+Evidence：
+
+```text
+output\os_live_stress_matrix\20260714_162500\os_live_stress_matrix_20260714_162500.evidence.json
+```
+
+关键真实动作：
+
+| 类别 | 场景 | 结果 | 证据 |
+| --- | --- | --- | --- |
+| live_confirmed | Lark 真实发送给 Neil | 通过 | `output\os_live_stress_matrix\20260714_162500\live_confirmed\lark\Neil\` |
+| live_confirmed | Lark 真实发送给测试备注冒烟草稿 | 通过 | `output\os_live_stress_matrix\20260714_162500\live_confirmed\lark\测试备注冒烟草稿\` |
+| live_confirmed | 文件 reveal/open | 通过 | `output\os_live_stress_matrix\20260714_162500\os_live_stress_20260714_162500_live_confirmed_file_reveal_and_open.evidence.json` |
+| live_confirmed | 计算器 91+9 视觉校验 | 通过 | `output\os_live_stress_matrix\20260714_162500\live_confirmed\calculator\20260714_162602_calculator_after_attempt_1.png` |
+
+安全边界：
+
+- `--live-confirmed` 下 Lark 真实发送只允许 `Neil` 和 `测试备注冒烟草稿`。
+- 任何白名单外收件人会在工具调用前被脚本层拦截，不会进入 Lark 发送流程。
+- 每个真实动作都会写入单独 evidence 文件；失败时会额外生成 `failure_hint` 记忆请求，供后续 RecoveryPlanner 和 MemoryRecallAgent 使用。
+
+## 10. 当前记忆系统水平评估
+
+基于本报告中的单元测试、压力测试、live-safe 和 live-confirmed 真实压测结果，当前 Jachin 记忆系统可以评定为：
+
+```text
+整体水平：可验证闭环 MVP / 准 Beta 级
+完成度判断：约 70% - 75%
+适合场景：内部研发验证、演示、低风险真实办公任务、持续积累失败经验
+暂不适合：完全无人值守的高风险生产自动化、大规模多人多设备并发、长期无人维护知识治理
+```
+
+### 10.1 已达到的能力水平
+
+1. 已经不是简单上下文缓存，而是具备 `TurnClosure -> MemoryWriteRequest -> lifecycle memory -> Recall -> Recovery` 的闭环。
+2. 用户纠错可以被写入统一记忆，并在后续相似输入中影响 ReviewBoard / Arbiter 的判断。
+3. 成功任务、失败任务、工具习惯、历史任务摘要、failure_hint 都已经有结构化写入路径。
+4. MemoryRecallAgent 可以召回 concepts、playbooks、tool_habits、failure_hints、historical_task_summaries。
+5. DailyReview 可以处理 raw evidence、重复数据和坏 JSON，不会因为局部损坏中断整轮复盘。
+6. RecoveryPlanner 已经可以吸收失败历史，不再是一次性写死 B/C/D 路径。
+7. live-confirmed 压测证明记忆链路可以进入真实 OS 任务，而不只是单元测试里的模拟对象。
+8. Lark 真实发送、文件 reveal/open、计算器视觉校验都能产生 Evidence，并进入 TurnClosure。
+9. 白名单和失败记忆机制已经具备基本安全边界，避免真实发送误扩散。
+
+### 10.2 当前还不是生产满级的原因
+
+1. 真实失败样本还不够多，Recovery 的策略质量更多来自设计和小样本验证，还没有被大量真实失败训练过。
+2. 记忆质量治理还偏规则化，需要继续增强冲突合并、陈旧淘汰、置信度衰减和人工确认队列。
+3. 记忆的跨任务迁移仍需扩大验证，例如从 Lark 纠错泛化到微信、浏览器、WPS、文件系统和 Mac App。
+4. Evidence 已能落盘，但面向用户/管理员的可视化分析还不够强，需要把成功率、失败类型、记忆命中率、恢复收益做成趋势面板。
+5. Memory Growth 已有 raw -> concept/playbook/output 的管线，但高价值知识沉淀还需要更强的质量评分和复盘节奏。
+6. 多设备、多 L1 来源、多用户 profile 下的记忆隔离与同步还需要继续做压力测试。
+7. 当前记忆能帮助任务执行，但距离“主动发现模式、主动提出改进、主动整理知识资产”的自生长系统还有距离。
+
+### 10.3 后续优化空间
+
+优先级一：记忆质量治理
+
+- 增加记忆置信度衰减：长期未被命中、被失败反馈打脸、与新事实冲突的记忆自动降权。
+- 增加冲突合并策略：同一对象出现多个说法时，不直接覆盖，而是进入冲突队列等待证据或用户确认。
+- 增加陈旧记忆清理：项目路径、App 路径、联系人别名、窗口标题等容易变化的信息要有过期机制。
+- 增加高价值记忆评分：能跨任务复用、能减少失败、能减少用户澄清的问题优先沉淀为 playbook。
+
+优先级二：真实任务压力测试
+
+- 扩大 live-confirmed 场景：App open/switch/close、文件 read/open/reveal/write、Lark 多对象发送、计算器视觉校验。
+- 故意制造失败：关闭 Lark、改联系人名、移动文件、打开错误窗口、网络断开，验证 Recovery 是否逐步换路径。
+- 增加连续任务压测：同一个用户连续 50-100 轮任务，看记忆是否膨胀、污染或错误泛化。
+- 增加跨天测试：今天学到的纠错和工具习惯，明天是否还能正确召回，并能识别已经过期的信息。
+
+优先级三：Memory Growth 自生长
+
+- 将 raw evidence 按天自动复盘，生成稳定概念、失败模式、可复用方法论和输出模板。
+- 把高频成功路径沉淀为 workflow playbook，把高频失败路径沉淀为 recovery playbook。
+- 输出回流：把生成的报告、消息、总结、修复记录重新进入 raw evidence，形成知识循环。
+- 给每条沉淀知识附带来源证据，避免“AI 自己编出来的经验”污染长期记忆。
+
+优先级四：可视化和运营指标
+
+- 增加记忆命中率：每个任务用了哪些记忆、命中后是否提高成功率。
+- 增加恢复收益：哪些 failure_hint 真的帮助 Recovery 成功。
+- 增加污染监控：哪些记忆被多次使用后导致失败，需要降权或删除。
+- 增加 7/14/30 天趋势：记忆数量、有效率、冲突数、陈旧数、用户确认队列。
+
+优先级五：安全与边界
+
+- 对真实发送、删除、覆盖、批量移动等动作继续强制 Evidence 和白名单/确认策略。
+- 让记忆写入也分风险等级：用户偏好、业务规则、联系人映射、危险操作习惯不能同等对待。
+- 对“用户一次确认后永久自动执行”的记忆增加失效期，避免长期误操作。
+
+### 10.4 结论
+
+当前记忆系统已经达到“能真实参与任务执行，并能被 Evidence 验证”的水平，明显高于普通聊天上下文和简单 RAG。它已经具备自学习、自纠错、自复盘的基础骨架。
+
+下一阶段的目标不再是证明“有没有记忆”，而是证明“记忆是否稳定、是否可靠、是否越用越强”。核心方向是：用更多真实任务和失败样本喂给系统，让 Memory Growth 从日志复盘升级为真正可持续维护的知识资产系统。

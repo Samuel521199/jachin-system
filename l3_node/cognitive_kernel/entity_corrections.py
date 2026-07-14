@@ -20,6 +20,7 @@ from .paths import state_dir
 
 
 _APP_CORRECTION_SIMILARITY_THRESHOLD = 0.88
+_APP_CORRECTION_LEARNED_SIMILARITY_THRESHOLD = 0.84
 
 
 def normalize_entity_surface(value: str) -> str:
@@ -57,7 +58,10 @@ def get_learned_app_correction(surface: str) -> dict[str, Any]:
                 "failure_count": int(record.get("failure_count") or 0),
                 "review_required": bool(record.get("review_required") or False),
             }
-    if best and float(best.get("score") or 0.0) >= _APP_CORRECTION_SIMILARITY_THRESHOLD:
+    threshold = _APP_CORRECTION_SIMILARITY_THRESHOLD
+    if best and best.get("review_required") is False and int(best.get("success_count") or 0) >= 1:
+        threshold = _APP_CORRECTION_LEARNED_SIMILARITY_THRESHOLD
+    if best and float(best.get("score") or 0.0) >= threshold:
         return best
     return {}
 
