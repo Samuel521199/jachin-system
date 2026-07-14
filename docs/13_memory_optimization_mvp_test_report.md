@@ -1,14 +1,12 @@
-# Jachin 记忆优化最小 MVP 测试报告
+# Jachin 记忆优化 MVP 测试报告
 
-版本：v0.9.110
-
-提交：`3aeea4e7`
+版本：v0.9.110+
 
 日期：2026-07-14
 
 ## 1. 测试目标
 
-本轮测试验证 Jachin 第一版记忆优化最小 MVP 是否已经形成可用闭环：
+本轮测试验证 Jachin 第一版记忆优化 MVP 是否形成可用闭环，并补充极端压力场景，重点确认：
 
 ```text
 用户输入
@@ -21,22 +19,21 @@
 -> lifecycle memory
 -> DailyReview
 -> Concepts / Playbooks / Outputs
--> MemoryRecall 反哺下一轮
+-> MemoryRecall 反哺下一轮任务
+-> RecoveryPlanner 基于失败历史逐步选择下一条路径
 ```
 
-重点不是只验证“能写日志”，而是验证记忆是否能被结构化写入、复盘、提升、召回，并影响下一轮任务理解和恢复策略。
+本轮不只验证“能写日志”，还验证记忆是否能被结构化写入、复盘、提升、召回，并影响下一轮任务理解、恢复策略和执行解释。
 
-## 2. 本轮覆盖能力
+## 2. 已覆盖能力
 
 ### 2.1 意图和能力识别
-
-验证点：
 
 - Capability / Skill Manifest 能进入 Capability Registry。
 - ReviewBoard 能输出 capability semantic candidates。
 - `lock` 这类误识别文本能排序到 Lark 候选。
 - 轻量语义候选不会绕过 Arbiter 门控。
-- 用户确认后的纠错可写入统一记忆。
+- 用户确认后的纠错可写入统一记忆，下次直接命中。
 
 涉及模块：
 
@@ -49,43 +46,19 @@ l3_node/cognitive_kernel/entity_corrections.py
 
 ### 2.2 任务拆解
 
-验证点：
-
 - TaskDecomposer 能基于 capability metadata 生成 DAG。
 - Manifest 中声明的 `decomposition.nodes` 能转成正式任务节点。
-- DAG 节点保留 role_agent、tool/capability、inputs、risk_level、verification_criteria。
-
-涉及模块：
-
-```text
-l3_node/cognitive_kernel/task_decomposer.py
-l3_node/cognitive_kernel/task_dag.py
-docs/12_task_decomposer_agent_architecture.md
-```
+- DAG 节点保留 `goal`、`role_agent`、`tool/capability`、`inputs`、`risk_level`、`verification_criteria`。
 
 ### 2.3 任务经验写回
 
-验证点：
-
-- WorkOrder 执行结束后能生成任务经验。
+- WorkOrder 执行后能生成任务经验。
 - 成功任务写入 `historical_task_summary` 和 `tool_habit`。
 - 失败任务写入 `failure_hint`。
-- `close_turn` 在没有显式 TaskMemory 的旧入口下，也会兜底写入 `historical_task_summary`。
+- `close_turn` 在没有显式 TaskMemory 的入口下，也会兜底写入 `historical_task_summary`。
 - MemoryWriteAgent 通过 WorkOrder 通道写入，不走旁路。
 
-涉及模块：
-
-```text
-l3_node/cognitive_kernel/task_memory.py
-l3_node/cognitive_kernel/runtime.py
-l3_node/cognitive_kernel/direct_mainline.py
-l3_node/cognitive_kernel/memory_lifecycle.py
-l3_node/cognitive_kernel/closure_memory.py
-```
-
 ### 2.4 Memory Growth 自生长链路
-
-验证点：
 
 - TurnClosure 能写入 raw evidence。
 - DailyReview 能从 raw event 生成 concept / playbook / output patch。
@@ -94,211 +67,164 @@ l3_node/cognitive_kernel/closure_memory.py
 - OutputReview 能沉淀最终输出。
 - GrowthScheduler 能串起 full pipeline。
 
-涉及模块：
-
-```text
-l3_node/cognitive_kernel/memory_growth.py
-l3_node/cognitive_kernel/daily_review.py
-l3_node/cognitive_kernel/concept_curator.py
-l3_node/cognitive_kernel/playbook_builder.py
-l3_node/cognitive_kernel/output_review.py
-l3_node/cognitive_kernel/growth_scheduler.py
-l3_node/cognitive_kernel/weekly_review.py
-```
-
 ### 2.5 记忆召回
 
-验证点：
-
-- lifecycle memory 可以召回历史任务摘要。
-- lifecycle memory 可以召回工具习惯。
-- lifecycle memory 可以召回失败提示。
+- lifecycle memory 可以召回历史任务摘要、工具习惯、失败提示。
 - MemoryRecallAgent 能同时返回 concepts、playbooks、tool_habits、failure_hints、historical_task_summaries。
-
-涉及模块：
-
-```text
-l3_node/cognitive_kernel/memory_recall_agent.py
-l3_node/cognitive_kernel/memory_growth_recall.py
-l3_node/cognitive_kernel/memory_confidence.py
-```
-
-### 2.6 深度记忆影响决策链路
-
-验证点：
-
-- 用户确认的实体纠错能写入 durable correction store 和 lifecycle memory。
-- 下一次相似输入会直接命中纠错记忆，不再重复询问。
 - Memory Growth playbook 能从 Markdown Wiki 召回为 `failure_hint`。
-- RecoveryPlanner 能把召回的 playbook evidence 转成下一次恢复尝试。
-- 第二次恢复尝试会结合第一次失败历史选择不同策略，而不是预先固定 B/C/D。
 
-涉及模块：
+### 2.6 Recovery 逐步自我纠正
 
-```text
-l3_node/cognitive_kernel/entity_corrections.py
-l3_node/cognitive_kernel/memory_growth_recall.py
-l3_node/cognitive_kernel/recovery_planner.py
-tests/unit/test_memory_deep_mvp.py
-```
+- RecoveryPlanner 不再一次性写死 B/C/D 路径。
+- 第一次失败后，结合失败原因和记忆选择下一条恢复路径。
+- 第二次失败后，会结合 A+B 的失败原因再选择后续策略。
+- 达到最大尝试次数后，会输出失败摘要、失败原因聚合和下一步建议。
 
 ## 3. 已执行测试命令
 
-### 3.1 核心记忆与认知内核测试
+### 3.1 核心记忆与认知内核组合测试
 
 命令：
 
 ```powershell
-python -m pytest -o addopts= tests\unit\test_memory_growth.py tests\unit\test_cognitive_kernel_architecture.py tests\unit\test_cognitive_kernel_runtime.py
+python -m pytest -o addopts= -q tests\unit\test_memory_stress_mvp.py tests\unit\test_memory_deep_mvp.py tests\unit\test_memory_growth.py tests\unit\test_cognitive_kernel_architecture.py tests\unit\test_cognitive_kernel_runtime.py
 ```
 
 结果：
 
 ```text
-100 passed, 9 warnings
+105 passed in 30.27s
 ```
 
 说明：
 
-- `test_memory_growth.py` 覆盖 Memory Growth scaffold、raw event、DailyReview、ConceptCurator、PlaybookBuilder、OutputReview、WeeklyReview、GrowthScheduler。
-- `test_cognitive_kernel_architecture.py` 覆盖 Capability semantic registry、ReviewBoard、Arbiter、TaskDecomposer、direct mainline。
-- `test_cognitive_kernel_runtime.py` 覆盖 TurnClosure、MemoryWriteAgent、Recovery、MemoryRecall、RoleExecutor、pending confirmation 等 runtime 链路。
+- 本次组合测试包含原有核心内核测试和新增压力测试。
+- 已通过 `pytest.ini` 过滤外部依赖噪声 warning，避免测试报告被无关 warning 干扰。
 
-### 3.1.1 深度记忆链路补充测试
+### 3.2 压力测试单独运行
 
 命令：
 
 ```powershell
-python -m pytest -o addopts= tests\unit\test_memory_deep_mvp.py tests\unit\test_memory_growth.py tests\unit\test_cognitive_kernel_architecture.py tests\unit\test_cognitive_kernel_runtime.py
+python -m pytest -o addopts= -q tests\unit\test_memory_stress_mvp.py
 ```
 
 结果：
 
 ```text
-102 passed, 5 warnings
+3 passed
 ```
 
-新增覆盖：
+## 4. 新增极端压力场景
 
-- `test_confirmed_entity_correction_feeds_review_board_and_memory`
-  - 模拟用户确认 `lock -> Lark`。
-  - 验证纠错写入 durable correction store。
-  - 验证纠错写入 lifecycle memory。
-  - 再次输入“打开 lock”时，ReviewBoard 直接识别为打开 Lark，且不再要求澄清。
+### 4.1 生命周期记忆重复风暴
 
-- `test_memory_growth_playbook_recall_drives_recovery_next_attempt`
-  - 写入 Memory Growth playbook Markdown。
-  - 通过 `recall_memory_growth` 召回为 `failure_hint`。
-  - 将召回证据注入 DecisionContract。
-  - RecoveryPlanner 第一次选择 `memory_growth_longer_timeout`。
-  - 第二次结合第一次失败历史，切换为 `memory_growth_retry_same_path`。
-
-### 3.2 提交前格式检查
-
-命令：
-
-```powershell
-git diff --cached --check
-```
-
-结果：
+测试文件：
 
 ```text
-通过
+tests/unit/test_memory_stress_mvp.py
 ```
 
-处理过的问题：
+场景：
 
-- 清理了 staged 文本文件中的行尾空格。
-- 清理了部分文件 EOF 多余空行。
+- 对同一个 `tool_habit` 连续写入 150 次。
+- 验证 dedupe 后仍然只有一个 memory id。
+- 验证 `hit_count == 150`。
+- 验证召回时不会出现 150 条重复记忆。
 
-### 3.3 敏感文件检查
+结论：通过。重复写入会合并为同一条长期记忆，不会污染召回结果。
 
-命令：
+### 4.2 短期记忆 TTL 过期压力
 
-```powershell
-git diff --cached --name-only | rg -n "(^|/)(\.env|.*\.env$|.*\.env\.|.*secret.*|.*token.*)"
-```
+场景：
 
-结果：
+- 写入 40 条 `short_term_action`。
+- TTL 设置为 `1ms`。
+- 触发 `expire_lifecycle_memories()`。
+- 验证全部过期后无法再召回。
 
-```text
-无 staged .env / token / secret 文件名命中
-```
+结论：通过。短期记忆不会无限膨胀，生命周期清理可用。
 
-补充：
+### 4.3 DailyReview 大文件、重复行、坏 JSON 容错
 
-- `.env`
-- `clients/desktop/.env`
-- `cloud/nexus/.env.local`
-- `dist_jachin_desktop/.env`
+场景：
 
-仍处于 ignored 状态，未进入提交。
+- 构造 60 条有效 raw evidence。
+- 追加 1 条重复 raw evidence。
+- 追加 1 条非法 JSON 行。
+- 运行 DailyReview。
 
-## 4. 测试中发现并修复的问题
+验证：
 
-### 4.1 Growth pipeline concept 不提升
+- `raw_event_count == 61`。
+- `passed_count == 60`。
+- concept / playbook / output candidates 均能生成。
+- 只记录一条坏 JSON 修复 warning。
+- candidate id 去重后不重复。
+
+结论：通过。DailyReview 可以处理大批量 raw、重复行和部分损坏数据，不会整轮崩溃。
+
+### 4.4 Recovery 最大尝试次数和失败摘要
+
+场景：
+
+- 构造 AppControl focus timeout 失败。
+- 注入 Memory Growth playbook 作为失败恢复证据。
+- 设置 `max_attempts = 2`。
+- 模拟两次恢复都失败。
+
+验证：
+
+- 第三次不会继续盲目重试。
+- final failure report 聚合每次失败原因。
+- report 保留 memory_context_refs。
+- report 给出下一步建议。
+
+结论：通过。Recovery 有尝试上限，也能解释为什么失败。
+
+## 5. 本轮修复的问题
+
+### 5.1 pytest warning 噪声
 
 现象：
 
-```text
-test_growth_scheduler_runs_full_pipeline 失败
-concept_result.promoted_count == 0
-```
+- fastembed 输出 mean pooling warning。
+- psutil 在 Windows 下输出 `getargs` deprecation warning。
 
-原因：
+处理：
 
-- 测试使用 `lark_message_send` 的假 observation。
-- 新架构要求消息发送必须有发送后验证证据。
-- 该假 observation 被正确判定为 verification failed。
-- 失败任务只生成低置信失败候选，不应直接提升为稳定 concept。
+- 在 `pytest.ini` 增加 `filterwarnings`，过滤外部依赖噪声。
+- 保留业务测试失败和真实 warning 的可见性。
 
-修复：
-
-- 将 pipeline 成功链测试改为可本地验证的 `core:fs_read`。
-- 保留 Lark 消息发送必须验证的严格原则，避免再次出现虚假发送。
-
-### 4.2 TurnClosure 只有短期动作记忆
+### 5.2 DailyReview 压测中 output candidate 不生成
 
 现象：
 
-- 部分旧入口只写 `short_term_action`。
-- 如果上游没有显式 TaskMemory，DailyReview 缺少可提升的任务摘要。
+- 初版压测 raw 数据缺少完整输出提升线索，导致 `output_candidate_count == 0`。
 
-修复：
+处理：
 
-- `close_turn` 增加兜底 `historical_task_summary` 写入。
-- 如果上游已经传入更详细的 TaskMemory，则不重复生成。
+- 压测 raw event 增加 `final_user_message_intent`、`verification_status`、`executed_work_orders` 和 `promotion_targets`。
 
-效果：
+结论：
 
-- 任意执行过 WorkOrder 的 turn，至少会产生一条可复盘任务摘要。
-- DailyReview 能稳定从 raw 中抽取候选概念。
+- 修复后 concepts、playbooks、outputs 均能生成。
 
-### 4.3 MemoryWriteAgent 测试断言过旧
+### 5.3 中文断言编码风险
 
 现象：
 
-```text
-test_turn_closure_memory_requests_execute_via_memory_agent
-期望 1 条 MemoryWriteAgent 结果，实际 2 条
-```
+- Windows 控制台容易把 UTF-8 中文显示为乱码。
 
-原因：
+处理：
 
-- 新增 `historical_task_summary` 后，TurnClosure memory writes 从 1 条变为 2 条。
+- 压测断言从中文全文匹配改为结构化字段和关键数值判断。
+- 测试报告保留 UTF-8 中文正文，便于人工阅读。
 
-修复：
-
-- 测试改为断言：
-  - `short_term_action`
-  - `historical_task_summary`
-- 并确认两条都通过 MemoryWriteAgent WorkOrder 执行。
-
-## 5. 当前通过的核心测试项
+## 6. 当前通过的核心测试项
 
 | 测试类别 | 状态 | 说明 |
-| -------- | ---- | ---- |
+| --- | --- | --- |
 | Memory Growth scaffold | 通过 | 目录、模板、schema 可生成 |
 | Raw Evidence 写入 | 通过 | TurnClosure 可写 raw event |
 | Daily Review | 通过 | raw 可生成 review patch |
@@ -313,110 +239,44 @@ test_turn_closure_memory_requests_execute_via_memory_agent
 | MemoryLifecycle | 通过 | 任务摘要、工具习惯、失败提示可写入 |
 | MemoryRecallAgent | 通过 | 经验记忆可召回进 RelevantMemoryBundle |
 | TurnClosure MemoryWriteAgent | 通过 | 记忆写入走 WorkOrder 通道 |
-| Recovery 记忆基础 | 通过 | failure hint 可进入后续恢复证据 |
+| Recovery 记忆基础 | 通过 | failure hint 可进入恢复证据 |
 | 用户纠错记忆影响 ReviewBoard | 通过 | `lock -> Lark` 确认后，下次直接识别为 Lark |
-| Memory Growth Playbook 影响 RecoveryPlanner | 通过 | playbook 召回后驱动恢复策略，并结合上次失败切换下一策略 |
+| Memory Growth Playbook 影响 RecoveryPlanner | 通过 | playbook 召回后驱动恢复策略 |
+| 重复记忆风暴 | 通过 | 150 次重复写入合并为一条 |
+| 短期记忆过期压力 | 通过 | TTL 到期后可批量清理 |
+| DailyReview 坏数据容错 | 通过 | 大量 raw、重复 raw、坏 JSON 不会中断整轮 |
+| Recovery 最大尝试上限 | 通过 | 达到上限后输出失败摘要，不盲目重试 |
 
-## 6. 仍需补的深度测试
+## 7. 仍需补充的真实压力测试
 
-### 6.1 真实桌面任务记忆回放
-
-待测场景：
-
-```text
-打开浏览器
-关闭
-打开 Lark
-发送消息给 Neil
-再次输入“关闭”
-验证是否能根据最近任务和状态判断关闭对象
-```
-
-验收：
-
-- Evidence Console 能看到 DecisionContract。
-- MemoryRecall 能引用最近 App / 最近动作。
-- 用户纠错后再次输入相似内容不再重复询问。
-
-### 6.2 Lark 真实发送记忆链路
-
-待测场景：
+单元和组合测试已经覆盖记忆 MVP 的核心链路，但还需要真实桌面任务压力测试：
 
 ```text
-打开 Lark 给 Neil 发送“你好”
+打开浏览器 -> 关闭
+打开 Lark -> 发送消息给 Neil
+打开计算器 -> 输入表达式 -> 视觉校验结果
+文件 read/open/reveal
+多轮用户纠错后再次输入相似任务
 ```
 
-验收：
+验收重点：
 
-- 不允许虚假发送。
-- 必须有 post-send verification。
-- 成功后写入：
-  - contact/entity usage
-  - communication tool habit
-  - historical_task_summary
+- Evidence Console 能看到 DecisionContract、WorkOrder、Verification、Recovery、TurnClosure。
+- 不允许虚假发送、虚假打开、虚假计算。
+- 每个失败都必须写入 failure_hint。
+- 重复失败后 RecoveryPlanner 必须逐步改变策略。
 
-### 6.3 RecoveryPlanner 使用失败经验
+## 8. 当前结论
 
-已覆盖的单测场景：
+Jachin 记忆优化 MVP 已经通过更深层次压力测试：
 
-```text
-路径 A 失败
-系统记录失败原因
-下一次类似任务先尝试路径 B
-B 失败后结合 A+B 原因再尝试 C
-```
+- 记忆可写入。
+- 记忆可去重。
+- 记忆可过期。
+- raw evidence 可容错复盘。
+- concepts / playbooks / outputs 可提升。
+- 用户纠错可反哺意图识别。
+- 失败经验可反哺 Recovery。
+- Recovery 有最大尝试上限和失败摘要。
 
-验收：
-
-- 不是预先写死 B/C/D。
-- 每次新尝试都引用上一轮失败原因。
-- 最多重试次数达到后输出失败总结和下一步建议。
-
-当前状态：
-
-- 单测已覆盖 Memory Growth playbook -> recall -> DecisionContract refs -> RecoveryPlanner next_attempt。
-- 尚需补真实工具执行中的 live smoke，确认 recovery attempt 真的会重新下发到 RoleExecutor 并写入 Evidence Console。
-
-### 6.4 Daily / Weekly Review 长周期测试
-
-待测场景：
-
-```text
-连续生成 7 天 raw event
-运行 DailyReview + WeeklyReview
-```
-
-验收：
-
-- 生成 7/14/30 天趋势。
-- 能识别重复失败模式。
-- 能标记陈旧概念。
-- 能产出需要用户确认的知识队列。
-
-### 6.5 Concepts / Playbooks 对规划的实际影响
-
-待测场景：
-
-```text
-先让系统沉淀一个 Lark 发送 playbook
-再发起新的“发消息给 Neil”任务
-```
-
-验收：
-
-- ReviewBoard / Arbiter 的 evidence 中出现相关 playbook 引用。
-- TaskDecomposer 按 playbook 生成更稳定的 WorkOrder。
-- Evidence Console 展示“为什么选择这条路径”。
-
-## 7. 当前结论
-
-v0.9.110 已经达到“记忆优化最小 MVP”的标准：
-
-- 任务可以写入 raw。
-- raw 可以被 DailyReview 消化。
-- 稳定候选可以提升为 concepts。
-- 成功/失败经验可以进入 playbooks 和 lifecycle memory。
-- MemoryRecall 可以把这些经验带回下一轮任务。
-- Capability/Skill metadata 已经参与意图识别和任务拆解。
-
-但它还不是最终形态。下一阶段要重点做真实桌面任务和 Lark 任务的 live memory replay，让记忆不只在单测中闭环，而是在真实 OS 助手任务里稳定影响决策、恢复和解释。
+当前结论：记忆 MVP 的单元级和组合级闭环已经成立。下一步应进入真实 OS 任务压力测试，把这些记忆能力放进桌面 App、Lark、文件系统、计算器等 live workflow 中验证。
