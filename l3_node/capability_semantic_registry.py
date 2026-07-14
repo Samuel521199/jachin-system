@@ -7,8 +7,10 @@ they can be indexed, shown in evidence, and extended by MCP/Skill metadata.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 
@@ -381,6 +383,163 @@ def _metadata_override(tool: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _manifest_roots() -> list[Path]:
+    roots = [
+        _repo_root() / "skills_repo",
+        _repo_root() / "dist_jachin_desktop" / "skills_repo",
+    ]
+    home = Path(os.environ.get("JACHIN_HOME") or Path.home() / ".jachin")
+    roots.extend(
+        [
+            home / "skills_repo",
+            home / "installed" / "skills_repo",
+            home / "capabilities",
+            home / "packages",
+        ]
+    )
+    out: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root).lower()
+        if key not in seen and root.exists():
+            seen.add(key)
+            out.append(root)
+    return out
+
+
+def _iter_plugin_jsons(limit: int = 500) -> list[Path]:
+    out: list[Path] = []
+    for root in _manifest_roots():
+        try:
+            for path in root.rglob("plugin.json"):
+                out.append(path)
+                if len(out) >= limit:
+                    return out
+        except Exception:
+            continue
+    return out
+
+
+def _read_plugin_json(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _list_texts(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(x).strip() for x in value if str(x).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def _manifest_metadata(data: dict[str, Any], path: Path) -> dict[str, Any]:
+    capability = data.get("capability") if isinstance(data.get("capability"), dict) else {}
+    x_capability = data.get("x_jachin_capability") if isinstance(data.get("x_jachin_capability"), dict) else {}
+    metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    merged = {
+        **metadata,
+        **capability,
+        **x_capability,
+        "manifest_path": str(path),
+        "item_type": data.get("item_type") or data.get("type") or "",
+        "required_mcps": _list_texts(data.get("required_mcps")),
+        "required_models": _list_texts(data.get("required_models")),
+        "recovery_playbook": data.get("recovery_playbook") if isinstance(data.get("recovery_playbook"), dict) else {},
+    }
+    if isinstance(data.get("decomposition"), dict):
+        merged["decomposition"] = data["decomposition"]
+    if isinstance(capability.get("decomposition"), dict):
+        merged["decomposition"] = capability["decomposition"]
+    if isinstance(x_capability.get("decomposition"), dict):
+        merged["decomposition"] = x_capability["decomposition"]
+    return merged
+
+
+def _infer_manifest_task_type(item_id: str, text: str, tags: list[str], item_type: str) -> str:
+    s = f"{item_id} {text} {' '.join(tags)} {item_type}".lower()
+    if any(x in s for x in ("english", "vocab", "word", "translate", "learning")):
+        return "english_learning"
+    if any(x in s for x in ("pmo", "project-management", "bitable", "project governance")):
+        return "pmo_project_governance"
+    if any(x in s for x in ("desktop", "os-assistant", "windows", "uia", "file", "browser", "lark")):
+        return "app_control"
+    if any(x in s for x in ("message", "lark", "feishu", "notify")):
+        return "message_delivery"
+    if any(x in s for x in ("game", "qa", "smoke", "test")):
+        return "game_qa"
+    if any(x in s for x in ("hr", "recruit", "resume", "boss")):
+        return "hr_recruitment"
+    if any(x in s for x in ("bi", "growth", "report", "analysis")):
+        return "bi_growth_report"
+    return ""
+
+
+def _descriptor_for_manifest(path: Path) -> CapabilityDescriptor | None:
+    data = _read_plugin_json(path)
+    item_id = str(data.get("id") or path.parent.name).strip()
+    if not item_id:
+        return None
+    name = str(data.get("name") or item_id).strip()
+    description = str(data.get("description") or "").strip()
+    tags = _list_texts(data.get("tags"))
+    item_type = str(data.get("item_type") or data.get("type") or "").strip()
+    metadata = _manifest_metadata(data, path)
+    text = " ".join([item_id, name, description, " ".join(tags), json.dumps(metadata, ensure_ascii=False, default=str)])
+    override = data.get("capability") if isinstance(data.get("capability"), dict) else {}
+    x_override = data.get("x_jachin_capability") if isinstance(data.get("x_jachin_capability"), dict) else {}
+    merged_override = {**override, **x_override}
+    task_type = str(
+        merged_override.get("task_type")
+        or data.get("task_type")
+        or _infer_manifest_task_type(item_id, text, tags, item_type)
+    )
+    workflow_id = str(merged_override.get("workflow_id") or data.get("workflow_id") or item_id)
+    examples = _list_texts(merged_override.get("examples")) or _list_texts(data.get("examples"))
+    evidence = _list_texts(merged_override.get("evidence")) or _list_texts(data.get("evidence"))
+    inputs = _list_texts(merged_override.get("inputs")) or _extract_inputs(data)
+    if not inputs:
+        inputs = _split_words(" ".join(tags + [description]))[:8]
+    return CapabilityDescriptor(
+        id=item_id,
+        domain=str(merged_override.get("domain") or _infer_domain(item_id, text)),
+        actions=_list_texts(merged_override.get("actions")) or _infer_actions(item_id, text),
+        objects=_list_texts(merged_override.get("objects")) or _infer_objects(item_id, text),
+        inputs=inputs,
+        risk=str(merged_override.get("risk") or _infer_risk(item_id, text)),
+        description=description or name,
+        examples=examples,
+        workflow_id=workflow_id,
+        task_type=task_type,
+        tool_chain=_list_texts(merged_override.get("tool_chain")) or _list_texts(data.get("required_mcps")),
+        evidence=evidence,
+        source="manifest",
+        metadata=metadata,
+    )
+
+
+def manifest_capability_descriptors() -> list[CapabilityDescriptor]:
+    out: list[CapabilityDescriptor] = []
+    seen: set[str] = set()
+    for path in _iter_plugin_jsons():
+        item = _descriptor_for_manifest(path)
+        if not item:
+            continue
+        key = item.id.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
 def descriptor_for_tool(tool: dict[str, Any]) -> CapabilityDescriptor | None:
     tid = _extract_tool_id(tool)
     if not tid:
@@ -447,6 +606,16 @@ def build_capability_registry(tools: list[dict[str, Any]] | None = None) -> list
     tools = tools or []
     out: list[CapabilityDescriptor] = []
     seen: set[str] = set()
+    for item in BUILTIN_CAPABILITIES:
+        key = item.id.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(item)
+    for item in manifest_capability_descriptors():
+        key = item.id.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(item)
     for tool in tools:
         if not isinstance(tool, dict):
             continue
@@ -457,12 +626,6 @@ def build_capability_registry(tools: list[dict[str, Any]] | None = None) -> list
         if key not in seen:
             seen.add(key)
             out.append(item)
-    if not tools:
-        for item in BUILTIN_CAPABILITIES:
-            key = item.id.lower()
-            if key not in seen:
-                seen.add(key)
-                out.append(item)
     return out
 
 

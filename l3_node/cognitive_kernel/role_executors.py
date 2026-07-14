@@ -424,10 +424,7 @@ class MessageExecutor(RoleExecutionAdapter):
         enriched["send_result"] = _parse_observation_status(observation)
         enriched["dedupe_key"] = _message_dedupe_key(work_order, context)
         enriched["duplicate_skipped"] = "duplicate_skipped" in str(observation or "")
-        enriched["post_send_verified"] = _observation_mentions_any(
-            observation,
-            ["sent", "send_ok", "message_id", "success", "ocr", "screenshot", "ok"],
-        )
+        enriched["post_send_verified"] = _message_observation_has_delivery_evidence(observation)
         return enriched
 
 
@@ -809,6 +806,54 @@ def _parse_observation_status(observation: str) -> dict[str, object]:
 def _message_error_retryable(reason: str) -> bool:
     low = (reason or "").lower()
     return any(x in low for x in ("timeout", "connection", "temporarily", "busy", "retry"))
+
+
+def _message_observation_has_delivery_evidence(observation: str) -> bool:
+    text = str(observation or "").strip()
+    if not text:
+        return False
+    parsed = _json_obj(text)
+    if isinstance(parsed, (dict, list)):
+        return _message_delivery_evidence_in_json(parsed)
+    low = text.lower()
+    return any(
+        marker in low
+        for marker in (
+            "message_id",
+            "send_ok",
+            "sent_and_verified_with_visual",
+            "message_visible",
+            "post_send_verified",
+            "ocr",
+            "screenshot",
+        )
+    )
+
+
+def _message_delivery_evidence_in_json(value: object) -> bool:
+    if isinstance(value, dict):
+        if value.get("duplicate_skipped") is True:
+            return False
+        if str(value.get("message_id") or "").strip():
+            return True
+        if value.get("send_ok") is True or value.get("sent") is True:
+            return True
+        if value.get("message_visible") is True and (value.get("recipient_visible") is True or value.get("screenshot") or value.get("screenshots")):
+            return True
+        detail = str(value.get("detail") or "").lower()
+        if detail in {"sent_and_verified_with_visual", "message_sent", "send_ok", "sent"}:
+            return True
+        status = str(value.get("status") or "").lower()
+        if status in {"sent", "message_sent", "send_ok"}:
+            return True
+        for key in ("evidence", "deliveries", "delivery", "result", "send_result", "visual", "screenshots"):
+            nested = value.get(key)
+            if _message_delivery_evidence_in_json(nested):
+                return True
+        return any(_message_delivery_evidence_in_json(v) for v in value.values() if isinstance(v, (dict, list)))
+    if isinstance(value, list):
+        return any(_message_delivery_evidence_in_json(item) for item in value)
+    return False
 
 
 def _observation_mentions_any(observation: str, needles: list[str]) -> bool:

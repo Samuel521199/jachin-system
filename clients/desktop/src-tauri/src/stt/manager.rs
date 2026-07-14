@@ -21,12 +21,27 @@ const CHUNK_LEN: usize = 512;
 /// 10 * 32ms
 const MIN_PTT_CHUNKS: usize = 10;
 
+fn ptt_stream_finalize_timeout(buffer_chunks: usize, has_partial_text: bool) -> std::time::Duration {
+    let ms = if has_partial_text {
+        1500
+    } else if buffer_chunks <= 45 {
+        1500
+    } else {
+        900
+    };
+    std::time::Duration::from_millis(ms)
+}
+
 /// 截断完成时向前端/上层发送的载荷：16kHz 单声道 WAV 的 base64。
 #[derive(Clone, serde::Serialize)]
 pub struct SttAudioPayload {
     pub wav_base64: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recognized_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recognized_finalized: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recognized_source: Option<String>,
 }
 
 /// PTT 未能产出可识别音频（过短、采音失败、麦克风未写入等）。
@@ -114,11 +129,18 @@ pub fn run_ptt_capture(
             .map(|d| d.as_millis())
             .unwrap_or(0)
     );
-    let mut stream_client = super::stream_stt_client::SttStreamClient::connect(
-        &resolve_jvs_base_url(&app),
-        &stream_session_id,
+    let jvs_base_url = resolve_jvs_base_url(&app);
+    let mut stream_client = super::stream_stt_client::take_prewarmed(
+        &jvs_base_url,
+        std::time::Duration::from_secs(45),
     )
-    .ok();
+    .or_else(|| {
+        super::stream_stt_client::SttStreamClient::connect(
+            &jvs_base_url,
+            &stream_session_id,
+        )
+        .ok()
+    });
     let (stream, rx_raw, sample_rate, source_channels) = match start_capture() {
         Ok(v) => v,
         Err(e) => {
@@ -181,26 +203,64 @@ pub fn run_ptt_capture(
     if let Some(audio) = endpointing.finalize_ptt() {
         let wav = pcm_f32_to_wav(&audio, STT_SAMPLE_RATE);
         let wav_base64 = base64::engine::general_purpose::STANDARD.encode(&wav);
-        let recognized_text = stream_client
-            .as_mut()
-            .and_then(|c| c.finalize_and_get_text(std::time::Duration::from_millis(1200)))
+        let has_partial_text = stream_client
+            .as_ref()
+            .map(|c| c.has_text())
+            .unwrap_or(false);
+        let stream_timeout = ptt_stream_finalize_timeout(buffer_chunks, has_partial_text);
+        let stream_result = stream_client.as_mut().map(|c| c.finalize(stream_timeout));
+        let recognized_text = stream_result
+            .as_ref()
+            .and_then(|r| r.text.as_ref())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
+        let recognized_finalized = recognized_text
+            .as_ref()
+            .map(|_| stream_result.as_ref().map(|r| r.finalized).unwrap_or(false));
+        let recognized_source = recognized_text.as_ref().map(|_| {
+            if recognized_finalized.unwrap_or(false) {
+                "jvs_stream_final".to_string()
+            } else {
+                "jvs_stream_partial_timeout".to_string()
+            }
+        });
+        if recognized_finalized != Some(true) {
+            crate::l3_spawn::write_voice_chat_trace(
+                "ptt",
+                "stream_fallback_local",
+                stream_client
+                    .as_ref()
+                    .map(|c| c.session_id())
+                    .unwrap_or(&stream_session_id),
+                &format!(
+                    "reason=stream_final_miss has_partial={} buffer_chunks={} timeout_ms={} partial_count={} final_count={} audio_frames_sent={}",
+                    has_partial_text,
+                    buffer_chunks,
+                    stream_timeout.as_millis(),
+                    stream_result.as_ref().map(|r| r.partial_count).unwrap_or(0),
+                    stream_result.as_ref().map(|r| r.final_count).unwrap_or(0),
+                    stream_result.as_ref().map(|r| r.audio_frames_sent).unwrap_or(0)
+                ),
+            );
+        }
         crate::l3_spawn::write_voice_chat_trace(
             "ptt",
             "ptt.audio_ready",
             "emit STT_AUDIO_READY",
             &format!(
-                "chunks_rx={} buffer_chunks={} wav_bytes={} stream_text_len={}",
+                "chunks_rx={} buffer_chunks={} wav_bytes={} stream_text_len={} stream_finalized={}",
                 chunks_received,
                 buffer_chunks,
                 wav.len(),
-                recognized_text.as_ref().map(|s| s.len()).unwrap_or(0)
+                recognized_text.as_ref().map(|s| s.len()).unwrap_or(0),
+                recognized_finalized.unwrap_or(false)
             ),
         );
         let payload = SttAudioPayload {
             wav_base64,
             recognized_text,
+            recognized_finalized,
+            recognized_source,
         };
         let _ = app.emit("STT_AUDIO_READY", payload.clone());
         drop(stream);
@@ -267,6 +327,8 @@ pub fn start_listening(
                             SttAudioPayload {
                                 wav_base64,
                                 recognized_text: None,
+                                recognized_finalized: None,
+                                recognized_source: None,
                             },
                         );
                     }

@@ -11,8 +11,11 @@ import json
 import re
 import time
 import uuid
+from difflib import SequenceMatcher
 from typing import Any
 
+from .entity_corrections import get_learned_app_correction, normalize_entity_surface
+from .semantic_intent_agent import choose_semantic_override, resolve_semantic_intent_candidates
 from .contracts import (
     AgentInputEnvelope,
     InputSource,
@@ -86,6 +89,65 @@ def _lower(text: str) -> str:
     return text.lower()
 
 
+_APP_MATCH_SEPARATOR_RE = re.compile(r"[\s,，。._\-]+")
+_APP_ENTITY_CORRECTION_THRESHOLD = 0.58
+
+
+def _app_match_haystacks(text: str) -> tuple[str, str]:
+    """Return normal and ASR-tolerant text for app alias matching.
+
+    Voice/STT often emits product names as spelled letters, for example
+    "L A R K" or "L，A，R，K". App routing must normalize that before the
+    ReviewBoard decides that the target is missing.
+    """
+
+    low = _lower(text)
+    compact = _APP_MATCH_SEPARATOR_RE.sub("", low)
+    compact = compact.replace("拉克", "lark").replace("啦克", "lark").replace("乐刻", "lark")
+    return low, compact
+
+
+def _normalize_calculator_expression(expr: str) -> str:
+    table = str.maketrans({"×": "*", "÷": "/", "（": "(", "）": ")"})
+    out = str(expr or "").translate(table)
+    out = re.sub(r"\s+", "", out).replace("x", "*").replace("X", "*")
+    return out.strip(" ,.;!?，。；！？")
+
+
+def _extract_calculator_expression(text: str) -> str:
+    normalized = str(text or "").translate(str.maketrans({"×": "*", "÷": "/", "（": "(", "）": ")"}))
+    matches = re.findall(
+        r"[0-9.\s()+\-*/xX]*[0-9][0-9.\s()]*[+\-*/xX][0-9.\s()+\-*/xX]*[0-9][0-9.\s()]*",
+        normalized,
+    )
+    if matches:
+        return _normalize_calculator_expression(max(matches, key=len))
+    return ""
+
+
+def _looks_like_calculator_calculate(text: str) -> bool:
+    if not _extract_calculator_expression(text):
+        return False
+    low = _lower(text)
+    return any(
+        token in low
+        for token in (
+            "计算器",
+            "calculator",
+            "calc",
+            "计算",
+            "算",
+            "等于",
+            "多少",
+            # Mojibake/ASR-tolerant forms observed in Windows terminal and older tests.
+            "璁＄畻鍣",
+            "璁＄畻",
+            "绛変簬",
+            "澶氬皯",
+        )
+    )
+
+
 def _iter_app_aliases_by_specificity() -> list[tuple[str, tuple[str, ...]]]:
     pairs = []
     for app_name, aliases in _APP_ALIASES.items():
@@ -99,27 +161,96 @@ def _detect_intent(text: str) -> str:
     stripped = low.strip()
     if stripped in {"你好", "hello", "hi", "在吗", "你在吗"}:
         return "conversation"
+    if _looks_like_calculator_calculate(text):
+        return "calculator_calculate"
     if any(k in low for k in ("file", "folder", "read ", "open file", "reveal", "show in explorer", "delete file", "rename", "copy", "move")):
         return "file_operation"
     if any(k in low for k in ("关闭", "关掉", "关了", "退出", "close", "quit")):
         return "close_app"
+    if any(k in low for k in ("发给", "发送", "发消息", "send to", "message")):
+        return "message_send"
     if any(k in low for k in ("打开", "启动", "运行", "open ", "launch", "start ")):
         return "open_app"
     if any(k in low for k in ("切到", "切换到", "回到", "switch to")):
         return "switch_app"
-    if any(k in low for k in ("发给", "发送", "发消息", "send to", "message")):
-        return "message_send"
     if any(k in low for k in ("文件", "目录", "folder", "file", "rename", "copy", "move")):
         return "file_operation"
     return "conversation"
 
 
 def _explicit_app_from_text(text: str) -> str:
-    low = _lower(text)
+    haystacks = _app_match_haystacks(text)
     for app_name, aliases in _iter_app_aliases_by_specificity():
-        if any(alias in low for alias in aliases):
+        if any(_alias_in_haystacks(alias, haystacks) for alias in aliases):
             return app_name
     return ""
+
+
+def _alias_in_haystacks(alias: str, haystacks: tuple[str, str]) -> bool:
+    low, compact = haystacks
+    alias_low = _lower(alias)
+    if " " in alias_low:
+        return alias_low in low
+    return alias_low in low or _APP_MATCH_SEPARATOR_RE.sub("", alias_low) in compact
+
+
+def _app_correction_candidate(text: str, intent: str) -> dict[str, Any]:
+    surface = _extract_app_surface(text, intent)
+    if not surface:
+        return {}
+    learned = get_learned_app_correction(surface)
+    if learned:
+        return learned
+    surface_compact = normalize_entity_surface(surface)
+    if len(surface_compact) < 3:
+        return {}
+    best: dict[str, Any] = {}
+    for app_name, aliases in _iter_app_aliases_by_specificity():
+        for alias in aliases:
+            alias_compact = normalize_entity_surface(alias)
+            if len(alias_compact) < 3:
+                continue
+            score = _app_alias_similarity(surface_compact, alias_compact)
+            if score > float(best.get("score") or 0.0):
+                best = {
+                    "name": app_name,
+                    "alias": alias,
+                    "heard_as": surface,
+                    "score": score,
+                    "source": "entity_correction_candidate",
+                    "requires_confirmation": True,
+                }
+    if best and float(best.get("score") or 0.0) >= _APP_ENTITY_CORRECTION_THRESHOLD:
+        return best
+    return {}
+
+
+def _extract_app_surface(text: str, intent: str) -> str:
+    raw = str(text or "").strip()
+    if intent not in {"open_app", "switch_app", "close_app", "message_send"} or not raw:
+        return ""
+    patterns = [
+        r"(?:打开|启动|运行|切到|切换到|关闭|关掉|退出)\s*([A-Za-z][A-Za-z\s,，。._\-]{1,24})(?=\s*(?:给|向|像|发送|发|$))",
+        r"\b(?:open|launch|start|switch to|close|quit)\s+([A-Za-z][A-Za-z\s,._\-]{1,24})(?=\s*(?:to|send|message|$))",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, raw, re.I)
+        if match:
+            return (match.group(1) or "").strip(" ,，。._-")
+    return ""
+
+
+def _app_alias_similarity(surface: str, alias: str) -> float:
+    if surface == alias:
+        return 1.0
+    if surface in alias or alias in surface:
+        return 0.88
+    score = SequenceMatcher(None, surface, alias).ratio()
+    if surface == "lock" and alias == "lark":
+        score = max(score, 0.91)
+    if surface in {"loc", "lok", "lak", "larkk"} and alias == "lark":
+        score = max(score, 0.86)
+    return score
 
 
 def _active_window_app(state_snapshot: StateSnapshot) -> str:
@@ -133,9 +264,9 @@ def _active_window_app(state_snapshot: StateSnapshot) -> str:
 
 
 def _normalize_app_name(value: str) -> str:
-    low = _lower(value)
+    haystacks = _app_match_haystacks(value)
     for app_name, aliases in _iter_app_aliases_by_specificity():
-        if any(alias in low for alias in aliases):
+        if any(_alias_in_haystacks(alias, haystacks) for alias in aliases):
             return app_name
     return value.strip()
 
@@ -189,6 +320,9 @@ def _extract_message_recipients(text: str) -> list[str]:
     if not text:
         return []
     patterns = [
+        # "像 Neil 发送..." is a common typo for "向 Neil 发送...".
+        # Only treat it as a recipient marker when it appears in an explicit send context.
+        r"(?:给|向|像)\s*([A-Za-z0-9_\-\u4e00-\u9fff、,，和与\s]+?)\s*(?:发送|发)(?:一条|一个|一下)?(?:消息|信息|message)?",
         r"(?:发给|发送给|给)\s*([A-Za-z0-9_\-\u4e00-\u9fff、,，和与\s]+?)\s*(?:[:：]|说|发送|发|$)",
         r"(?:send\s+to|message)\s+([A-Za-z0-9_\-\s,]+?)(?:[:：]|$)",
     ]
@@ -214,6 +348,11 @@ def _extract_message_body(text: str, recipients: list[str] | None = None) -> str
         tail = re.split(r"[:：]", text, maxsplit=1)[-1].strip()
         if tail:
             return tail
+    explicit = re.search(r"(?:内容|消息|正文)\s*(?:是|为|=|:|：)\s*(.+)$", text, re.I)
+    if explicit:
+        body = (explicit.group(1) or "").strip()
+        if body and not any(body == r for r in recipients or []):
+            return body
     m = re.search(r"(?:内容|消息|说|发送|发)\s*(?:是|为|:|：)?\s*(.+)$", text, re.I)
     if m:
         body = (m.group(1) or "").strip()
@@ -280,11 +419,40 @@ def _extract_file_content(text: str) -> str:
 
 
 def _extract_target(text: str, intent: str, state_snapshot: StateSnapshot, memory_bundle: RelevantMemoryBundle) -> dict[str, Any]:
+    if intent == "calculator_calculate":
+        expression = _extract_calculator_expression(text)
+        return {
+            "type": "calculator",
+            "name": "Calculator",
+            "expression": expression,
+            "source": "input_text",
+        }
     if intent == "message_send":
         recipients = _extract_message_recipients(text)
         message = _extract_message_body(text, recipients)
-        if recipients or message:
-            return {"type": "lark_message", "recipients": recipients, "message": message, "source": "input_text"}
+        explicit_app = _explicit_app_from_text(text)
+        correction = {} if explicit_app else _app_correction_candidate(text, intent)
+        app = explicit_app or correction.get("name") or "Lark"
+        if recipients or message or app == "Lark":
+            target = {
+                "type": "lark_message",
+                "app": app,
+                "recipients": recipients,
+                "message": message,
+                "source": "input_text",
+            }
+            if correction:
+                target.update(
+                    {
+                        "source": correction.get("source") or "entity_correction_candidate",
+                        "requires_entity_confirmation": bool(correction.get("requires_confirmation", True)),
+                        "heard_as": correction.get("heard_as"),
+                        "surface_norm": correction.get("surface_norm") or normalize_entity_surface(str(correction.get("heard_as") or "")),
+                        "candidate_alias": correction.get("alias"),
+                        "entity_score": correction.get("score"),
+                    }
+                )
+            return target
     if intent == "file_operation":
         path = _extract_file_path(text)
         if path:
@@ -299,6 +467,18 @@ def _extract_target(text: str, intent: str, state_snapshot: StateSnapshot, memor
     explicit_app = _explicit_app_from_text(text)
     if explicit_app:
         return {"type": "app", "name": explicit_app, "source": "input_text"}
+    correction = _app_correction_candidate(text, intent)
+    if correction:
+        return {
+            "type": "app",
+            "name": correction.get("name"),
+            "source": correction.get("source") or "entity_correction_candidate",
+            "requires_entity_confirmation": bool(correction.get("requires_confirmation", True)),
+            "heard_as": correction.get("heard_as"),
+            "surface_norm": correction.get("surface_norm") or normalize_entity_surface(str(correction.get("heard_as") or "")),
+            "candidate_alias": correction.get("alias"),
+            "entity_score": correction.get("score"),
+        }
     if intent in {"close_app", "switch_app"}:
         active = _active_window_app(state_snapshot)
         recent = _recent_action_target(memory_bundle)
@@ -312,6 +492,8 @@ def _extract_target(text: str, intent: str, state_snapshot: StateSnapshot, memor
 
 
 def _task_type_for_intent(intent: str) -> str:
+    if intent == "calculator_calculate":
+        return "calculator_calculate"
     if intent in {"open_app", "close_app", "switch_app"}:
         return "app_control"
     if intent == "message_send":
@@ -323,6 +505,8 @@ def _task_type_for_intent(intent: str) -> str:
 
 def _tool_for_intent(intent: str, target: dict[str, Any] | None = None) -> str:
     target = target or {}
+    if intent == "calculator_calculate":
+        return "mcp:windows_calculator_calculate"
     if intent == "file_operation":
         operation = str(target.get("operation") or "read").strip().lower()
         if operation == "open":
@@ -336,12 +520,30 @@ def _tool_for_intent(intent: str, target: dict[str, Any] | None = None) -> str:
         "open_app": "mcp:windows_open_app",
         "close_app": "mcp:windows_window_close",
         "switch_app": "mcp:windows_window_switch",
-        "message_send": "mcp:windows_lark_send_message",
+        "message_send": "mcp:windows_lark_send_message"
+        if (target.get("recipients") and str(target.get("message") or "").strip())
+        else "",
     }.get(intent, "")
+
+
+def _merge_target_patch(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    if not patch:
+        return dict(base or {})
+    merged = dict(base or {})
+    for key, value in patch.items():
+        if value in (None, "", []):
+            continue
+        merged[key] = value
+    for key in ("recipients", "message", "expression", "path", "content", "operation"):
+        if key in base and base.get(key) not in (None, "", []) and patch.get(key) in (None, "", []):
+            merged[key] = base.get(key)
+    return merged
 
 
 def _risk_for(intent: str, target: dict[str, Any], state_snapshot: StateSnapshot) -> tuple[RiskLevel, bool, str]:
     if intent == "conversation":
+        return RiskLevel.LOW, False, ""
+    if intent == "calculator_calculate":
         return RiskLevel.LOW, False, ""
     risk_state = state_snapshot.risk_state or {}
     active = state_snapshot.active_window or {}
@@ -391,17 +593,65 @@ def run_review_board(
     task_type = _task_type_for_intent(intent)
     target = _extract_target(text, intent, state_snapshot, memory_bundle)
     tool = _tool_for_intent(intent, target)
+    semantic_candidates = resolve_semantic_intent_candidates(
+        text=text,
+        base_intent=intent,
+        base_task_type=task_type,
+        base_target=target,
+        state_snapshot=state_snapshot,
+        memory_bundle=memory_bundle,
+    )
+    semantic_override = choose_semantic_override(
+        base_intent=intent,
+        base_task_type=task_type,
+        base_tool=tool,
+        base_target=target,
+        candidates=semantic_candidates,
+    )
+    if semantic_override:
+        intent = semantic_override.intent or intent
+        task_type = semantic_override.task_type or _task_type_for_intent(intent)
+        target = _merge_target_patch(target, semantic_override.target_patch)
+        tool = semantic_override.tool or _tool_for_intent(intent, target)
+    else:
+        task_type = _task_type_for_intent(intent) if not task_type else task_type
+        tool = tool or _tool_for_intent(intent, target)
     risk, risk_needs_clarification, risk_question = _risk_for(intent, target, state_snapshot)
     voice_needs_clarification, voice_question = _voice_needs_clarification(envelope, intent)
     missing_target = intent in {"open_app", "close_app", "switch_app"} and not target
-    needs_clarification = bool(risk_needs_clarification or voice_needs_clarification or missing_target)
+    missing_message_slots = intent == "message_send" and (
+        not target.get("recipients") or not str(target.get("message") or "").strip()
+    )
+    entity_correction_needs_confirmation = bool(target.get("requires_entity_confirmation"))
+    needs_clarification = bool(
+        risk_needs_clarification
+        or voice_needs_clarification
+        or missing_target
+        or missing_message_slots
+        or entity_correction_needs_confirmation
+    )
     clarification_question = risk_question or voice_question
+    if entity_correction_needs_confirmation and not clarification_question:
+        candidate_name = str(target.get("name") or target.get("app") or "").strip()
+        heard_as = str(target.get("heard_as") or "").strip()
+        if candidate_name:
+            clarification_question = f"我听到的是“{heard_as or '这个应用'}”，你是不是想操作 {candidate_name}？请回复“是”或“否”。"
     if missing_target and not clarification_question:
         clarification_question = "你想操作哪个应用？"
+    if missing_message_slots and not clarification_question:
+        if not target.get("recipients") and not str(target.get("message") or "").strip():
+            clarification_question = "你想把什么内容发给谁？"
+        elif not target.get("recipients"):
+            clarification_question = "你想把这条消息发给谁？"
+        else:
+            clarification_question = "你想发送什么内容？"
 
     review_session_id = _new_id("review")
-    candidate_intents = [intent]
+    candidate_intents = list(dict.fromkeys([intent, *[c.intent for c in semantic_candidates if c.intent]]))
     candidate_entities = [target] if target else []
+    candidate_entities.extend([c.target_patch for c in semantic_candidates if c.target_patch])
+    semantic_candidate_dicts = [c.to_dict() for c in semantic_candidates]
+    capability_candidate_dicts = [c.to_dict() for c in semantic_candidates if c.capability_id or c.descriptor]
     active_review_roles = review_roles or _review_roles_for(
         envelope=envelope,
         intent=intent,
@@ -423,6 +673,10 @@ def run_review_board(
             memory_bundle=memory_bundle,
             candidate_intents=candidate_intents,
             candidate_entities=candidate_entities,
+            constraints={
+                "semantic_candidates": semantic_candidate_dicts,
+                "capability_candidates": capability_candidate_dicts,
+            },
         )
         reviews.append(
             _review_as_role(
@@ -453,6 +707,8 @@ def run_review_board(
         clarification_question=clarification_question,
         conflicts=_collect_conflicts(memory_bundle, state_snapshot, intent, target),
         rationale=_summary_rationale(intent, target, risk, needs_clarification),
+        semantic_candidates=semantic_candidate_dicts,
+        capability_candidates=capability_candidate_dicts,
     )
     append_event("review_board_summary", envelope.turn_id, summary.to_dict())
     return summary
@@ -517,6 +773,9 @@ def _review_as_role(
     if role_id == "IntentAnalystAgent":
         rationale.append(f"Input maps to intent {intent}.")
         evidence.append({"type": "input_text", "text": _norm_text(review_input.input_envelope)})
+        semantic_candidates = review_input.constraints.get("semantic_candidates") or []
+        if semantic_candidates:
+            evidence.append({"type": "semantic_intent_candidates", "items": semantic_candidates[:5]})
         confidence = 0.86 if intent != "conversation" else 0.78
     elif role_id == "EntityResolverAgent":
         if target:
@@ -541,6 +800,9 @@ def _review_as_role(
         confidence = 0.7
     elif role_id == "MemoryRecallAgent":
         rationale.append("RelevantMemoryBundle was reviewed as the only memory source for this turn.")
+        growth_refs = _memory_growth_refs(review_input.memory_bundle)
+        if growth_refs:
+            rationale.append(f"Memory Growth supplied {len(growth_refs)} concept/playbook references.")
         evidence.append(
             {
                 "type": "memory_bundle",
@@ -550,6 +812,7 @@ def _review_as_role(
                 "corrections": len(review_input.memory_bundle.corrections),
                 "conflicts": len(review_input.memory_bundle.conflicts),
                 "confidence": review_input.memory_bundle.confidence,
+                "memory_growth_refs": growth_refs,
             }
         )
         confidence = max(0.45, min(0.92, review_input.memory_bundle.confidence or 0.62))
@@ -635,7 +898,7 @@ def _review_as_role(
             rationale.append("No app alias was resolved.")
             confidence = 0.44
     elif role_id == "AppControlPlannerAgent":
-        if task_type == "app_control":
+        if task_type in {"app_control", "calculator_calculate"}:
             recommended_roles.append("AppControlExecutorAgent")
             rationale.append(f"App control intent can use {tool}.")
             confidence = 0.84 if target else 0.45
@@ -721,6 +984,24 @@ def _review_as_role(
 
 
 def _selected_roles_for(intent: str) -> list[str]:
+    if intent == "calculator_calculate":
+        return _dedupe_roles(
+            [
+                "MemoryRecallAgent",
+                "DesktopStateReadAgent",
+                "AppAliasResolverAgent",
+                "AppControlPlannerAgent",
+                "SafetyAgent",
+                "PermissionAgent",
+                "AppControlExecutorAgent",
+                "VerificationAgent",
+                "AuditAgent",
+                "RecoveryAgent",
+                "RetryPlannerAgent",
+                "MemoryWriteAgent",
+                "UserFacingReplyAgent",
+            ]
+        )
     if intent == "open_app":
         return _dedupe_roles(
             [
@@ -827,6 +1108,8 @@ def _dedupe_roles(roles: list[str]) -> list[str]:
 def _summary_confidence(intent: str, target: dict[str, Any], needs_clarification: bool) -> float:
     if needs_clarification:
         return 0.52
+    if intent == "calculator_calculate" and target.get("expression"):
+        return 0.86
     if intent in {"open_app", "close_app", "switch_app"} and target:
         return 0.84
     if intent == "conversation":
@@ -863,3 +1146,31 @@ def _summary_rationale(intent: str, target: dict[str, Any], risk: RiskLevel, nee
     if needs_clarification:
         rationale.append("Execution blocked until ambiguity or safety concern is clarified.")
     return rationale
+
+
+def _memory_growth_refs(memory_bundle: RelevantMemoryBundle, limit: int = 6) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for bucket_name in ("project_facts", "tool_habits", "failure_hints", "historical_task_summaries"):
+        for item in getattr(memory_bundle, bucket_name, []) or []:
+            if not str(item.source or "").startswith("Memory Growth"):
+                continue
+            refs.append(
+                {
+                    "bucket": bucket_name,
+                    "memory_id": item.memory_id,
+                    "memory_type": item.memory_type,
+                    "source": item.source,
+                    "confidence": item.confidence,
+                    "artifact_path": _memory_growth_artifact_path(item.content),
+                    "preview": item.content[:360],
+                    "relevance_reason": item.relevance_reason,
+                }
+            )
+            if len(refs) >= limit:
+                return refs
+    return refs
+
+
+def _memory_growth_artifact_path(content: str) -> str:
+    match = re.search(r"(?:concept|playbook) path=([^;]+)", str(content or ""))
+    return match.group(1).strip() if match else ""

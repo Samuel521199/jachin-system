@@ -32,6 +32,16 @@ def test_semantic_parser_keeps_explicit_lark_send_over_open_lark_prefix() -> Non
     assert intent.slots.message == "你好"
 
 
+def test_semantic_parser_handles_xiang_typo_lark_send() -> None:
+    from l3_node.semantic_slot_parser import parse_mission_intent
+
+    intent = parse_mission_intent("打开lark像Neil发送一条消息，内容为你好")
+
+    assert intent.task_type == MissionTaskType.LARK_MESSAGE_SEND
+    assert intent.slots.recipients == ["Neil"]
+    assert intent.slots.message == "你好"
+
+
 def test_capability_router_forces_codex_for_project_delivery() -> None:
     from l3_node.capability_router import choose_capability_route
     from l3_node.semantic_slot_parser import parse_mission_intent

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 控制台路由定义
  */
 
@@ -22,6 +22,7 @@ import { OsEvidencePanel } from "./pages/OsEvidencePanel";
 import { CapabilityPublish } from "./pages/CapabilityPublish";
 import { CapabilityInstallCenter } from "./pages/CapabilityInstallCenter";
 import { EnglishVocabPanel } from "./pages/EnglishVocabPanel";
+import { MemoryGrowthPanel } from "./pages/MemoryGrowthPanel";
 
 export const consoleRoutes = [
   {
@@ -31,6 +32,7 @@ export const consoleRoutes = [
       { index: true, element: <Navigate to="/dashboard" replace /> },
       { path: "dashboard", element: <Dashboard /> },
       { path: "brain", element: <NeuralNexus /> },
+      { path: "memory-growth", element: <MemoryGrowthPanel /> },
       { path: "safety-lock", element: <SafetyLockApproval /> },
       { path: "calendar", element: <Calendar /> },
       { path: "skills", element: <SkillMatrix /> },

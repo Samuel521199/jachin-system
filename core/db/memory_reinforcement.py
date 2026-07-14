@@ -92,7 +92,7 @@ def hybrid_reinforce_bonus(
 ) -> float:
     """
     返回加到 hybrid score 上的增量（已含 weight，且随 boost 饱和）。
-    sidecar + 行内 reinforce_score 经统一 merged raw（见 core.db.memory_score）。
+    sidecar + row reinforce_score are merged locally; Memory Growth owns final ranking.
     """
     try:
         side = get_reinforce_boost(memory_id)
@@ -102,14 +102,6 @@ def hybrid_reinforce_bonus(
         row = float(row_reinforce) if row_reinforce is not None else 0.0
     except (TypeError, ValueError):
         row = 0.0
-    try:
-        from core.db.memory_score import load_memory_scoring_config, merged_reinforce_raw, saturated_bonus
-
-        prof = str(load_memory_scoring_config().get("profile") or "A_sum_cap")
-        raw = merged_reinforce_raw(side, row, max_boost=max_boost, profile=prof)
-        return saturated_bonus(raw, weight=weight)
-    except Exception:
-        pass
     raw = min(max_boost, side + row)
     if raw <= 0 or weight <= 0:
         return 0.0

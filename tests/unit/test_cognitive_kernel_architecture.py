@@ -199,6 +199,32 @@ def test_mainline_open_app_review_to_work_order(tmp_path, monkeypatch):
     assert result.work_orders[0].inputs["tool"] == "mcp:windows_open_app"
 
 
+def test_mainline_calculator_expression_review_to_work_order(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+
+    result = plan_cognitive_turn(_ctx("打开计算器，计算99+100等于多少", turn_id="ck-arch-calc-expression"))
+
+    assert result.review_summary.top_intent == "calculator_calculate"
+    assert result.review_summary.target["name"] == "Calculator"
+    assert result.review_summary.target["expression"] == "99+100"
+    assert result.decision_contract.task_type == "calculator_calculate"
+    assert result.decision_contract.selected_workflow == "reviewed_calculator_calculate_workflow"
+    assert result.decision_contract.execution_allowed is True
+    assert len(result.work_orders) == 2
+    assert [wo.inputs["tool"] for wo in result.work_orders] == ["mcp:windows_open_app", "mcp:windows_calculator_calculate"]
+    assert result.work_orders[0].inputs["decomposition_role"] == "prepare_calculator"
+    assert result.work_orders[1].inputs["decomposition_role"] == "calculate_expression"
+    assert result.work_orders[1].inputs["depends_on"] == [result.work_orders[0].inputs["decomposition_node_id"]]
+    payload = json.loads(result.work_orders[1].inputs["work_order_input"])
+    assert payload["expression"] == "99+100"
+    assert result.task_dag is not None
+    assert len(result.task_dag.nodes) == 2
+    assert result.task_dag.nodes[1].depends_on == [result.task_dag.nodes[0].node_id]
+    assert result.task_dag.nodes[1].recovery_policy["strategy"] == "clear_and_retype_expression"
+
+
 def test_mainline_open_wechat_review_to_work_order(tmp_path, monkeypatch):
     monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
 
@@ -322,11 +348,243 @@ def test_mainline_message_review_to_work_order(tmp_path, monkeypatch):
 
     assert result.review_summary.top_intent == "message_send"
     assert result.decision_contract.task_type == "message_delivery"
-    assert result.work_orders[0].role_agent == "MessageExecutorAgent"
-    assert result.work_orders[0].inputs["tool"] == "mcp:windows_lark_send_message"
-    payload = json.loads(result.work_orders[0].inputs["work_order_input"])
+    assert len(result.work_orders) == 2
+    assert [wo.role_agent for wo in result.work_orders] == ["AppControlExecutorAgent", "MessageExecutorAgent"]
+    assert [wo.inputs["tool"] for wo in result.work_orders] == ["mcp:windows_open_app", "mcp:windows_lark_send_message"]
+    assert result.work_orders[1].inputs["depends_on"] == [result.work_orders[0].inputs["decomposition_node_id"]]
+    payload = json.loads(result.work_orders[1].inputs["work_order_input"])
     assert json.loads(payload["recipients_json"]) == ["Neil"]
     assert payload["message"] == "hello"
+    assert result.task_dag is not None
+    assert len(result.task_dag.nodes) == 2
+    assert result.task_dag.nodes[0].capability == "app_control.open_or_focus"
+    assert result.task_dag.nodes[1].capability == "message.send"
+
+
+def test_mainline_message_review_handles_xiang_typo_to_work_order(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+
+    result = plan_cognitive_turn(_ctx("打开lark像Neil发送一条消息，内容为你好", turn_id="ck-arch-message-xiang"))
+
+    assert result.review_summary.top_intent == "message_send"
+    assert result.decision_contract.task_type == "message_delivery"
+    assert len(result.work_orders) == 2
+    assert result.work_orders[1].role_agent == "MessageExecutorAgent"
+    assert result.work_orders[1].inputs["tool"] == "mcp:windows_lark_send_message"
+    payload = json.loads(result.work_orders[1].inputs["work_order_input"])
+    assert json.loads(payload["recipients_json"]) == ["Neil"]
+    assert payload["message"] == "你好"
+
+
+def test_mainline_lark_voice_spelled_alias_open_app_to_work_order(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+
+    result = plan_cognitive_turn(_ctx("打开 L A R K", turn_id="ck-arch-open-lark-spelled"))
+
+    assert result.review_summary.top_intent == "open_app"
+    assert result.review_summary.target["name"] == "Lark"
+    assert result.decision_contract.execution_allowed is True
+    assert result.work_orders
+    assert result.work_orders[0].role_agent == "AppControlExecutorAgent"
+    assert result.work_orders[0].inputs["tool"] == "mcp:windows_open_app"
+
+
+def test_mainline_lark_voice_spelled_alias_message_to_work_order(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+
+    result = plan_cognitive_turn(_ctx("打开 L，A，R，K 给 Neil 发送你好", turn_id="ck-arch-message-lark-spelled"))
+
+    assert result.review_summary.top_intent == "message_send"
+    assert result.review_summary.target["app"] == "Lark"
+    assert result.review_summary.target["recipients"] == ["Neil"]
+    assert result.review_summary.target["message"] == "你好"
+    assert result.decision_contract.execution_allowed is True
+    assert len(result.work_orders) == 2
+    assert result.work_orders[0].role_agent == "AppControlExecutorAgent"
+    assert result.work_orders[1].role_agent == "MessageExecutorAgent"
+    assert result.work_orders[1].inputs["tool"] == "mcp:windows_lark_send_message"
+    payload = json.loads(result.work_orders[1].inputs["work_order_input"])
+    assert json.loads(payload["recipients_json"]) == ["Neil"]
+    assert payload["message"] == "你好"
+
+
+def test_mainline_lark_message_missing_slots_asks_clarification_before_tool(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+
+    result = plan_cognitive_turn(_ctx("打开 L A R K 发送消息", turn_id="ck-arch-message-lark-missing-slots"))
+
+    assert result.review_summary.top_intent == "message_send"
+    assert result.review_summary.target["app"] == "Lark"
+    assert result.review_summary.needs_clarification is True
+    assert "发给谁" in result.review_summary.clarification_question or "什么内容" in result.review_summary.clarification_question
+    assert result.decision_contract.execution_allowed is False
+    assert result.decision_contract.tool_policy.allowed_tools == []
+    assert result.work_orders == []
+    assert result.closure is not None
+    assert result.closure.final_user_message_intent == "ask_clarification"
+
+
+def test_mainline_lark_asr_lock_candidate_requires_user_confirmation(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+
+    result = plan_cognitive_turn(_ctx("打开 lock", turn_id="ck-arch-open-lock-candidate"))
+
+    assert result.review_summary.top_intent == "open_app"
+    assert result.review_summary.target["name"] == "Lark"
+    assert result.review_summary.target["source"] == "entity_correction_candidate"
+    assert result.review_summary.target["heard_as"] == "lock"
+    assert result.review_summary.needs_clarification is True
+    assert "是不是想操作 Lark" in result.review_summary.clarification_question
+    assert result.decision_contract.execution_allowed is False
+    assert result.decision_contract.tool_policy.requires_confirmation is True
+    assert result.work_orders
+    assert result.work_orders[0].role_agent == "AppControlExecutorAgent"
+    assert result.work_orders[0].inputs["tool"] == "mcp:windows_open_app"
+    assert result.closure is not None
+    assert result.closure.final_user_message_intent == "ask_clarification"
+
+
+def test_mainline_lark_asr_lock_message_candidate_preserves_slots_for_resume(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+
+    result = plan_cognitive_turn(_ctx("打开 lock 给 Neil 发送你好", turn_id="ck-arch-message-lock-candidate"))
+
+    assert result.review_summary.top_intent == "message_send"
+    assert result.review_summary.target["app"] == "Lark"
+    assert result.review_summary.target["source"] == "entity_correction_candidate"
+    assert result.review_summary.target["recipients"] == ["Neil"]
+    assert result.review_summary.target["message"] == "你好"
+    assert result.decision_contract.execution_allowed is False
+    assert result.decision_contract.tool_policy.requires_confirmation is True
+    assert len(result.work_orders) == 2
+    assert result.work_orders[0].role_agent == "AppControlExecutorAgent"
+    assert result.work_orders[1].role_agent == "MessageExecutorAgent"
+    assert result.work_orders[1].inputs["tool"] == "mcp:windows_lark_send_message"
+    payload = json.loads(result.work_orders[1].inputs["work_order_input"])
+    assert json.loads(payload["recipients_json"]) == ["Neil"]
+    assert payload["message"] == "你好"
+
+
+def test_pending_confirmation_accepts_plain_chinese_yes_no():
+    from l3_node.cognitive_kernel.pending_confirmation import is_cancellation_text, is_confirmation_text
+
+    assert is_confirmation_text("是")
+    assert is_confirmation_text("是。")
+    assert is_confirmation_text("是的")
+    assert is_confirmation_text("对")
+    assert is_cancellation_text("否")
+    assert is_cancellation_text("否。")
+    assert is_cancellation_text("不是")
+
+
+def test_review_board_exposes_capability_semantic_candidates(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+
+    result = plan_cognitive_turn(_ctx("open browser", turn_id="ck-arch-semantic-browser"))
+
+    assert result.review_summary.semantic_candidates
+    assert result.review_summary.capability_candidates
+    assert any(c.get("target_patch", {}).get("name") in {"Browser", "Chrome", "Edge"} for c in result.review_summary.semantic_candidates)
+    assert any(c.get("capability_id") or c.get("descriptor") for c in result.review_summary.capability_candidates)
+
+
+def test_manifest_capability_registry_contributes_skill_descriptors():
+    from l3_node.capability_semantic_registry import build_capability_registry
+
+    registry = build_capability_registry([])
+    ids = {item.id for item in registry}
+
+    assert "com.jachin.skill.english-learning-assistant" in ids
+    assert "com.jachin.skill.pmo-copilot" in ids
+
+
+def test_semantic_candidates_rank_lock_to_lark(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+
+    result = plan_cognitive_turn(_ctx("open lock", turn_id="ck-arch-semantic-lock"))
+
+    candidates = result.review_summary.semantic_candidates
+    assert candidates
+    assert candidates[0]["target_patch"]["name"] == "Lark"
+    assert candidates[0]["source"] == "entity_correction_candidate"
+    assert result.review_summary.target["name"] == "Lark"
+
+
+def test_task_decomposer_uses_manifest_metadata_decomposition():
+    from l3_node.cognitive_kernel.contracts import DecisionContract, ReviewSummary, RiskLevel, ToolPolicy
+    from l3_node.cognitive_kernel.task_decomposer import decompose_task
+
+    summary = ReviewSummary(
+        review_session_id="review-metadata",
+        turn_id="turn-metadata",
+        top_intent="open_app",
+        task_type="app_control",
+        target={"type": "app", "name": "Chrome", "source": "unit_test"},
+        selected_roles=["AppControlExecutorAgent"],
+        candidate_tools=["mcp:windows_open_app"],
+        risk_level=RiskLevel.LOW,
+        capability_candidates=[
+            {
+                "capability_id": "com.example.browser.open",
+                "descriptor": {
+                    "id": "com.example.browser.open",
+                    "metadata": {
+                        "decomposition": {
+                            "nodes": [
+                                {
+                                    "id": "open_app",
+                                    "goal": "Open $target.name from metadata",
+                                    "role_agent": "AppControlExecutorAgent",
+                                    "tool": "mcp:windows_open_app",
+                                    "capability": "app_control.open_or_focus",
+                                    "inputs": {"target": {"type": "app", "name": "$target.name"}},
+                                    "work_order_input": {"app": "$target.name"},
+                                    "verification_criteria": ["$target.name window is visible"],
+                                    "recovery_policy": {"strategy": "metadata_retry", "max_attempts": 2},
+                                }
+                            ]
+                        }
+                    },
+                },
+            }
+        ],
+    )
+    contract = DecisionContract(
+        decision_id="decision-metadata",
+        turn_id="turn-metadata",
+        task_type="app_control",
+        goal="open Chrome",
+        selected_roles=["AppControlExecutorAgent"],
+        risk_level=RiskLevel.LOW,
+        tool_policy=ToolPolicy(allowed_tools=["mcp:windows_open_app"], risk_level=RiskLevel.LOW),
+        execution_allowed=True,
+        verification_criteria=["window visible"],
+    )
+
+    plan = decompose_task(contract=contract, summary=summary)
+
+    assert len(plan.nodes) == 1
+    assert plan.nodes[0].goal == "Open Chrome from metadata"
+    assert plan.nodes[0].inputs["target"]["name"] == "Chrome"
+    assert json.loads(plan.nodes[0].work_order_input)["app"] == "Chrome"
+    assert plan.nodes[0].recovery_policy["strategy"] == "metadata_retry"
+    assert "capability metadata decomposition" in plan.rationale[0]
 
 
 def test_mainline_file_read_open_reveal_and_mutating_gate(tmp_path, monkeypatch):
@@ -397,6 +655,47 @@ def test_mainline_appcontrol_existing_work_order_executes_direct_adapter(tmp_pat
     asyncio.run(_run())
 
 
+def test_mainline_calculator_direct_entry_executes_calculate_tool(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.direct_mainline import try_execute_cognitive_direct_plan
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+
+    plan = plan_cognitive_turn(_ctx("打开计算器，计算99+100等于多少", turn_id="ck-arch-direct-calc"))
+    assert [wo.inputs["tool"] for wo in plan.work_orders] == ["mcp:windows_open_app", "mcp:windows_calculator_calculate"]
+    calls = {"run_tool": 0, "tools": []}
+
+    def fake_run_tool(tool_id: str, work_order_input: str, allowed_skills=None):
+        calls["run_tool"] += 1
+        calls["tools"].append(tool_id)
+        if tool_id == "mcp:windows_open_app":
+            return json.dumps({"ok": True, "app": "Calculator", "detail": "window_opened"}, ensure_ascii=False)
+        assert tool_id == "mcp:windows_calculator_calculate"
+        payload = json.loads(work_order_input)
+        assert payload["expression"] == "99+100"
+        return json.dumps(
+            {
+                "task": "calculator",
+                "ok": True,
+                "detail": "result_verified_with_visual",
+                "evidence": {"expr": "99+100", "expect": "199", "clipboard_norm": "199"},
+            },
+            ensure_ascii=False,
+        )
+
+    async def _run():
+        reply = await try_execute_cognitive_direct_plan(
+            plan=plan,
+            tools=[{"id": "mcp:windows_open_app"}, {"id": "mcp:windows_calculator_calculate"}],
+            allowed_skills=None,
+            run_tool_func=fake_run_tool,
+        )
+        assert reply == "已用计算器计算：99+100=199。"
+        assert calls["tools"] == ["mcp:windows_calculator_calculate"]
+
+    asyncio.run(_run())
+
+
 def test_mainline_message_direct_entry_uses_work_order_dispatcher(tmp_path, monkeypatch):
     monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
 
@@ -404,10 +703,14 @@ def test_mainline_message_direct_entry_uses_work_order_dispatcher(tmp_path, monk
     from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
 
     plan = plan_cognitive_turn(_ctx("send to Neil: hello from direct mainline", turn_id="ck-arch-direct-message"))
-    calls = {"run_tool": 0}
+    assert [wo.inputs["tool"] for wo in plan.work_orders] == ["mcp:windows_open_app", "mcp:windows_lark_send_message"]
+    calls = {"run_tool": 0, "tools": []}
 
     def fake_run_tool(tool_id: str, work_order_input: str, allowed_skills=None):
         calls["run_tool"] += 1
+        calls["tools"].append(tool_id)
+        if tool_id == "mcp:windows_open_app":
+            return json.dumps({"ok": True, "app": "Lark", "detail": "window_opened"}, ensure_ascii=False)
         assert tool_id == "mcp:windows_lark_send_message"
         payload = json.loads(work_order_input)
         assert json.loads(payload["recipients_json"]) == ["Neil"]
@@ -417,14 +720,80 @@ def test_mainline_message_direct_entry_uses_work_order_dispatcher(tmp_path, monk
     async def _run():
         reply = await try_execute_cognitive_direct_plan(
             plan=plan,
-            tools=[{"id": "mcp:windows_lark_send_message"}],
+            tools=[{"id": "mcp:windows_open_app"}, {"id": "mcp:windows_lark_send_message"}],
             allowed_skills=None,
             run_tool_func=fake_run_tool,
         )
         assert reply == "已发送消息给 Neil。"
-        assert calls["run_tool"] == 1
+        assert calls["tools"] == ["mcp:windows_lark_send_message"]
 
     asyncio.run(_run())
+
+
+def test_mainline_message_direct_entry_rejects_unverified_tool_success(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.direct_mainline import try_execute_cognitive_direct_plan
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+
+    plan = plan_cognitive_turn(_ctx("打开lark像Neil发送一条消息，内容为你好", turn_id="ck-arch-direct-message-unverified"))
+    calls = {"run_tool": 0}
+
+    def fake_run_tool(tool_id: str, work_order_input: str, allowed_skills=None):
+        calls["run_tool"] += 1
+        if tool_id == "mcp:windows_open_app":
+            return json.dumps({"ok": True, "app": "Lark", "detail": "window_opened"}, ensure_ascii=False)
+        assert tool_id == "mcp:windows_lark_send_message"
+        return json.dumps({"ok": True}, ensure_ascii=False)
+
+    async def _run():
+        reply = await try_execute_cognitive_direct_plan(
+            plan=plan,
+            tools=[{"id": "mcp:windows_open_app"}, {"id": "mcp:windows_lark_send_message"}],
+            allowed_skills=None,
+            run_tool_func=fake_run_tool,
+        )
+        assert calls["run_tool"] >= 1
+        assert reply is not None
+        assert "已发送消息" not in reply
+        assert "没有通过验证" in reply
+        assert "message_post_send_verification_missing" in reply
+
+    asyncio.run(_run())
+
+
+def test_run_tool_delegates_mcp_tools_to_registry(monkeypatch):
+    from l3_node.primitives.tools import loader
+    import l3_node.primitives.mcp.registry as registry
+
+    calls = {}
+
+    class FakeRegistry:
+        async def invoke(self, tool_id, work_order_input, *, allowed_skills=None, **_kwargs):
+            calls["tool_id"] = tool_id
+            calls["work_order_input"] = work_order_input
+            calls["allowed_skills"] = allowed_skills
+            return json.dumps(
+                {
+                    "ok": True,
+                    "send_ok": True,
+                    "message_id": "registry-dispatch-1",
+                    "via": "fake_mcp_registry",
+                },
+                ensure_ascii=False,
+            )
+
+    monkeypatch.setattr(registry, "get_mcp_registry", lambda: FakeRegistry())
+
+    out = loader.run_tool(
+        "mcp:windows_lark_send_message",
+        json.dumps({"recipients_json": "[\"Neil\"]", "message": "hello"}, ensure_ascii=False),
+        allowed_skills=None,
+    )
+
+    assert calls["tool_id"] == "mcp:windows_lark_send_message"
+    assert json.loads(calls["work_order_input"])["message"] == "hello"
+    assert json.loads(out)["via"] == "fake_mcp_registry"
 
 
 def test_mainline_file_direct_entry_uses_file_executor(tmp_path, monkeypatch):
@@ -493,16 +862,17 @@ def test_message_executor_dedupe_skips_repeat_send(tmp_path, monkeypatch):
     async def _run():
         first = await dispatch_existing_work_order(
             contract=plan.decision_contract,
-            work_order=plan.work_orders[0],
+            work_order=plan.work_orders[1],
             executor=fake_send,
         )
         second = await dispatch_existing_work_order(
             contract=plan.decision_contract,
-            work_order=plan.work_orders[0],
+            work_order=plan.work_orders[1],
             executor=fake_send,
         )
         assert first.verification.ok is True
-        assert second.verification.ok is True
+        assert second.verification.ok is False
+        assert second.verification.failure_reason == "message_duplicate_skipped_without_new_send"
         assert calls["send"] == 1
         assert "duplicate_skipped" in second.observation
 
@@ -518,9 +888,14 @@ def test_run_agent_message_direct_mainline_bypasses_role_execution_transport(tmp
         return _ctx(kwargs["user_input"], turn_id=kwargs["run_id"])
 
     async def fake_assemble_tool_pool(*_args, **_kwargs):
-        return [{"id": "mcp:windows_lark_send_message", "name": "windows_lark_send_message"}]
+        return [
+            {"id": "mcp:windows_open_app", "name": "windows_open_app"},
+            {"id": "mcp:windows_lark_send_message", "name": "windows_lark_send_message"},
+        ]
 
     def fake_run_tool(tool_id: str, work_order_input: str, allowed_skills=None):
+        if tool_id == "mcp:windows_open_app":
+            return json.dumps({"ok": True, "app": "Lark", "detail": "window_opened"}, ensure_ascii=False)
         assert tool_id == "mcp:windows_lark_send_message"
         payload = json.loads(work_order_input)
         assert json.loads(payload["recipients_json"]) == ["Neil"]
@@ -653,7 +1028,7 @@ def test_run_agent_appcontrol_confirmation_pending_then_resume(tmp_path, monkeyp
 
     second_reply = asyncio.run(
         agent_core.run_agent(
-            "确认执行",
+            "是。",
             object(),
             max_iterations=1,
             implicit_attribution={"lark_chat_id": session, "channel": "websocket_terminal"},
@@ -662,6 +1037,84 @@ def test_run_agent_appcontrol_confirmation_pending_then_resume(tmp_path, monkeyp
     assert "Calculator" in second_reply
     assert calls["close"] == 1
     assert load_pending_confirmation(session_id=session, channel="websocket_terminal") is None
+
+
+def test_run_agent_asr_entity_correction_yes_resume_opens_lark(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    import l3_node.agent_core as agent_core
+    from l3_client.local_mcps.windows_uia_mcp import server as windows_uia_server
+    from l3_node.cognitive_kernel.pending_confirmation import load_pending_confirmation
+
+    calls = {"open": 0, "app": ""}
+    session = "ck-lark-correction-session"
+
+    async def fake_assemble_tool_pool(*_args, **_kwargs):
+        return [{"id": "mcp:windows_open_app", "name": "windows_open_app"}]
+
+    async def fake_build_context(**kwargs):
+        return _ctx(kwargs["user_input"], turn_id=kwargs["run_id"])
+
+    def fake_open_app(app_name: str, args_json: str = "[]", out_dir: str = "") -> str:
+        calls["open"] += 1
+        calls["app"] = app_name
+        return json.dumps(
+            {"ok": True, "app": app_name, "active_window": app_name, "detail": "window_opened"},
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(agent_core, "build_cognitive_turn_context", fake_build_context)
+    monkeypatch.setattr(agent_core, "assemble_tool_pool", fake_assemble_tool_pool)
+    monkeypatch.setattr(windows_uia_server, "windows_open_app", fake_open_app)
+
+    first_reply = asyncio.run(
+        agent_core.run_agent(
+            "打开 lock",
+            object(),
+            max_iterations=1,
+            implicit_attribution={"lark_chat_id": session, "channel": "websocket_terminal"},
+        )
+    )
+    assert "Lark" in first_reply
+    assert "是" in first_reply and "否" in first_reply
+    assert calls["open"] == 0
+    assert load_pending_confirmation(session_id=session, channel="websocket_terminal") is not None
+
+    second_reply = asyncio.run(
+        agent_core.run_agent(
+            "是。",
+            object(),
+            max_iterations=1,
+            implicit_attribution={"lark_chat_id": session, "channel": "websocket_terminal"},
+        )
+    )
+    assert "Lark" in second_reply
+    assert calls == {"open": 1, "app": "Lark"}
+    assert load_pending_confirmation(session_id=session, channel="websocket_terminal") is None
+
+    third_reply = asyncio.run(
+        agent_core.run_agent(
+            "打开 lock",
+            object(),
+            max_iterations=1,
+            implicit_attribution={"lark_chat_id": session, "channel": "websocket_terminal"},
+        )
+    )
+    assert third_reply == "已打开 Lark。"
+    assert calls == {"open": 2, "app": "Lark"}
+    assert load_pending_confirmation(session_id=session, channel="websocket_terminal") is None
+
+
+    from l3_node.cognitive_kernel.memory_lifecycle import recall_lifecycle_memories
+
+    lifecycle_hits = recall_lifecycle_memories("lock Lark", memory_types=["correction"])
+    assert lifecycle_hits
+    store = json.loads((tmp_path / "state" / "entity_corrections.json").read_text(encoding="utf-8"))
+    record = store["app_corrections"][0]
+    assert record["surface_norm"] == "lock"
+    assert record["app_name"] == "Lark"
+    assert record["success_count"] >= 2
+    assert record["failure_count"] == 0
 
 
 def test_run_agent_file_direct_mainline_read_open_reveal(tmp_path, monkeypatch):

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Jachin Memory Growth Raw Event",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "event_id",
+    "ts_ms",
+    "category",
+    "source",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "event_id": {
+      "type": "string"
+    },
+    "ts_ms": {
+      "type": "integer"
+    },
+    "date": {
+      "type": "string"
+    },
+    "category": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "source_refs": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "review": {
+      "type": "object"
+    },
+    "payload": {
+      "type": "object"
+    }
+  }
+}

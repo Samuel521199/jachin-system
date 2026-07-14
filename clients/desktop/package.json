@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "jachin-desktop",
   "version": "0.9.108",
   "private": true,
@@ -29,8 +29,6 @@
     "tauri:build:ambient": "npm run ensure-json-no-bom && tauri build --features ambient",
     "sync-version": "node scripts/sync-version.mjs",
     "test:pending-confirmation-ui": "node scripts/test-pending-confirmation-protocol.mjs",
-    "test:intent-routing": "npx tsx scripts/intent-routing-test.ts",
-    "voice-intent-router-cli": "tsx scripts/voice-intent-router-cli.ts",
     "test:tts-benchmark": "npx tsx scripts/tts-sentence-benchmark.ts",
     "publish-desktop-release": "python ../../scripts/publish_desktop_release.py --sign"
   },

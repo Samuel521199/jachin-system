@@ -1,4 +1,4 @@
-﻿/**
+/**
  * useSensoryWebSocket - Layer 3 全息感官总线连接
  * 连接 ws://localhost:18981/sensory，接收大脑 step_type / thought / action / HITL_REQUIRED
  * v8.0 视觉觉醒：stream_chunk 流式神经、handoff 人格切换、swarm 算力雷达
@@ -27,14 +27,6 @@ export interface UseSensoryOptions {
    * 有 `larkChatId` 时仍以 Lark 为准，忽略此 ref。
    */
   desktopSessionIdRef?: MutableRefObject<string>;
-}
-
-/** L5 定时记忆整理：服务端推送的倒计时提示（勿当 thought 拼进助手气泡） */
-export interface MemoryCompactSuggestState {
-  content: string;
-  countdownSec: number;
-  remainingSec: number;
-  intervalDays: number;
 }
 
 /** 与 L3 Sensory 总线对齐；兼容 `action_type` 与顶层 `metadata` */
@@ -182,8 +174,6 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
   const [handoffEvent, setHandoffEvent] = useState<HandoffEvent | null>(null);
   /** Swarm 算力雷达：task_offer 时显示扫描，task_completed 时爆发 */
   const [swarmEvent, setSwarmEvent] = useState<SwarmEvent | null>(null);
-  /** 记忆整理周期到期：横幅 + 倒计时，结束发 memory_compact_auto_start */
-  const [memoryCompactSuggest, setMemoryCompactSuggest] = useState<MemoryCompactSuggestState | null>(null);
   /** L3 启动时推送：上次未闭环的后台任务（zombie_tasks.json） */
   const [zombieTasksPending, setZombieTasksPending] = useState<ZombieTasksPendingBanner | null>(null);
   /** 后台任务执行中单行 ``.`` 进度（`started` / `pulse` 更新，`completed` 等清除） */
@@ -241,25 +231,9 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     onStepRef.current = fn;
   }, []);
 
-  const dismissMemoryCompactSuggest = useCallback(() => {
-    setMemoryCompactSuggest(null);
-  }, []);
-
   const dismissZombieTasksPending = useCallback(() => {
     setZombieTasksPending(null);
   }, []);
-
-  const sendMemoryCompactControl = useCallback(
-    (type: "memory_compact_confirm" | "memory_compact_defer" | "memory_compact_cancel", hours?: number) => {
-      if (wsRef.current?.readyState !== WebSocket.OPEN) return false;
-      const p: Record<string, unknown> = { type };
-      if (type === "memory_compact_defer") p.hours = hours ?? 24;
-      wsRef.current.send(JSON.stringify(p));
-      setMemoryCompactSuggest(null);
-      return true;
-    },
-    [],
-  );
 
   /** 通知 L3 取消当前 run_agent 任务；不断开 WS，后续残余帧由 dropL3StreamUntilTerminalRef 吞掉直至终结包 */
   const sendRunAbort = useCallback(() => {
@@ -370,27 +344,6 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
             (typeof raw.action_type === "string" && raw.action_type) ||
             (typeof raw.type === "string" && raw.type) ||
             "";
-          if (step === "memory_compact_suggest") {
-            const metaRaw =
-              raw.metadata && typeof raw.metadata === "object"
-                ? (raw.metadata as Record<string, unknown>)
-                : undefined;
-            const cd = Math.max(3, Math.min(120, Number(metaRaw?.countdown_sec) || 10));
-            const id = Math.max(1, Number(metaRaw?.interval_days) || 3);
-            const suggestBody =
-              typeof raw.content === "string"
-                ? raw.content
-                : raw.content != null
-                  ? String(raw.content)
-                  : "";
-            setMemoryCompactSuggest({
-              content: suggestBody,
-              countdownSec: cd,
-              remainingSec: cd,
-              intervalDays: id,
-            });
-            return;
-          }
           if (step === "manifest_ack" || step === "manifest" || step === "ping" || step === "pong") {
             return;
           }
@@ -610,7 +563,6 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     setStreamChunkKind(null);
     setStreamingContent("");
     setCurrentRunId(null);
-    setMemoryCompactSuggest(null);
     setZombieTasksPending(null);
   }, []);
 
@@ -789,25 +741,6 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     return () => disconnect();
   }, [connect, disconnect]);
 
-  /** 记忆整理提示：每秒倒计时，归零时发 auto_start 并收起横幅 */
-  useEffect(() => {
-    if (!memoryCompactSuggest || memoryCompactSuggest.remainingSec <= 0) return;
-    const id = window.setTimeout(() => {
-      setMemoryCompactSuggest((prev) => {
-        if (!prev) return null;
-        const n = prev.remainingSec - 1;
-        if (n <= 0) {
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(JSON.stringify({ type: "memory_compact_auto_start" }));
-          }
-          return null;
-        }
-        return { ...prev, remainingSec: n };
-      });
-    }, 1000);
-    return () => clearTimeout(id);
-  }, [memoryCompactSuggest]);
-
   // Lark 镜像：连接后若 larkChatId 有值则订阅；larkChatId 变化时若已连接则更新订阅
   useEffect(() => {
     if (!larkChatId || wsRef.current?.readyState !== WebSocket.OPEN) return;
@@ -854,9 +787,6 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     registerChunkHandler,
     registerAnswerHandler,
     registerStepHandler,
-    memoryCompactSuggest,
-    dismissMemoryCompactSuggest,
-    sendMemoryCompactControl,
     /** 断电遗留后台任务横幅（L3 zombie_tasks_pending） */
     zombieTasksPending,
     dismissZombieTasksPending,

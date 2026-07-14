@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 const STT_AUDIO_READY = "STT_AUDIO_READY";
@@ -7,6 +7,8 @@ const STT_PTT_FAILED = "STT_PTT_FAILED";
 export interface SttAudioPayload {
   wav_base64: string;
   recognized_text?: string;
+  recognized_finalized?: boolean;
+  recognized_source?: string;
 }
 
 export interface SttPttFailedPayload {

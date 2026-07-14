@@ -19,6 +19,7 @@ from .contracts import (
     StateSnapshot,
 )
 from .ledger import current_ledger_path
+from .memory_growth_recall import recall_memory_growth
 from .memory_lifecycle import expire_lifecycle_memories, recall_lifecycle_memories
 
 
@@ -168,8 +169,10 @@ async def recall_relevant_memory(
             "failure_memory",
             "historical_task_summary",
             "environment_event_memory",
-            "passive_nexus_profile_memory",
+            "structured_profile_memory",
             "experience_rag_memory",
+            "memory_growth_concept_memory",
+            "memory_growth_playbook_memory",
         ],
         state_snapshot_summary=state_snapshot.to_dict(),
         active_task_stack_summary=state_snapshot.task_state or {},
@@ -210,15 +213,21 @@ async def recall_relevant_memory(
         max_results_per_channel=max_results_per_channel,
     )
     memory_gaps.extend(search_gaps)
-    passive_items, passive_gaps = await _passive_nexus_memory_evidence(max_results_per_channel)
-    recalled_items.extend(passive_items)
-    memory_gaps.extend(passive_gaps)
+    profile_items, profile_gaps = await _structured_profile_memory_evidence(max_results_per_channel)
+    recalled_items.extend(profile_items)
+    memory_gaps.extend(profile_gaps)
     experience_items, experience_gaps = _experience_memory_evidence(
         request=request,
         max_results_per_channel=max_results_per_channel,
     )
     recalled_items.extend(experience_items)
     memory_gaps.extend(experience_gaps)
+    growth_items, growth_gaps = recall_memory_growth(
+        request,
+        limit=max_results_per_channel,
+    )
+    recalled_items.extend(growth_items)
+    memory_gaps.extend(growth_gaps)
     for item in recalled_items:
         bucket = _classify_recalled_memory(item)
         if bucket not in buckets:
@@ -283,7 +292,8 @@ async def recall_relevant_memory(
             f"queries={len(multi_queries)} "
             f"short_term={len(evidence)} state={len(state_evidence)} "
             f"entity_matches={len(entity_matches)} recent_actions={len(recent_actions)} "
-            f"failure_hints={len(failure_hints)} gaps={len(memory_gaps)}"
+            f"failure_hints={len(failure_hints)} "
+            f"memory_growth={len(growth_items)} gaps={len(memory_gaps)}"
         ),
         recent_actions=[*evidence, *recent_actions],
         active_tasks=state_evidence,
@@ -333,6 +343,7 @@ def _candidate_task_domains(
     for intent in candidate_intents:
         if intent in {"open_app", "close_app", "switch_app"}:
             domains.append("desktop_app_control")
+            domains.append("app_control")
         elif intent == "send_message":
             domains.append("communication")
         elif intent == "file_operation":
@@ -437,11 +448,12 @@ def _unified_memory_provider_timeout_sec() -> float:
     return max(0.25, min(value, 10.0))
 
 
-async def _passive_nexus_memory_evidence(limit: int) -> tuple[list[MemoryEvidence], list[str]]:
-    """Load passive Nexus prompt sources as structured evidence.
+async def _structured_profile_memory_evidence(limit: int) -> tuple[list[MemoryEvidence], list[str]]:
+    """Load profile/system memory as structured evidence.
 
-    L0/L1 are no longer allowed to inject directly into prompts. If available,
-    they enter the same ranking/dedupe/conflict path as every other memory.
+    L0/L1 profile sources are never injected directly into prompts. When
+    available, they enter the same ranking, dedupe, and conflict path as every
+    other MemoryRecallAgent evidence item.
     """
 
     items: list[MemoryEvidence] = []
@@ -451,7 +463,7 @@ async def _passive_nexus_memory_evidence(limit: int) -> tuple[list[MemoryEvidenc
         from l3_client.local_mcps.jachin_memory_nexus.memory_backend import recall_room  # type: ignore
         from l3_node.memory_nexus_bridge import async_build_l0_persona_block, async_build_l1_system_memory_block
     except Exception as exc:
-        return [], [f"passive_nexus_provider_unavailable:{exc.__class__.__name__}"]
+        return [], [f"structured_profile_provider_unavailable:{exc.__class__.__name__}"]
 
     async def _load_l0() -> str:
         return await asyncio.wait_for(async_build_l0_persona_block(), timeout=timeout)
@@ -462,14 +474,14 @@ async def _passive_nexus_memory_evidence(limit: int) -> tuple[list[MemoryEvidenc
     results = await asyncio.gather(_load_l0(), _load_l1(), return_exceptions=True)
     l0, l1 = results
     if isinstance(l0, Exception):
-        gaps.append(f"passive_nexus_l0_unavailable:{l0.__class__.__name__}")
+        gaps.append(f"structured_profile_l0_unavailable:{l0.__class__.__name__}")
     elif str(l0 or "").strip():
         items.append(
             MemoryEvidence(
-                memory_id=f"passive_nexus:l0:{uuid.uuid4().hex[:8]}",
+                memory_id=f"structured_profile:l0:{uuid.uuid4().hex[:8]}",
                 memory_type="user_preference",
                 content=str(l0).strip()[:1600],
-                source="Memory Nexus passive profile",
+                source="Structured profile memory",
                 confidence=0.82,
                 confirmed_by_user=True,
                 ttl="long_term",
@@ -477,14 +489,14 @@ async def _passive_nexus_memory_evidence(limit: int) -> tuple[list[MemoryEvidenc
             )
         )
     if isinstance(l1, Exception):
-        gaps.append(f"passive_nexus_l1_unavailable:{l1.__class__.__name__}")
+        gaps.append(f"structured_profile_l1_unavailable:{l1.__class__.__name__}")
     elif str(l1 or "").strip():
         items.append(
             MemoryEvidence(
-                memory_id=f"passive_nexus:l1:{uuid.uuid4().hex[:8]}",
+                memory_id=f"structured_profile:l1:{uuid.uuid4().hex[:8]}",
                 memory_type="historical_task_summary",
                 content=str(l1).strip()[:2400],
-                source="Memory Nexus passive system memory",
+                source="Structured system memory",
                 confidence=0.74,
                 ttl="long_term",
                 relevance_reason="L1 system memory source routed through unified MemoryRecallAgent",
@@ -669,6 +681,15 @@ def _rows_from_memory_search_result(result: Any) -> list[Any]:
 
 
 def _classify_recalled_memory(item: MemoryEvidence) -> str:  # type: ignore[no-redef]
+    memory_type = str(item.memory_type or "").lower()
+    if memory_type in {"tool_habit", "preferred_tool", "memory_growth_playbook"}:
+        return "tool_habits"
+    if memory_type in {"historical_task_summary", "task_experience"}:
+        return "historical_task_summaries"
+    if memory_type in {"project_fact", "project", "workspace_fact"}:
+        return "project_facts"
+    if memory_type in {"failure_hint", "recovery_hint"}:
+        return "failure_hints"
     hay = f"{item.memory_type} {item.content}".lower()
     if any(k in hay for k in ("safety", "confirm before", "confirmation", "permission", "privacy", "\u786e\u8ba4", "\u5b89\u5168", "\u9690\u79c1")):
         return "safety_preferences"
@@ -684,7 +705,7 @@ def _classify_recalled_memory(item: MemoryEvidence) -> str:  # type: ignore[no-r
         return "failure_hints"
     if any(k in hay for k in ("preference", "preferred", "default", "style", "brief", "user_preference", "\u504f\u597d", "\u9ed8\u8ba4")):
         return "user_preferences"
-    if any(k in hay for k in ("alias", "also called", "=", "path memory", "\u522b\u540d", "\u5c31\u662f")):
+    if any(k in hay for k in ("alias", "also called", "path memory", "\u522b\u540d", "\u5c31\u662f")):
         return "aliases"
     if any(k in hay for k in ("correction", "not browser", "\u4e0d\u662f", "\u7ea0\u9519", "\u6539\u6210", "\u4ee5\u540e\u4e0d\u8981")):
         return "corrections"
@@ -727,6 +748,15 @@ def _memory_score(
         + state_alignment_score * 0.10
         - conflict_penalty
     )
+    if str(item.source or "").startswith("Memory Growth"):
+        score += 0.18
+        strategy_multiplier, strategy_detail = _memory_growth_strategy_multiplier(item)
+        score *= strategy_multiplier
+        usage_multiplier, usage_detail = _memory_growth_usage_multiplier(item)
+        score *= usage_multiplier
+        strategy_detail.update(usage_detail)
+    else:
+        strategy_detail = {}
     return score, {
         "memory_id": item.memory_id,
         "memory_type": item.memory_type,
@@ -737,6 +767,63 @@ def _memory_score(
         "task_relevance_score": round(task_relevance_score, 4),
         "state_alignment_score": round(state_alignment_score, 4),
         "conflict_penalty": round(conflict_penalty, 4),
+        **strategy_detail,
+    }
+
+
+def _memory_growth_strategy_multiplier(item: MemoryEvidence) -> tuple[float, dict[str, Any]]:
+    text = f"{item.content} {item.relevance_reason}".lower()
+    weight = _extract_strategy_float(text, "strategy_weight", 1.0)
+    mode = _extract_strategy_value(text, "governance_execution_mode") or _extract_strategy_value(text, "execution_mode") or "normal"
+    needs_more = "requires_more_evidence=true" in text
+    multiplier = max(0.25, min(1.8, weight))
+    if mode == "manual_review":
+        multiplier *= 0.72
+    if needs_more:
+        multiplier *= 0.82
+    return multiplier, {
+        "governance_strategy_weight": round(weight, 3),
+        "governance_execution_mode": mode,
+        "governance_requires_more_evidence": needs_more,
+        "governance_strategy_multiplier": round(multiplier, 3),
+    }
+
+
+def _extract_strategy_float(text: str, key: str, default: float) -> float:
+    raw = _extract_strategy_value(text, key)
+    if raw == "":
+        return default
+    try:
+        return float(raw)
+    except Exception:
+        return default
+
+
+def _extract_strategy_value(text: str, key: str) -> str:
+    match = re.search(rf"{re.escape(key.lower())}=([^;\s]+)", text)
+    return match.group(1).strip().lower() if match else ""
+
+
+def _memory_growth_usage_multiplier(item: MemoryEvidence) -> tuple[float, dict[str, Any]]:
+    text = f"{item.content} {item.relevance_reason}".lower()
+    use_count = int(_extract_strategy_float(text, "artifact_use_count", 0.0))
+    success_rate = _extract_strategy_float(text, "artifact_success_rate", 0.0)
+    failure_count = int(_extract_strategy_float(text, "artifact_failure_count", 0.0))
+    multiplier = 1.0
+    if use_count:
+        multiplier += min(0.24, use_count * 0.03)
+        if success_rate >= 0.8:
+            multiplier += 0.18
+        elif success_rate and success_rate < 0.5:
+            multiplier -= 0.18
+    if failure_count >= 2:
+        multiplier -= min(0.24, failure_count * 0.06)
+    multiplier = max(0.45, min(1.45, multiplier))
+    return multiplier, {
+        "artifact_use_count": use_count,
+        "artifact_success_rate": round(success_rate, 3),
+        "artifact_failure_count": failure_count,
+        "artifact_usage_multiplier": round(multiplier, 3),
     }
 
 
@@ -804,6 +891,15 @@ def _dedupe_strings(items: list[str]) -> list[str]:
 
 
 def _classify_recalled_memory(item: MemoryEvidence) -> str:  # type: ignore[no-redef]
+    memory_type = str(item.memory_type or "").lower()
+    if memory_type in {"tool_habit", "preferred_tool", "memory_growth_playbook"}:
+        return "tool_habits"
+    if memory_type in {"historical_task_summary", "task_experience"}:
+        return "historical_task_summaries"
+    if memory_type in {"project_fact", "project", "workspace_fact"}:
+        return "project_facts"
+    if memory_type in {"failure_hint", "recovery_hint"}:
+        return "failure_hints"
     hay = f"{item.memory_type} {item.content}".lower()
     if any(k in hay for k in ("safety", "confirm before", "confirmation", "permission", "privacy", "\u786e\u8ba4", "\u5b89\u5168", "\u9690\u79c1")):
         return "safety_preferences"
@@ -815,7 +911,7 @@ def _classify_recalled_memory(item: MemoryEvidence) -> str:  # type: ignore[no-r
         return "tool_habits"
     if any(k in hay for k in ("failure", "failed", "recovery", "timeout", "\u5931\u8d25", "\u91cd\u8bd5")):
         return "failure_hints"
-    if any(k in hay for k in ("alias", "also called", "=", "path memory", "\u522b\u540d", "\u5c31\u662f")):
+    if any(k in hay for k in ("alias", "also called", "path memory", "\u522b\u540d", "\u5c31\u662f")):
         return "aliases"
     if any(k in hay for k in ("correction", "not browser", "\u4e0d\u662f", "\u7ea0\u9519", "\u6539\u6210", "\u4ee5\u540e\u4e0d\u8981")):
         return "corrections"

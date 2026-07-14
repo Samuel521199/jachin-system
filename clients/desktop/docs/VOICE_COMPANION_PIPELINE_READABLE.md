@@ -1,86 +1,147 @@
-﻿# 璇煶闄即鎬佹墽琛屾祦绋嬭鏄?
-杩欎唤鏂囨。鐢ㄥ敖閲忔帴杩戜汉璇濈殑鏂瑰紡瑙ｉ噴锛氱敤鎴蜂粠鎸変笅璇煶鎸夐挳寮€濮嬶紝鍒?Jachin 璇村嚭璇煶鍥炲锛屼腑闂村埌搴曠粡杩囦簡鍝簺灞傘€佹瘡灞傝礋璐ｄ粈涔堛€佹剰鍥捐矾鐢辨€庝箞鍒ゆ柇銆佸摢浜涙ā鍨嬪弬涓庡伐浣溿€?
-褰撳墠杩欏绯荤粺涓嶆槸涓€涓畝鍗曠殑鈥滆闊宠浆鏂囧瓧 -> 澶фā鍨?-> 鏂囧瓧杞闊斥€濄€傚畠鏇村儚涓€鏉″垎灞傛祦姘寸嚎锛?
+# 语音陪伴态执行流程说明
+
+这份文档用尽量接近人话的方式解释：用户从按下语音按钮开始，到 Jachin 说出语音回复，中间到底经过了哪些层、每层负责什么、意图路由怎么判断、哪些模型参与工作。
+
+当前这套系统不是一个简单的“语音转文字 -> 大模型 -> 文字转语音”。它更像一条分层流水线：
+
 ```text
-鐢ㄦ埛澹伴煶
-  -> 褰曢煶 / 澹扮汗鍙€夎繃婊?  -> STT 璇煶璇嗗埆
-  -> STT 鏂囨湰淇涓庣儹璇嶉闄╁垽鏂?  -> 鍓嶇璇煶鎰忓浘璺敱
-  -> L3 WebSocket / HTTP 鍙戦€?  -> L3 蹇矾鐢?/ 鐩磋繛妯″瀷 / 瀹屾暣 Agent
-  -> 鍓嶇娴佸紡鎺ユ敹鏂囧瓧
-  -> 鍒嗗彞銆佹竻娲椼€佸幓閲?  -> JVS TTS 鍚堟垚
-  -> 鎾斁闃熷垪
-  -> 绯荤粺璇煶杈撳嚭
+用户声音
+  -> 录音 / 声纹可选过滤
+  -> STT 语音识别（热词只在云端 DashScope 原生侧辅助识别）
+  -> 前端整理最终文本和语音诊断证据
+  -> L3 WebSocket / HTTP 发送
+  -> L3 认知内核主循环
+  -> 主循环理解意图、编排任务、选择工具或直接回答
+  -> 前端流式接收文字
+  -> 分句、清洗、去重
+  -> JVS TTS 合成
+  -> 播放队列
+  -> 系统语音输出
 ```
 
-## 1. 鏍稿績杩涚▼鍜岀鍙?
-褰撳墠璇煶闄即鎬佷富瑕佹湁涓夌被杩愯鍗曞厓銆?
-### 妗岄潰鍓嶇
+## 1. 核心进程和端口
 
-浣嶇疆澶ц嚧鍦細
+当前语音陪伴态主要有三类运行单元。
+
+### 桌面前端
+
+位置大致在：
 
 ```text
 clients/desktop/src/chat.tsx
 clients/desktop/src/voice/
 ```
 
-瀹冭礋璐ｏ細
+它负责：
 
-- 鎺ユ敹璇煶鎸夐挳銆丠UD銆丱rb銆佹ā鎷熻剼鏈緭鍏ャ€?- 璋冪敤鏈湴 JVS 鍋?STT銆?- 鍋氬墠绔剰鍥捐矾鐢便€?- 鎶婅矾鐢辩粨鏋滃寘瑁呮垚 `implicit_signals` 鍙戠粰 L3銆?- 鎺ユ敹 L3 鐨勬祦寮忔枃瀛椼€?- 鎶婃枃瀛楁媶鎴愰€傚悎鏈楄鐨勫彞瀛愩€?- 璋?JVS TTS 鍚堟垚璇煶銆?- 绠＄悊鎾斁闃熷垪鍜屾墦鏂€?
-### JVS 璇煶鏈嶅姟
+- 接收语音按钮、HUD、Orb、模拟脚本输入。
+- 调用本地 JVS 做 STT。
+- 展示和记录 STT、声纹、云端诊断、TTS 状态。
+- 把最终识别文本、原始识别文本、语音诊断、设备和会话上下文发给 L3。
+- 不在前端做任务意图裁决；任务意图、工具选择、任务编排由 L3 主循环负责。
+- 接收 L3 的流式文字。
+- 把文字拆成适合朗读的句子。
+- 调 JVS TTS 合成语音。
+- 管理播放队列和打断。
 
-浣嶇疆锛?
+### JVS 语音服务
+
+位置：
+
 ```text
 voice_server/main.py
+voice_server/services/cloud_stt_service.py
 voice_server/services/stt_service.py
+voice_server/services/cloud_tts_service.py
 voice_server/services/tts_service.py
 voice_server/services/sv_service.py
 ```
 
-榛樿绔彛锛?
+默认端口：
+
 ```text
 http://127.0.0.1:18982
 ```
 
-瀹冭礋璐ｆ湰鍦伴煶棰戞ā鍨嬶細
+它负责语音能力的本地入口。当前可以按配置走云端模型，也可以走本地模型或本地兜底：
 
-- `/v1/stt/transcribe`锛氳闊宠瘑鍒€?- `/v1/tts/synthesize`锛氳闊冲悎鎴愩€?- `/v1/sv/filter_owner_track`锛氫富浜哄０绾硅建閬撹繃婊ゃ€?- `/v1/models/audio/warm`锛氶鐑?STT / TTS / SV銆?
-### L3 鏅鸿兘灞?
-浣嶇疆锛?
+- `/v1/stt/transcribe`：语音识别。
+- `/v1/stt/stream`：流式语音识别 WebSocket。
+- raw TCP STT：默认 `tcp://127.0.0.1:18983`，桌面 PTT 优先使用，失败再回退 WebSocket。
+- `/v1/tts/synthesize`：语音合成。
+- `/v1/tts/stream`：流式语音合成 WebSocket。
+- `/v1/sv/filter_owner_track`：主人声纹轨道过滤。
+- `/v1/models/audio/warm`：预热 STT / TTS / SV。
+
+当前这台机器上的健康检查会暴露这些关键状态：
+
+```text
+stt_backend
+stt_model
+stt_http_timeout_sec
+stt_cloud_soft_timeout_sec
+stt_local_fallback_enabled
+stt_local_fallback_ready
+stt_stream_mode
+tts_backend
+tts_model
+sv_ready
+```
+
+这些字段比文档里的静态描述更权威。实际排查时先看 `/health`。
+
+### L3 智能层
+
+位置：
+
 ```text
 l3_node/ws_server.py
 l3_node/agent_core.py
 ```
 
-榛樿 WebSocket锛?
+默认 WebSocket：
+
 ```text
 ws://127.0.0.1:18981
 ```
 
-瀹冭礋璐ｏ細
+它负责：
 
-- 鍒ゆ柇杩欎竴杞槸鍚﹀彲浠ヨ蛋璇煶 fast lane銆?- 璋冪敤杩滅鎴栨湰鍦?LLM銆?- 鍐冲畾鏄惁璺宠繃瀹屾暣璁板繂銆佹绱€佸伐鍏枫€佷换鍔￠摼璺€?- 瀵逛换鍔＄被璇锋眰杩涘叆瀹屾暣 agent / 宸ュ叿 / 浠诲姟璋冨害銆?- 鎶婂洖澶嶆祦寮忓洖浼犵粰鍓嶇銆?
-## 2. 浠庣敤鎴疯璇濆埌 STT
+- 接收语音最终文本和语音诊断上下文。
+- 进入认知内核主循环。
+- 在主循环里完成理解、意图路由、任务编排、工具选择、验证和回复组织。
+- 根据任务本身决定是否调用模型、工具、MCP、后台任务等能力。
+- 把回复流式回传给前端。
 
-鐢ㄦ埛鎸夎闊虫寜閽悗锛屽墠绔細鍏堟嬁鍒颁竴娈?WAV base64銆?
-鍏ュ彛鍦?`chat.tsx` 鐨?`submitVoiceUtterance`銆?
-澶ф娴佺▼鏄細
+## 2. 从用户说话到 STT
+
+用户按语音按钮后，前端会先拿到一段 WAV base64。
+
+入口在 `chat.tsx` 的 `submitVoiceUtterance`。
+
+大概流程是：
 
 ```text
-鏀跺埌 wavBase64
-  -> 寮€鍚?voice_chat trace
-  -> 鍒ゆ柇鏄惁澶勪簬闄即鎬?UI
-  -> 鍙€夋墽琛?owner-track 澹扮汗杩囨护
-  -> 璋冪敤 transcribeWavBase64Detailed
+收到 wavBase64
+  -> 开启 voice_chat trace
+  -> 判断是否处于陪伴态 UI
+  -> 可选执行 owner-track 声纹过滤
+  -> 调用 transcribeWavBase64Detailed
   -> JVS /v1/stt/transcribe
-  -> 杩斿洖鏈€缁堟枃鏈?```
+  -> 返回最终文本
+```
 
-### 澹扮汗杩囨护涓嶆槸姣忔閮藉己鍒惰窇
+### 声纹过滤不是每次都强制跑
 
-闄即鎬侀噷鏈変竴涓揩閫熸ā寮忥細
+陪伴态里有一个快速模式：
 
-- 濡傛灉鐜榛樿璁や负姣旇緝瀹夐潤锛屽苟涓斿０绾逛弗鏍兼ā寮忔病寮€锛屽彲浠ヨ烦杩囦富浜鸿建杩囨护銆?- 濡傛灉璁剧疆瑕佹眰涓ユ牸锛屾墠浼氳皟鐢?`companion_filter_owner_track_wav`锛屽啀璧?JVS `/v1/sv/filter_owner_track`銆?
-澹扮汗妯″瀷鏄?CAM++锛屽畠鍋氱殑浜嬫儏涓嶆槸璇嗗埆鏂囧瓧锛岃€屾槸鍒ゆ柇杩欎竴娈靛０闊冲儚涓嶅儚涓讳汉銆?
-瀹冧細鎶婂師濮嬮煶棰戝垏鎴愮獥鍙ｏ紝渚嬪锛?
+- 如果环境默认认为比较安静，并且声纹严格模式没开，可以跳过主人轨过滤。
+- 如果设置要求严格，才会调用 `companion_filter_owner_track_wav`，再走 JVS `/v1/sv/filter_owner_track`。
+
+声纹模型是 CAM++，它做的事情不是识别文字，而是判断这一段声音像不像主人。
+
+它会把原始音频切成窗口，例如：
+
 ```text
 step=250ms
 len=900ms
@@ -88,30 +149,61 @@ high=0.38
 low=0.25
 ```
 
-鐒跺悗杈撳嚭锛?
-```text
-owner 娈?other 娈?璺宠繃鐗囨
-涓讳汉杞ㄩ煶棰?```
-
-涓讳汉杞ㄨ繃婊ゅ悗鐨勯煶棰戞墠浼氶€?STT銆傚畠鐨勭洰鏍囨槸鍑忓皯鏃佷汉鎻掕瘽锛屼絾鍓綔鐢ㄦ槸锛氬鏋滃垏鐗囪竟鐣屼笉鑷劧锛屽彲鑳藉壀鎺夎瘝澶磋瘝灏俱€?
-### STT 妯″瀷
-
-褰撳墠 JVS STT 鏄細
+然后输出：
 
 ```text
-sherpa-onnx Zipformer zh-en
+owner 段
+other 段
+跳过片段
+主人轨音频
 ```
 
-鏈嶅姟绔枃浠讹細
+主人轨过滤后的音频才会送 STT。它的目标是减少旁人插话，但副作用是：如果切片边界不自然，可能剪掉词头词尾。
+
+### STT 模型
+
+当前这套语音服务的 STT 不是单一模型，而是“云端优先 + 本地兜底”：
 
 ```text
+主路径：DashScope Fun-ASR / fun-asr-realtime
+本地兜底：sherpa-onnx Zipformer zh-en
+```
+
+服务端文件：
+
+```text
+voice_server/services/cloud_stt_service.py
 voice_server/services/stt_service.py
+voice_server/main.py
 ```
 
-瀹冨仛涓変欢浜嬶細
+默认流程是：
 
-1. 鎶婇煶棰戣В鐮佸苟閲嶉噰鏍峰埌 16k銆?2. 鐢?Sherpa-ONNX Zipformer 寰楀埌鍘熷璇嗗埆鏂囨湰銆?3. 缁忚繃 `VoiceUnderstandingCorrector` 鍋氶鍩熺籂閿欏拰鍒濇鐞嗚В銆?
-杩斿洖缁撴灉閲屼笉鍙湁 `text`锛岃繕鏈夛細
+1. `/v1/stt/transcribe` 收到完整 WAV。
+2. JVS 先启动云端 DashScope STT。
+3. 如果云端在 `JACHIN_STT_CLOUD_SOFT_TIMEOUT_SEC` 内没有返回，默认 7 秒，会启动本地 sherpa 兜底。
+4. 如果云端先返回有效结果，就使用云端结果。
+5. 如果本地兜底先返回，就先把本地结果交给前端，同时后台记录云端是否晚到。
+
+所以日志里看到：
+
+```text
+backend = dashscope:fun-asr-realtime
+```
+
+表示云端 STT 直接成功。
+
+看到：
+
+```text
+backend = sherpa-onnx-zipformer+fallback_from_cloud
+```
+
+表示云端没有在软超时内返回，本轮最终使用了本地 sherpa 兜底。
+
+本地 sherpa 会把音频解码、重采样到 16k，再用 Zipformer 得到原始识别文本。云端 DashScope 路径会通过 SDK 调用 Fun-ASR，并返回云端识别文本。两条路径的结果都会被包装成统一的 STT 结果格式。
+
+返回结果里不只有 `text`，还有：
 
 ```text
 raw_text
@@ -122,79 +214,192 @@ backend
 hotword_count
 hotword_status
 understanding
-reply_plan
-user_message
 ```
 
-鍏朵腑 `reply_plan` 鍜?`user_message` 鐢ㄤ簬涓€绉嶇壒娈婃儏鍐碉細STT 灞傚凡缁忓垽鏂€滆繖涓闊充笉鑳界洿鎺ユ墽琛岋紝闇€瑕佽拷闂€濄€?
-### STT 鐑瘝鏄粈涔?
-鐑瘝鍙互鐞嗚В鎴愮粰 STT 鐨勨€滃姪鍚悕鍗曗€濄€?
-鏅€氳闊宠瘑鍒ā鍨嬩笉涓€瀹氳璇嗕綘鐨勫伐浣滃満鏅€傛瘮濡備綘璇达細
+其中 `understanding` 里可能包含：
 
 ```text
-鎵撳紑 Lark
-缁?Vivian 鍙戞秷鎭?鍒囧埌 VS Code
-鎵撳紑 Codex
-鐪嬩竴涓?Jachin 椤圭洰
+cloud_diagnostics      云端 STT 诊断事件
+stt_orchestration      云端/本地兜底编排事件
+stt_fallback           本地兜底是否被使用
 ```
 
-濡傛灉娌℃湁鐑瘝锛屾ā鍨嬪彲鑳芥妸杩欎簺璇嶅惉鎴愶細
+当前 STT 层本身只做识别、云端原生热词偏置、轻量文本清洗和诊断。本地 sherpa 兜底不使用项目热词。真正的任务意图、缺槽追问、工具选择，交给 L3 认知内核主循环负责；前端只传递最终文本和证据。
+
+### 云端 STT 诊断和本地兜底
+
+现在 JVS 会把云端 STT 的关键阶段写入 `understanding.cloud_diagnostics`，前端再把这些事件展开写进 `voice_chat.log`。
+
+常见阶段包括：
 
 ```text
-Lark -> luck / lock / 鎷夊厠
-Vivian -> vivi / 寰井瀹?/ 钖囪枃瀹?VS Code -> ws code / w s code
-Codex -> code x / 鎵ｅ緱鍏嬫柉
-Jachin -> jacking / 鍔犲嫟 / 鍢夐挦
+stt.cloud_start
+stt.cloud_dns
+stt.cloud_connect
+stt.cloud_hotwords_snapshot_start
+stt.cloud_hotwords_snapshot_done
+stt.cloud_vocabulary_sync_start
+stt.cloud_vocabulary_sync_done / stt.cloud_vocabulary_sync_skipped / stt.cloud_vocabulary_sync_exception
+stt.cloud_upload_start
+stt.cloud_sdk_call_done
+stt.cloud_result
+stt.cloud_exception
 ```
 
-鐑瘝鐨勪綔鐢ㄤ笉鏄€滃己琛屾敼瀛椻€濓紝鑰屾槸鍦?STT 瑙ｇ爜鏃跺憡璇夋ā鍨嬶細
+这些阶段用于回答一个问题：云端 STT 慢，到底慢在哪里。
+
+例如：
 
 ```text
-杩欎簺璇嶅湪褰撳墠绯荤粺閲屽緢甯歌銆?濡傛灉澹伴煶鏈夌偣鍍忓畠浠紝璇蜂紭鍏堣€冭檻瀹冧滑銆?```
+cloud_dns 慢       -> DNS 或网络解析慢
+cloud_connect 慢   -> 到 DashScope endpoint 的 TCP 连接慢
+cloud_vocabulary_sync 慢或异常 -> 热词词表同步慢或失败
+cloud_upload_start 后长期没有 cloud_result -> SDK 调用、上传、服务端排队或识别慢
+cloud_exception    -> 云端 SDK 或服务端返回异常
+```
 
-鎵€浠ョ儹璇嶆洿鍍忊€滃惉鍐欐椂鏃佽竟鏀句簡涓€寮犲父鐢ㄤ汉鍚嶃€佸簲鐢ㄥ悕銆侀」鐩悕娓呭崟鈥濓紝涓嶆槸鍚庢湡鎶婃墍鏈夌浉浼艰瘝閮界矖鏆存浛鎹€?
-### 褰撳墠鏈夊摢浜涚儹璇?
-褰撳墠鐑瘝涓嶆槸鍐欐鍦ㄤ竴涓湴鏂癸紝鑰屾槸鐢?`SttHotwordProvider` 姹囨€汇€?
-鏈嶅姟绔綅缃細
+云端和本地兜底的编排事件会写在 `understanding.stt_orchestration`，前端也会展开成日志阶段：
+
+```text
+stt.cloud_wait_start
+stt.cloud_soft_timeout
+stt.fallback_start
+stt.fallback_result
+stt.cloud_late_observer_started
+stt.cloud_late_result
+```
+
+其中：
+
+```text
+cloud_soft_timeout
+```
+
+表示云端没有在软超时时间内回来，于是 JVS 启动本地 sherpa 兜底。
+
+```text
+cloud_late_result
+```
+
+表示本地结果已经先返回，但云端后来又回来了。这个事件主要用于排查云端是“慢”还是“彻底失败”。
+
+注意：当前系统为了前台响应速度，fallback 先返回时不会等待云端晚到结果再改写已经发给 L3 的文本。云端晚到结果主要作为诊断证据。
+
+### 真流式 STT 和最终 STT
+
+当前 JVS 有两类 STT 接口：
+
+```text
+/v1/stt/transcribe  完整 WAV 识别，用于最终文本
+/v1/stt/stream      WebSocket 流式识别
+raw TCP STT         本机低开销流式识别，桌面 PTT 优先使用
+```
+
+当前云端配置支持真正的 DashScope 实时流式 STT：
+
+```text
+stt_stream_mode = cloud_realtime
+```
+
+它的含义是：桌面录音过程中，音频块可以通过 raw TCP 或 WebSocket 进入 JVS，JVS 再用 DashScope `Recognition.start()`、`send_audio_frame()`、`stop()` 把音频流发给云端。
+
+如果 health 里看到：
+
+```text
+stt_stream_mode = batch_incremental
+```
+
+那说明当前没有使用真云端流式，只是在 JVS 内部对累计音频做增量识别。这个模式可以提供预览，但不应该被当成真正降低云端延迟的流式 STT。
+
+无论有没有流式预览，任务执行仍应以最终 STT 为准。前端现在会把 PTT 期间拿到的 `recognized_text` 当作预览证据，最终仍调用 `/v1/stt/transcribe` 得到 finalized 结果。
+
+### STT 热词是什么
+
+热词可以理解成给 STT 的“助听名单”。
+
+普通语音识别模型不一定认识你的工作场景。比如你说：
+
+```text
+打开 Lark
+给 Vivian 发消息
+切到 VS Code
+打开 Codex
+看一下 Jachin 项目
+```
+
+如果没有热词，模型可能把这些词听成：
+
+```text
+Lark -> luck / lock / 拉克
+Vivian -> vivi / 微微安 / 薇薇安
+VS Code -> ws code / w s code
+Codex -> code x / 扣得克斯
+Jachin -> jacking / 加勤 / 嘉钦
+```
+
+热词的作用不是“强行改字”，而是在 STT 解码时告诉模型：
+
+```text
+这些词在当前系统里很常见。
+如果声音有点像它们，请优先考虑它们。
+```
+
+所以热词更像“听写时旁边放了一张常用人名、应用名、项目名清单”，不是后期把所有相似词都粗暴替换。
+
+### 当前有哪些热词
+
+当前热词不是写死在一个地方，而是由 `SttHotwordProvider` 汇总。
+
+服务端位置：
 
 ```text
 voice_server/services/stt_hotwords.py
 ```
 
-褰撳墠浼氫粠杩欎簺鏉ユ簮鍙栬瘝锛?
+当前会从这些来源取词：
+
 ```text
 l3_node.voice_entity_correction.export_hotwords()
 data/voice/sherpa_hotwords.txt
 data/voice/domain_lexicon.json
 data/voice/stt_hotwords.json
 config/voice_domain_lexicon.json
-鐜鍙橀噺 JACHIN_STT_HOTWORDS
+环境变量 JACHIN_STT_HOTWORDS
 ```
 
-鎸夊綋鍓嶉」鐩噷鐨?snapshot锛岀儹璇嶆€绘暟澶х害鏄細
+热词数量不是固定值，会随 `l3_node.voice_entity_correction.export_hotwords()`、配置文件和环境变量变化。实际值以日志里的 `hotword_count` 或 `/health` 对应状态为准。
 
 ```text
-155 涓?```
+hotword_count = 当前这一轮实际加载的热词数量
+```
 
-涓昏鍒嗘垚鍑犵被銆?
-#### 搴旂敤 / 宸ュ叿鍚?
+主要分成几类。
+
+#### 应用 / 工具名
+
 ```text
 Lark
-椋炰功
+飞书
 Chrome
-娴忚鍣?VS Code
+浏览器
+VS Code
 vscode
 Codex
 ```
 
-瀹冧滑杩樺甫鏈夊父瑙佽鍚埆鍚嶏紝渚嬪锛?
+它们还带有常见误听别名，例如：
+
 ```text
-Lark: lark, feishu, flybook, luck, lock, 鎷夊厠, 鎷?Chrome: chrome, google chrome, clone, 娴忚鍣?VS Code: vs code, vscode, visual studio code, ws code, w s code
-Codex: codex, code x, 鎵ｅ緱鍏嬫柉
+Lark: lark, feishu, flybook, luck, lock, 拉克, 拉
+Chrome: chrome, google chrome, clone, 浏览器
+VS Code: vs code, vscode, visual studio code, ws code, w s code
+Codex: codex, code x, 扣得克斯
 ```
 
-#### 鑱旂郴浜哄悕瀛?
-褰撳墠鑱旂郴浜虹儹璇嶉噷鍖呭惈锛?
+#### 联系人名字
+
+当前联系人热词里包含：
+
 ```text
 Vivian
 Neil
@@ -246,8 +451,10 @@ Hope
 Germaine
 ```
 
-鍏朵腑 Vivian銆丯eil銆丒than 杩欑被甯歌璇煶浠诲姟鐢ㄥ埌鐨勪汉鍚嶏紝浼氭湁鏇村鍒悕銆?
-渚嬪 Vivian锛?
+其中 Vivian、Neil、Ethan 这类常被语音任务用到的人名，会有更多别名。
+
+例如 Vivian：
+
 ```text
 Vivian
 vivian
@@ -255,312 +462,258 @@ vivi
 viian
 vivan
 vivien
-钖囪枃瀹?寰井瀹?V钖?```
+薇薇安
+微微安
+V薇
+```
 
-#### 椤圭洰 / 绯荤粺鍚?
+#### 项目 / 系统名
+
 ```text
 Jachin
 jachin
 jacking
-鍔犲嫟
-鍢夐挦
+加勤
+嘉钦
 ```
 
-杩欑被鐑瘝涓昏甯姪璇嗗埆椤圭洰鍚嶃€佺郴缁熷悕锛岄伩鍏嶆妸 Jachin 鍚垚鍒殑鏅€氳嫳鏂囪瘝銆?
-#### 鏉冮噸
+这类热词主要帮助识别项目名、系统名，避免把 Jachin 听成别的普通英文词。
 
-鐑瘝閮芥湁鏉冮噸銆傛潈閲嶅彲浠ョ悊瑙ｆ垚鈥滄彁閱掑姏搴︹€濄€?
-渚嬪褰撳墠姣旇緝閲嶈鐨勮瘝锛?
+#### 权重
+
+热词都有权重。权重可以理解成“提醒力度”。
+
+例如当前比较重要的词：
+
 ```text
 Lark    25
 Vivian  25
 Jachin  20
-椋炰功    20
-钖囪枃瀹? 18
+飞书    20
+薇薇安  18
 ```
 
-鏅€氳仈绯讳汉鍜屽父瑙佸埆鍚嶄竴鑸槸 10 鎴?20锛涗竴浜涘吋瀹瑰ぇ灏忓啓鐨勫疄楠岃瘝鍙兘鏄?4銆?銆?銆?銆?
-鏉冮噸涓嶆槸瓒婇珮瓒婂ソ銆傚お楂樹細璁╂ā鍨嬭繃搴︾浉淇＄儹璇嶏紝鎶婁笉鐩稿叧鐨勫０闊充篃鍚垚鐑瘝銆?
-### 鐑瘝濡備綍杈呬綈 STT
+普通联系人和常见别名一般是 10 或 20；一些兼容大小写的实验词可能是 4、5、6、8。
 
-瀹屾暣娴佺▼澶ф鏄細
+权重不是越高越好。太高会让模型过度相信热词，把不相关的声音也听成热词。
+
+### 热词如何辅佐 STT
+
+当前热词只服务云端 DashScope STT。Jachin 不再给本地 sherpa 兜底路径生成热词文件，也不再让本地 sherpa 因热词切换到 `modified_beam_search`。
+
+云端 DashScope 路径大概是：
 
 ```text
-褰曢煶闊抽
-  -> STT 鏈嶅姟鏀跺埌闊抽
-  -> SttHotwordProvider 姹囨€荤儹璇?  -> 鐢熸垚涓存椂 hotwords 鏂囦欢
-  -> Sherpa-ONNX Zipformer 鐢?modified_beam_search 瑙ｇ爜
-  -> 寰楀埌 raw_text
-  -> VoiceUnderstandingCorrector 鍋氬疄浣撶籂閿欏拰鐞嗚В
-  -> 杩斿洖 text / raw_text / hotword metadata
+录音音频
+  -> JVS /v1/stt/transcribe
+  -> SttHotwordProvider 汇总热词
+  -> DashScope vocabulary / raw_input.context
+  -> Fun-ASR 云端识别
+  -> 得到 raw_text
+  -> 返回 text / raw_text / hotword metadata / cloud_diagnostics
 ```
 
-鏇翠汉璇濅竴鐐癸細
-
-1. 姣忔璇嗗埆鍓嶏紝JVS 浼氭嬁涓€浠芥渶鏂扮儹璇嶆竻鍗曘€?2. 濡傛灉鐑瘝娓呭崟鍙樹簡锛孲TT recognizer 浼氶噸鏂板姞杞姐€?3. 鏈夌儹璇嶆椂锛孲herpa 浼氫粠鏅€?`greedy_search` 鏀规垚 `modified_beam_search`銆?4. 瀹冧細鍦ㄢ€滃涓彲鑳藉惉娉曗€濅箣闂达紝缁欑儹璇嶉偅鏉¤矾寰勫姞涓€鐐瑰€惧悜銆?5. 鏈€鍚庤緭鍑鸿瘑鍒枃鏈€?6. 杈撳嚭鍚庡啀杩涘疄浣撶籂閿欏眰锛屾妸涓婁笅鏂囬噷鐨勫埆鍚嶈鏁存垚鏍囧噯鍚嶅瓧銆?
-#### 鈥滃涓彲鑳藉惉娉曗€濇槸鎬庝箞鏉ョ殑
-
-STT 妯″瀷鍚０闊虫椂锛屼笉鏄儚浜轰竴鏍蜂竴娆℃€у惉鍑轰竴鍙ョ‘瀹氱殑璇濄€傛洿鎺ヨ繎涓嬮潰杩欎釜杩囩▼锛?
-```text
-澹伴煶鐗瑰緛杩涙ā鍨?  -> 姣忎竴灏忔闊抽閮藉彲鑳藉搴斿涓瓧 / 鎷奸煶 / token
-  -> 瑙ｇ爜鍣ㄨ竟鍚竟淇濈暀鍑犳潯鍊欓€夎矾寰?  -> 姣忔潯璺緞閮芥湁涓€涓垎鏁?  -> 鍒嗘暟鏈€楂樼殑璺緞鎴愪负鏈€缁堣瘑鍒枃鏈?```
-
-姣斿鐢ㄦ埛璇粹€滄墦寮€ Lark鈥濓紝澹伴煶姣旇緝绯婄殑鏃跺€欙紝妯″瀷鍐呴儴鍙兘鍚屾椂瑙夊緱杩欎簺閮借寰楅€氾細
+本地 sherpa 兜底路径大概是：
 
 ```text
-鎵撳紑 Lark
-鎵撳紑 luck
-鎵撳紑 lock
-鎵撳紑鎷夊厠
-鎵撳紑閭ｄ釜
+录音音频
+  -> STT 服务收到音频
+  -> Sherpa-ONNX Zipformer 固定用 greedy_search 解码
+  -> 得到 raw_text
+  -> 轻清洗
+  -> 返回 text / raw_text，并标记 local_hotwords = disabled
 ```
 
-濡傛灉涓嶇敤鐑瘝锛岀郴缁熷彲鑳藉彧璧版渶璐績鐨勪竴鏉¤矾锛氬綋鍓嶅摢涓€涓?token 鍒嗘渶楂橈紝灏变竴璺€変笅鍘汇€傝繖灏辨槸 `greedy_search`锛屼紭鐐规槸蹇紝缂虹偣鏄鏄撴棭鏃╅€夐敊銆?
-鏈夌儹璇嶆椂锛屽綋鍓嶉厤缃細璁?Sherpa-ONNX Zipformer 浣跨敤锛?
+更人话一点：
+
+1. 每次识别前，JVS 会拿一份最新热词清单。
+2. 如果走云端，JVS 会把热词传给 DashScope vocabulary 或 `raw_input.context`。
+3. 如果走本地 sherpa，JVS 不读取 `SttHotwordProvider`，不生成临时 hotwords 文件。
+4. 本地 sherpa 固定 `greedy_search`，避免热词把兜底识别吸偏。
+5. 最后输出识别文本，并把最终文本交给 L3 主循环。
+
+#### “多个可能听法”是怎么来的
+
+STT 模型听声音时，不是像人一样一次性听出一句确定的话。更接近下面这个过程：
+
 ```text
-modified_beam_search
+声音特征进模型
+  -> 每一小段音频都可能对应多个字 / 拼音 / token
+  -> 解码器边听边保留几条候选路径
+  -> 每条路径都有一个分数
+  -> 分数最高的路径成为最终识别文本
 ```
 
-瀹冪殑鎰忔€濅笉鏄€滄妸鎵€鏈夊彲鑳藉彞瀛愰兘鍒楀嚭鏉ョ粰鎴戜滑鐪嬧€濓紝鑰屾槸妯″瀷瑙ｇ爜鏃跺唴閮ㄥ悓鏃朵繚鐣欏嚑鏉¤繕涓嶉敊鐨勫€欓€夎矾寰勩€傚綋鍓嶄唬鐮侀噷杩欎釜鏁伴噺鐢变笅闈㈠弬鏁版帶鍒讹細
+比如用户说“打开 Lark”，声音比较糊的时候，模型内部可能同时觉得这些都说得通：
 
 ```text
-JACHIN_STT_MAX_ACTIVE_PATHS锛岄粯璁?4
+打开 Lark
+打开 luck
+打开 lock
+打开拉克
+打开那个
 ```
 
-鎵€浠ュ彲浠ョ矖鐣ョ悊瑙ｆ垚锛?
-```text
-涓嶇敤鐑瘝 / greedy_search锛氫竴璺線鍓嶇寽锛岀寽閿欎簡涓嶅お鍥炲ご
-浣跨敤鐑瘝 / modified_beam_search锛氬悓鏃朵繚鐣欏嚑鏉″彲鑳藉惉娉曪紝鏈€鍚庡啀閫夋€诲垎鏈€楂樼殑涓€鏉?```
-
-娉ㄦ剰锛氳繖浜涘€欓€夎矾寰勬槸 Sherpa 瑙ｇ爜鍣ㄥ唴閮ㄧ姸鎬侊紝褰撳墠 JVS 娌℃湁鎶娾€滃€欓€?1 / 鍊欓€?2 / 鍊欓€?3鈥濋兘杩斿洖缁欏墠绔€傚墠绔嬁鍒扮殑浠嶇劧鍙湁鏈€缁堣儨鍑虹殑 `raw_text`銆?
-#### 鐑瘝鏉冮噸鍒板簳鎬庝箞褰卞搷閫夋嫨
-
-JVS 浼氬厛鎶婄儹璇嶅啓鎴?Sherpa 鑳借鐨勪复鏃舵枃浠讹細
+本地 sherpa 兜底现在固定走最朴素的 `greedy_search`：当前哪一个 token 分最高，就一路选下去。
 
 ```text
-Lark :25
-Vivian :25
-Jachin :20
-...
+本地 sherpa / greedy_search：一路往前猜，不做项目热词偏置
 ```
 
-鏂囦欢浣嶇疆閫氬父鏄郴缁熶复鏃剁洰褰曢噷鐨勶細
+云端 DashScope 的热词权重仍然可能影响选择。它的效果更像：
 
 ```text
-jachin_sherpa_hotwords.txt
+原本：打开 luck  51 分，打开 Lark  49 分 -> 输出 luck
+云端热词后：打开 luck 51 分，打开 Lark  49 分 + 热词加成 -> 可能输出 Lark
 ```
 
-鐒跺悗 Sherpa 鍒濆鍖?recognizer 鏃朵細鎷垮埌锛?
-```text
-hotwords_file = 涓存椂鐑瘝鏂囦欢
-hotwords_score = JACHIN_STT_HOTWORDS_SCORE锛岄粯璁?4.0
-```
+所以热词风险主要来自云端原生热词或历史日志里的旧本地热词行为。当前本地 sherpa 兜底不再参与热词偏置。
 
-杩欓噷鏈変袱涓€滃姏搴︹€濓細
+#### 最后输出识别文本是怎么做的
 
-```text
-璇嶈嚜宸辩殑 weight锛氫緥濡?Lark=25锛孷ivian=25
-鍏ㄥ眬 hotwords_score锛氶粯璁?4.0
-```
+云端和本地最终都会被 JVS 规整成同一种返回结构。
 
-浜鸿瘽瑙ｉ噴灏辨槸锛?
-```text
-濡傛灉鏌愭潯鍊欓€夎矾寰勯噷鍑虹幇浜嗙儹璇嶏紝Sherpa 浼氱粰杩欐潯璺緞涓€鐐归澶栧姞鍒嗐€?鐑瘝鏉冮噸瓒婇珮銆佸叏灞€ hotwords_score 瓒婇珮锛岃繖涓姞鍒嗗€惧悜瓒婃槑鏄俱€?```
-
-浣嗗畠涓嶆槸鏃犳潯浠舵浛鎹€傚畠涓嶄細鐪嬪埌鈥滄湁鐐瑰儚 Lark鈥濆氨涓€瀹氳緭鍑?Lark銆傛渶缁堣繕鏄鐪嬪０闊虫湰韬€佽瑷€妯″瀷鍒嗘暟銆佸€欓€夎矾寰勬€诲垎銆?
-鎵€浠ュ畠鐨勬晥鏋滄洿鍍忥細
-
-```text
-鍘熸湰锛氭墦寮€ luck  51 鍒嗭紝鎵撳紑 Lark  49 鍒?-> 杈撳嚭 luck
-鍔犵儹璇嶅悗锛氭墦寮€ luck 51 鍒嗭紝鎵撳紑 Lark  49 鍒?+ 鐑瘝鍔犳垚 -> 鍙兘杈撳嚭 Lark
-```
-
-杩欏氨鏄€滃湪澶氫釜鍙兘鍚硶涔嬮棿锛岀粰鐑瘝閭ｆ潯璺緞鍔犱竴鐐瑰€惧悜鈥濈殑鍏蜂綋鍚箟銆?
-#### 鏈€鍚庤緭鍑鸿瘑鍒枃鏈槸鎬庝箞鍋氱殑
-
-Sherpa 瑙ｇ爜缁撴潫鍚庯紝JVS 涓嶆槸鎷垮埌涓€鍫嗗€欓€夛紝鑰屾槸鎷垮埌涓€涓渶缁堟枃鏈細
+如果走本地 sherpa，JVS 从 sherpa stream 里拿到：
 
 ```text
 stream.result.text
 ```
 
-鐒跺悗 JVS 浼氬仛涓€涓交娓呮礂锛?
+如果走云端 DashScope，JVS 从 DashScope `RecognitionResult` 里提取 sentence text。
+
+然后 JVS 会做轻清洗：
+
 ```text
-鍘绘帀澶氫綑绌虹櫧
-鍘绘帀娌℃湁鎰忎箟鐨勭┖缁撴灉
-寰楀埌 raw_text
+去掉多余空白
+去掉没有意义的空结果
+得到 raw_text
 ```
 
-鎺ョ潃杩涘叆锛?
-```text
-VoiceUnderstandingCorrector.correct(raw_text)
-```
+当前云端 STT 路径会做轻量 domain terms 替换，例如把一些常见误听词规整成 `Jachin / Codex / Lark`。
 
-瀹冧細杈撳嚭锛?
+当前本地 sherpa 兜底路径不走项目热词，也不走 `VoiceUnderstandingCorrector` 的任务理解链路。它只负责把音频转成尽量朴素的 `raw_text / text`，避免兜底识别阶段再引入额外偏置。
+
+最终 STT 结果会输出：
+
 ```text
-corrected_text
+text
+raw_text
 confidence
-understanding
-reply_plan
-user_message
+backend
+understanding（可能为空，或只包含本地热词禁用等诊断）
 ```
 
-鏈€缁堝墠绔€氬父鐪嬪埌鐨勬槸锛?
+最终前端通常看到的是：
+
 ```text
-raw_text       鍘熷 STT 鏂囨湰
-corrected_text 缁忚繃璇煶鐞嗚В灞傝鏁村悗鐨勬枃鏈?text           鏈€缁堢敤浜庡悗缁矾鐢辩殑鏂囨湰
+raw_text       原始 STT 文本
+corrected_text 如果某一路径有轻量规整，会显示规整后文本
+text           最终交给 L3 主循环的文本
 ```
 
-#### 瀹炰綋绾犻敊灞傚叿浣撴寜浠€涔堣鍒欐敼鍚?
-褰撳墠 JVS 鍚庡鐞嗙敤鐨勬槸锛?
+#### 本地 VoiceUnderstandingCorrector 现在做什么
+
+`voice_server/services/voice_understanding.py` 现在只保留一个兼容壳：`VoiceUnderstandingCorrector`。
+
+它不再做这些事：
+
 ```text
-voice_server/services/voice_understanding.py
-VoiceUnderstandingCorrector
+实体扫描
+专有名词纠错
+任务意图判断
+槽位补全
+缺槽追问
+ReplyPlan 生成
 ```
 
-瀹冨仛鐨勪笉鏄畝鍗曠殑鍏ㄥ眬鏇挎崲锛岃€屾槸鈥滃疄浣撹瘑鍒?+ 浠诲姟鐞嗚В鈥濄€傚ぇ姒傚垎鍥涙銆?
-绗竴姝ワ紝鍔犺浇瀹炰綋搴撱€?
-瀹炰綋搴撳寘鍚簲鐢ㄣ€佽仈绯讳汉銆侀」鐩細
+它现在只把输入原样返回，并在 `understanding` 里标记：
 
 ```text
-apps: Lark, Chrome, VS Code, Codex
-contacts: Vivian, Neil, Ethan, ...
-projects: Jachin
+voice_layer_scope = stt_only
+strategy = stt_passthrough
+entity_candidates = []
+task_candidates = []
+selected = {}
+reply_plan = {}
 ```
 
-姣忎釜鏍囧噯鍚嶉兘鏈夊埆鍚嶏紝渚嬪锛?
+这里有两层不要混在一起：
+
 ```text
-Lark: lark, feishu, flybook, luck, lock, 鎷夊厠
-Vivian: vivian, vivi, 钖囪枃瀹? 寰井瀹?VS Code: vs code, vscode, visual studio code, ws code
-Jachin: jachin, jacking, 鍔犲嫟, 鍢夐挦
+云端热词层：通过 DashScope 原生能力，让 STT 更容易听出 Lark / Vivian / Jachin
+理解层：由 L3 主循环在“打开/发送/切到”等上下文里判断标准实体、动作和槽位
 ```
 
-绗簩姝ワ紝鍦ㄦ暣鍙ラ噷鎵弿鍙兘鐨勫疄浣撱€?
-瀹冧細鐢ㄥ嚑绉嶇浉浼兼柟寮忔壘鍊欓€夛細
+举例：
 
 ```text
-瀹屽叏鐩稿悓锛歷ivian == Vivian
-瀛愪覆鍖呭惈锛歡oogle chrome 閲屽寘鍚?chrome
-瀛楃鐩镐技锛歷ivien 鍜?Vivian 寰堝儚
-鎷奸煶鐩镐技锛氳枃钖囧畨 鍜?Vivian 瀵瑰簲鍚屼竴涓仈绯讳汉
-鍙戦煶鎶樺彔锛氫竴浜?v/w銆乸h/f銆乧k/k 涔嬬被鐨勮繎浼间細鏀惧
+用户说：帮我打开拉克
+云端 STT 有热词后更容易听出：拉克
+JVS / 前端：只把文本和 STT 证据交给 L3
+L3 主循环：判断“打开 + 拉克”是否应规整为 Lark，并决定是否执行或追问
 ```
 
-姣忎釜鍊欓€変細鏈夊垎鏁板拰寮哄害锛?
-```text
-strong  寰堢‘瀹?medium  鏈夌偣鍍忥紝鍙互鍦ㄦ湁涓婁笅鏂囨椂浣跨敤
-weak    澶急锛屼笉鑳界洿鎺ユ墽琛?```
-
-绗笁姝ワ紝鐪嬭繖鍙ヨ瘽鏈夋病鏈夊姩浣滄剰鍥俱€?
-绯荤粺浼氭鏌ュ姩浣滆瘝锛屼緥濡傦細
+再比如：
 
 ```text
-鎵撳紑 / 鍚姩 / 鍒囧埌 / open
-鎵惧埌 / 鎼滅储 / 鏌ユ壘 / find
-鍙戦€?/ 鍙戞秷鎭?/ message / send
+用户说：给薇薇安发消息
+云端 STT 有热词后更容易听出：薇薇安 / Vivian
+JVS / 前端：不生成缺槽追问
+L3 主循环：判断联系人、消息内容、风险和是否需要追问
+```
+### 热词不会做什么
+
+热词不是万能的。
+
+它不会保证：
+
+```text
+只要说了就一定识别正确
+任何相似声音都安全替换
+长句里所有英文都读准
+任务槽位一定完整
 ```
 
-鐒跺悗鎶婂姩浣滃拰瀹炰綋缁勫悎璧锋潵銆?
-姣斿锛?
-```text
-鎵撳紑 + Lark     -> open_app
-缁?+ Vivian + 鍙戞秷鎭?-> send_message
-鎵惧埌 + Neil     -> find_contact
-Jachin + 椤圭洰   -> open_project 鎴栫浉鍏抽」鐩剰鍥?```
+它只是提高某些词在云端 STT 里被选中的概率。
 
-绗洓姝ワ紝鍐冲畾鑳戒笉鑳界洿鎺ヨ鏁存垚鏍囧噯鍚嶅瓧銆?
-瑙勫垯澶ф鏄細
+所以热词既能救识别，也可能带来副作用。
+
+典型副作用是：用户说了一大段话，但模型因为热词太强，把最后结果压成一个很短的任务句，比如：
 
 ```text
-濡傛灉瀹炰綋寰堝己锛岃€屼笖鍔ㄤ綔涔熸槑纭?-> 鍙互鎶婂埆鍚嶆崲鎴愭爣鍑嗗悕
-濡傛灉瀹炰綋鏈夌偣鍍忥紝浣嗕笉澶熺‘瀹?-> 闇€瑕佺‘璁ゆ垨杩介棶
-濡傛灉鏄彂娑堟伅锛屼絾缂鸿仈绯讳汉鎴栨秷鎭鏂?-> 涓嶇洿鎺ユ墽琛岋紝鐢熸垚杩介棶
-濡傛灉鏁村彞璇濅笉鍍忎换鍔?-> 涓嶅己琛屾敼锛屽敖閲忎繚鐣欏師鏂囨湰
+打开 Lark
+给 Vivian 发消息
+切到 Chrome
 ```
 
-涓句緥锛?
-```text
-鍘熷 STT: 鎵撳紑鎷夊厠
-瀹炰綋鍊欓€? 鎷夊厠 -> Lark锛屽己鍖归厤
-鍔ㄤ綔: 鎵撳紑
-缁撴灉: corrected_text = 鎵撳紑 Lark
-```
+这时系统就要判断：这到底是真实指令，还是被热词“吸过去”了。
 
-```text
-鍘熷 STT: 缁欒枃钖囧畨鍙戞秷鎭?瀹炰綋鍊欓€? 钖囪枃瀹?-> Vivian锛屽己鍖归厤
-鍔ㄤ綔: 鍙戞秷鎭?缂哄け: 娑堟伅姝ｆ枃
-缁撴灉: 涓嶇洿鎺ユ墽琛岋紝杩涘叆杩介棶锛氳鍙戠殑鍐呭鏄粈涔堬紵
-```
+## 3. STT 后的安全检查
 
-```text
-鍘熷 STT: 鎵句竴涓?vivien
-瀹炰綋鍊欓€? vivien -> Vivian锛屼腑楂樼浉浼?鍔ㄤ綔: 鎵句竴涓?缁撴灉: 鍙兘瑙勬暣鎴?Vivian锛涘鏋滃垎鏁颁笉澶燂紝浼氳姹傜‘璁?```
+前端拿到 STT 结果后，不会马上发给 L3。
 
-```text
-鍘熷 STT: 鎴戣寰?lark 杩欎釜璇嶆尯鎬?铏界劧鍑虹幇 Lark锛屼絾涓嶅儚浠诲姟鍔ㄤ綔
-缁撴灉: 涓嶅簲璇ョ洿鎺ュ彉鎴愨€滄墦寮€ Lark鈥濇垨鎵ц浠诲姟
-```
+它还会做几类检查。
 
-杩欏氨鏄负浠€涔堟枃妗ｉ噷璇粹€滆緭鍑哄悗鍐嶈繘瀹炰綋绾犻敊灞傦紝鎶婁笂涓嬫枃閲岀殑鍒悕瑙勬暣鎴愭爣鍑嗗悕瀛椻€濄€傚畠涓嶆槸鏃犺剳鏇挎崲锛岃€屾槸鍏堢湅锛?
-```text
-鍍忎笉鍍忓疄浣?鍍忎笉鍍忎换鍔?鍔ㄤ綔鏄惁鏄庣‘
-妲戒綅鏄惁瀹屾暣
-椋庨櫓鏄惁闇€瑕佺‘璁?```
+### 空文本检查
 
-杩欓噷鏈変袱灞備笉瑕佹贩鍦ㄤ竴璧凤細
+如果 STT 没识别出有效中文、英文或数字，会直接报“未能识别语音内容”。
 
-```text
-鐑瘝灞傦細甯姪 STT 鏇村鏄撳惉鍑?Lark / Vivian / Jachin
-绾犻敊灞傦細鍦ㄢ€滄墦寮€/鍙戦€?鍒囧埌鈥濈瓑涓婁笅鏂囬噷锛屾妸鍒悕鏀规垚鏍囧噯瀹炰綋
-```
+### 热词污染检查
 
-涓句緥锛?
-```text
-鐢ㄦ埛璇达細甯垜鎵撳紑鎷夊厠
-STT 鏈夌儹璇嶅悗鏇村鏄撳惉鍑猴細鎷夊厠
-瀹炰綋绾犻敊鐪嬪埌鈥滄墦寮€ + 鎷夊厠鈥?鏈€缁堝彲鑳借鏁存垚锛氬府鎴戞墦寮€ Lark
-```
+如果 STT 明显被热词带偏，例如识别结果过度贴近某些热词，前端会拦截。
 
-鍐嶆瘮濡傦細
+这一步在前端：
 
-```text
-鐢ㄦ埛璇达細缁欒枃钖囧畨鍙戞秷鎭?STT 鏈夌儹璇嶅悗鏇村鏄撳惉鍑猴細钖囪枃瀹?/ Vivian
-瀹炰綋绾犻敊鐪嬪埌鈥滅粰 + 浜哄悕 + 鍙戞秷鎭€?鏈€缁堣鏁存垚锛氱粰 Vivian 鍙戞秷鎭?```
-
-### 鐑瘝涓嶄細鍋氫粈涔?
-鐑瘝涓嶆槸涓囪兘鐨勩€?
-瀹冧笉浼氫繚璇侊細
-
-```text
-鍙璇翠簡灏变竴瀹氳瘑鍒纭?浠讳綍鐩镐技澹伴煶閮藉畨鍏ㄦ浛鎹?闀垮彞閲屾墍鏈夎嫳鏂囬兘璇诲噯
-浠诲姟妲戒綅涓€瀹氬畬鏁?```
-
-瀹冨彧鏄彁楂樻煇浜涜瘝琚€変腑鐨勬鐜囥€?
-鎵€浠ョ儹璇嶆棦鑳芥晳璇嗗埆锛屼篃鍙兘甯︽潵鍓綔鐢ㄣ€?
-鍏稿瀷鍓綔鐢ㄦ槸锛氱敤鎴疯浜嗕竴澶ф璇濓紝浣嗘ā鍨嬪洜涓虹儹璇嶅お寮猴紝鎶婃渶鍚庣粨鏋滃帇鎴愪竴涓緢鐭殑浠诲姟鍙ワ紝姣斿锛?
-```text
-鎵撳紑 Lark
-缁?Vivian 鍙戞秷鎭?鍒囧埌 Chrome
-```
-
-杩欐椂绯荤粺灏辫鍒ゆ柇锛氳繖鍒板簳鏄湡瀹炴寚浠わ紝杩樻槸琚儹璇嶁€滃惛杩囧幓鈥濅簡銆?
-## 3. STT 鍚庣殑瀹夊叏妫€鏌?
-鍓嶇鎷垮埌 STT 缁撴灉鍚庯紝涓嶄細椹笂鍙戠粰 L3銆?
-瀹冭繕浼氬仛鍑犵被妫€鏌ャ€?
-### 绌烘枃鏈鏌?
-濡傛灉 STT 娌¤瘑鍒嚭鏈夋晥涓枃銆佽嫳鏂囨垨鏁板瓧锛屼細鐩存帴鎶モ€滄湭鑳借瘑鍒闊冲唴瀹光€濄€?
-### 鐑瘝姹℃煋妫€鏌?
-濡傛灉 STT 鏄庢樉琚儹璇嶅甫鍋忥紝渚嬪璇嗗埆缁撴灉杩囧害璐磋繎鏌愪簺鐑瘝锛屽墠绔細鎷︽埅銆?
-杩欎竴姝ュ湪鍓嶇锛?
 ```text
 clients/desktop/src/chat.tsx
 detectVoiceHotwordDomination(...)
 ```
 
-瀹冧富瑕佺湅鍑犱釜淇″彿銆?
-#### 1. 缁撴灉鏄笉鏄煭鐑瘝浠诲姟
+它主要看几个信号。
 
-渚嬪璇嗗埆缁撴灉閲屽嚭鐜帮細
+#### 1. 结果是不是短热词任务
+
+例如识别结果里出现：
 
 ```text
 chrome
@@ -570,105 +723,136 @@ neil
 ethan
 vscode
 cursor
-椋炰功
-鎷夊厠
-璋锋瓕
-娴忚鍣?```
+飞书
+拉克
+谷歌
+浏览器
+```
 
-鍚屾椂鍙堟湁浠诲姟鍔ㄤ綔璇嶏細
+同时又有任务动作词：
 
 ```text
-鎵撳紑
-鍚姩
-鎵惧埌
-鍒囧埌
-杩涘叆
-缁?鍙?鍙戦€?娑堟伅
+打开
+启动
+找到
+切到
+进入
+给
+发
+发送
+消息
 open
 find
 send
 ```
 
-骞朵笖鏁村彞璇濆緢鐭紝灏变細琚爣璁版垚鈥滃彲鑳芥槸鐑瘝浠诲姟鈥濄€?
-姣斿锛?
+并且整句话很短，就会被标记成“可能是热词任务”。
+
+比如：
+
 ```text
-鎵撳紑 Lark
-缁?Vivian 鍙戞秷鎭?鍒囧埌 Chrome
+打开 Lark
+给 Vivian 发消息
+切到 Chrome
 ```
 
-杩欎簺閮藉睘浜庨珮椋庨櫓褰㈡€併€傚畠浠笉鏄竴瀹氶敊锛屼絾濡傛灉闊抽寰堥暱銆佺粨鏋滃嵈杩欎箞鐭紝灏辫璀︽儠銆?
-#### 2. 褰曢煶寰堥暱锛屼絾璇嗗埆缁撴灉寰堢煭
+这些都属于高风险形态。它们不是一定错，但如果音频很长、结果却这么短，就要警惕。
 
-濡傛灉鐢ㄦ埛褰曚簡 4.5 绉掍互涓婏紝鏈€鍚庡嵈鍙瘑鍒垚涓€涓緢鐭殑鐑瘝浠诲姟锛岀郴缁熶細璁や负鍙枒銆?
-鍘熷洜寰堢畝鍗曪細
+#### 2. 录音很长，但识别结果很短
+
+如果用户录了 4.5 秒以上，最后却只识别成一个很短的热词任务，系统会认为可疑。
+
+原因很简单：
 
 ```text
-鐢ㄦ埛璁蹭簡寰堜箙锛岀粨鏋滃彧鍓┾€滄墦寮€ Lark鈥?杩欏彲鑳戒笉鏄敤鎴风湡瀹炲畬鏁存剰鎬濓紝鑰屾槸鐑瘝鎶婅瘑鍒粨鏋滃惛鍋忎簡銆?```
+用户讲了很久，结果只剩“打开 Lark”
+这可能不是用户真实完整意思，而是热词把识别结果吸偏了。
+```
 
-瀵瑰簲鍘熷洜鍚嶏細
+对应原因名：
 
 ```text
 short_hotword_task_from_long_audio
 ```
 
-#### 3. 鐑瘝鏁伴噺寰堝ぇ锛屼笖缁撴灉姝ｅソ鏄煭浠诲姟
+#### 3. 热词数量很大，且结果正好是短任务
 
-褰撳墠鐑瘝闆嗗悎澶х害 155 涓紝宸茬粡灞炰簬姣旇緝澶х殑涓婁笅鏂囧亸缃泦鍚堛€?
-濡傛灉鐑瘝鏁伴噺瓒呰繃闃堝€硷紝骞朵笖璇嗗埆缁撴灉鍙堟槸寰堢煭鐨勭儹璇嶄换鍔★紝绯荤粺浼氭洿璋ㄦ厧銆?
-瀵瑰簲鍘熷洜鍚嶏細
+当前热词集合数量是动态的。如果日志里 `hotword_count` 较大，说明这一轮带了较多上下文偏置。
+
+如果热词数量超过阈值，并且识别结果又是很短的热词任务，系统会更谨慎。
+
+对应原因名：
 
 ```text
 large_hotword_set_short_task
 ```
 
-浣嗘湁涓€涓緥澶栵細濡傛灉鏂囨湰鏄庢樉鏄暟瀛︽垨璁＄畻璇锋眰锛屾瘮濡傦細
+但有一个例外：如果文本明显是数学或计算请求，比如：
 
 ```text
-鎵撳紑璁＄畻鍣?涓€鍔犱竴绛変簬澶氬皯
-绠椾竴涓?```
+打开计算器
+一加一等于多少
+算一下
+```
 
-绯荤粺浼氶檷浣庣儹璇嶆薄鏌撳垽鏂紝閬垮厤鎶婃甯歌绠楃被璇锋眰璇嫤銆?
-#### 4. 娴佸紡棰勮鍜屾渶缁?STT 鍐茬獊
+系统会降低热词污染判断，避免把正常计算类请求误拦。
 
-濡傛灉鍓嶉潰娴佸紡棰勮鍚埌鐨勬槸涓€娈佃緝闀挎枃鏈紝浣嗘渶缁?STT 绐佺劧鍙樻垚寰堢煭鐨勭儹璇嶄换鍔★紝涔熶細鍙枒銆?
-瀵瑰簲鍘熷洜鍚嶏細
+#### 4. 流式预览和最终 STT 冲突
+
+如果前面流式预览听到的是一段较长文本，但最终 STT 突然变成很短的热词任务，也会可疑。
+
+对应原因名：
 
 ```text
 stream_final_conflict_hotword_task
 ```
 
-#### 5. STT 涓嶆槸鏈€缁堢粨鏋?
-濡傛灉鏉ユ簮鏄复鏃舵祦寮忚瘑鍒紝鎴栬€?`finalized=false`锛屼换鍔＄被璇锋眰涔熶細鏇磋皑鎱庛€?
-瀵瑰簲鍘熷洜鍚嶏細
+#### 5. STT 不是最终结果
+
+如果来源是临时流式识别，或者 `finalized=false`，任务类请求也会更谨慎。
+
+对应原因名：
 
 ```text
 non_final_stt_source
 ```
 
-杩欑鎯呭喌涓嶄細鐩存帴鎵ц浠诲姟锛岃€屾槸鐢熸垚涓€鍙ョ‘璁わ細
+这种情况不会直接执行任务，而是生成一句确认：
 
 ```text
-鎴戝垰鎵嶅惉鍒扮殑鏄€渪xx鈥濓紝浣嗚繖娈佃闊冲儚鏄鐑瘝褰卞搷浜嗐€?浣犲彲浠ュ啀璇翠竴閬嶏紝鎴栬€呯‘璁よ繖灏辨槸浣犺鍋氱殑鍚楋紵
+我刚才听到的是“xxx”，但这段语音像是被热词影响了。
+你可以再说一遍，或者确认这就是你要做的吗？
 ```
 
-鏈€缁堢敤鎴风湅鍒扮殑鏁堟灉灏辨槸锛?
-```text
-涓嶄細椹笂鎵撳紑杞欢 / 鍙戞秷鎭?/ 鎵ц浠诲姟
-鑰屾槸鍏堥棶浣犵‘璁?```
+最终用户看到的效果就是：
 
-杩欐槸涓€绉嶅畨鍏ㄥ埞杞︺€?
-### 鐑瘝鏈€缁堜細甯︽潵浠€涔堟晥鏋?
-鐞嗘兂鏁堟灉锛?
 ```text
-鈥滄墦寮€鎷夊厠鈥?     -> 鏇村鏄撹瘑鍒苟瑙勬暣鎴?鈥滄墦寮€ Lark鈥?鈥滅粰钖囪枃瀹夊彂娑堟伅鈥?-> 鏇村鏄撹瘑鍒苟瑙勬暣鎴?鈥滅粰 Vivian 鍙戞秷鎭€?鈥滃垏鍒?vs code鈥? -> 鏇村鏄撹瘑鍒苟瑙勬暣鎴?鈥滃垏鍒?VS Code鈥?鈥渏achin 椤圭洰鈥?  -> 鏇村鏄撲繚鐣?Jachin
+不会马上打开软件 / 发消息 / 执行任务
+而是先问你确认
 ```
 
-閬囧埌涓嶇‘瀹氭儏鍐垫椂锛?
-```text
-绯荤粺涓嶄細鐩存帴鎵ц
-绯荤粺浼氭妸鍚埌鐨勫€欓€夊彞璇村嚭鏉ヨ浣犵‘璁?```
+这是一种安全刹车。
 
-鏃ュ織閲岃兘鐪嬪埌锛?
+### 热词最终会带来什么效果
+
+理想效果：
+
+```text
+“打开拉克”      -> 更容易识别并规整成 “打开 Lark”
+“给薇薇安发消息” -> 更容易识别并规整成 “给 Vivian 发消息”
+“切到 vs code”  -> 更容易识别并规整成 “切到 VS Code”
+“jachin 项目”   -> 更容易保留 Jachin
+```
+
+遇到不确定情况时：
+
+```text
+系统不会直接执行
+系统会把听到的候选句说出来让你确认
+```
+
+日志里能看到：
+
 ```text
 hotword_count
 hotword_status
@@ -677,423 +861,295 @@ hotwordDominated
 hotwordDominationReasons
 ```
 
-濡傛灉涓€杞闊宠鎷︽埅锛宍voice_chat.log` 閲屼細鍑虹幇锛?
+如果一轮语音被拦截，`voice_chat.log` 里会出现：
+
 ```text
 stt.hotword_dominated_blocked
 ```
 
-杩欒鏄庣郴缁熶笉鏄€滄病鍚噦灏变贡鎵ц鈥濓紝鑰屾槸鍙戠幇璇嗗埆缁撴灉鍙兘琚儹璇嶅甫鍋忥紝鎵€浠ュ仠涓嬫潵闂綘銆?
-### 杩介棶鐢熸垚
+这说明系统不是“没听懂就乱执行”，而是发现识别结果可能被热词带偏，所以停下来问你。
 
-濡傛灉 STT / understanding 鍒ゆ柇缂烘Ы锛屾瘮濡傜敤鎴疯鈥滃府鎴戝彂娑堟伅鈥濓紝浣嗘病璇村彂缁欒皝銆佸彂浠€涔堬紝鍓嶇浼氳繘鍏ヨ拷闂敓鎴愯矾寰勩€?
-杩欓噷鐨勮鍒欏眰鍙粰鍑?`ReplyPlan`锛岀湡姝ｈ缁欑敤鎴风殑璇濅細浜ょ粰涓€涓交閲?LLM composer 鍐欐垚鑷劧璇█銆?
-涔熷氨鏄锛?
+### 追问生成
+
+当前前端和 STT 层不再判断任务缺槽，也不再生成 `ReplyPlan` 或本地追问话术。
+
+如果用户说“帮我发消息”，但没说发给谁、发什么，前端只会把最终 STT 文本和语音证据发给 L3。要不要追问、追问什么、用什么语气追问，都由 L3 认知内核主循环决定。
+
+也就是说：
+
 ```text
-瑙勫垯灞傦細鍒ゆ柇缂轰粈涔?LLM composer锛氭妸杩介棶璇村緱鍍忎汉璇?```
-
-## 4. 鍓嶇鎰忓浘璺敱
-
-鍓嶇璇煶璺敱鐨勫崟涓€浜嬪疄婧愭槸锛?
-```text
-clients/desktop/src/voice/voiceIntentRouter.ts
+前端 / STT：只交付文本、声纹状态、STT 诊断和上下文证据
+L3 主循环：判断任务意图、缺失信息、风险和追问方式
 ```
 
-Python 閲岀殑锛?
+## 4. 语音文本如何进入 L3 主循环
+
+前端现在不做任务意图裁决。它不会再把语音先分成 `CHIT_CHAT / SHORT_TASK / LONG_TASK`，也不会用前端路由决定 `direct_llm / foreground / background_submit`。
+
+前端负责的是把“可被 L3 使用的事实”交出去：
+
 ```text
-scripts/voice_intent_router.py
+最终识别文本
+原始 STT 文本
+修正后文本
+STT backend / source / duration / confidence
+cloud_diagnostics
+stt_orchestration
+声纹结果
+是否陪伴态
+当前会话 / 任务上下文摘要
+附件 / UI 状态
 ```
 
-鍙槸涓轰簡 benchmark / 鑴氭湰娴嬭瘯鍘昏皟鐢ㄥ悓涓€涓?TypeScript 璺敱锛屼笉鏄浜屽璺敱銆?
-### 璺敱杈撳嚭浠€涔?
-璺敱鍣ㄨ緭鍑轰竴涓?`VoiceDispatcherDecision`锛屾牳蹇冨瓧娈垫湁锛?
-```text
-tier                 澶у眰绾э細闂茶亰 / 鐭换鍔?/ 闀夸换鍔?intent_class         鏇村叿浣撶殑鎰忓浘绫诲埆
-execution_lane       鎵ц杞﹂亾
-interrupt_verdict    濡傛灉宸叉湁浠诲姟锛屽垽鏂槸鏌ョ姸鎬併€佸彇娑堛€佷慨鏀广€佸苟琛岃繕鏄仮澶?router_hints         缁?L3 鐨勬彁绀?route_evidence       璺敱璇佹嵁
-normalized_text      缁?L3 鐨勪慨姝ｆ枃妗?```
-
-### 涓変釜 tier
-
-褰撳墠鏈変笁灞傦細
+也就是说，前端不回答这些问题：
 
 ```text
-CHIT_CHAT   闂茶亰銆佽交闂瓟銆侀櫔浼磋繛鎺?SHORT_TASK  鐭换鍔★紝閫傚悎鍓嶅彴鍚屾澶勭悊
-LONG_TASK   闀夸换鍔★紝閫傚悎鍚庡彴鎻愪氦
+这是不是任务？
+要不要调用工具？
+该用哪个 MCP？
+要不要后台执行？
+要不要追问？
 ```
 
-### intent_class
+这些问题交给 L3 认知内核主循环。
 
-甯歌鍊硷細
+## 5. L3 主循环负责意图路由
 
-```text
-CHITCHAT       鏅€氶棽鑱?QUERY_LIGHT    杞婚棶绛旓紝渚嬪鈥滀粖澶╁悆浠€涔堚€?TASK_SYNC      鐭换鍔★紝渚嬪鈥滄墦寮€璁＄畻鍣ㄢ€?TASK_ASYNC     闀夸换鍔★紝渚嬪鈥滄妸鏁翠釜鐩綍鐢熸垚鎶ュ憡鈥?CONTROL        瀵瑰凡鏈変换鍔＄殑鎺у埗锛屼緥濡傚彇娑堛€佹煡杩涘害銆佷慨鏀?CLARIFY_REPLY  鐢ㄦ埛姝ｅ湪鍥炵瓟涓婁竴杞拷闂?AMBIGUOUS      澶ā绯婏紝闇€瑕佹緞娓?```
-
-### execution_lane
-
-杩欎釜瀛楁鍐冲畾鍚庨潰鎬庝箞璧帮細
+语音文本到 L3 后，和普通文本一样进入认知内核主循环。主循环会自己判断：
 
 ```text
-direct_llm          鐩存帴闂ā鍨嬶紝涓嶈繘瀹屾暣浠诲姟閾?foreground          鍓嶅彴鐭换鍔?background_submit   鍚庡彴闀夸换鍔℃彁浜?background_control  鎺у埗宸叉湁鍚庡彴浠诲姟
-control_local       鏈湴鎺у埗
+用户是在闲聊、提问、下指令、控制已有任务，还是在补充上一轮信息？
+是否需要工具 / MCP / OS workflow？
+目标对象是什么？
+缺什么槽位？
+风险等级如何？
+执行前要不要确认？
+执行后如何验证？
+失败时如何恢复或追问？
 ```
 
-## 5. 褰撳墠鎰忓浘璺敱瑙勫垯
+这里的“意图路由”不是前端规则表，也不是旧的 voice fast lane，而是 L3 主循环的一部分。
 
-璺敱鏈川鏄€滆鍒欎富瀵?+ 缁欏ぇ妯″瀷鐣欒〃杈剧┖闂粹€濄€?
-涔熷氨鏄锛屽畠涓嶆槸璁╁ぇ妯″瀷浠庨浂鍒ゆ柇涓€鍒囷紝鑰屾槸鍏堢敤瑙勫垯鎶婅竟鐣屽畾浣忥細
+主循环可以为了性能选择轻量路径，比如非常简单的问答可以少检索、少开工具、少做任务编排；但这是 L3 内部优化，不是前端提前裁决。
 
-- 杩欐槸涓嶆槸浠诲姟锛?- 瑕佷笉瑕佹墽琛屽伐鍏凤紵
-- 瑕佷笉瑕佽繘鍚庡彴锛?- 鑳戒笉鑳借烦杩囪蹇嗗拰妫€绱紵
-- 鑳戒笉鑳界洿鎺ユā鏉垮洖澶嶏紵
-- 鏈夋病鏈夋鍦ㄨ繍琛岀殑浠诲姟瑕佹帶鍒讹紵
+## 6. 前端传给 L3 的内容
 
-浣嗘槸鍏蜂綋鍥炲鍐呭锛屽挨鍏舵槸闂茶亰鍜岃交闂瓟锛屼粛鐒剁敱 LLM 鏉ュ啓銆?
-### 5.1 presence_template锛氬彧纭鈥滀綘鍦ㄤ笉鍦ㄢ€?
-鍏稿瀷杈撳叆锛?
-```text
-浣犲ソ
-鍦ㄥ悧
-浣犲湪鍚?鍚緱鍒板悧
-鍠?璇磋瘽
-璁茶璇?```
+前端仍然可以发送 `implicit_signals`，但它的含义变了：它不是“前端判好的路由结果”，而是 L3 主循环使用的证据包。
 
-璺敱缁撴灉锛?
-```text
-tier = CHIT_CHAT
-intent_class = CHITCHAT
-execution_lane = direct_llm
-fast_lane = true
-fast_lane_kind = presence_template
-allow_template_reply = true
-skip_context_retrieval = true
-skip_context_sniffer = true
-skip_experience_rag = true
-skip_gateway_enrich = true
-```
+大概包括：
 
-杩欑被璇锋眰鍏佽 L3 鐩存帴鐢ㄦā鏉垮洖绛旓細
-
-```text
-鎴戝湪銆?鍦ㄥ憿銆?鍚潃鍛€?```
-
-瀹冪殑鐩爣鏄瀬蹇紝璁╃敤鎴风煡閬撶郴缁熸椿鐫€銆?
-### 5.2 light_query锛氳交闂瓟锛屼絾涓嶈兘妯℃澘鏁疯
-
-鍏稿瀷杈撳叆锛?
-```text
-浠婂ぉ鍚冧粈涔?浣犺寰楁垜浠婂ぉ鍚冧粈涔?鎴戣涓嶈鍠濆挅鍟?杩欎釜鎬庝箞閫?```
-
-璺敱缁撴灉锛?
-```text
-tier = CHIT_CHAT
-intent_class = QUERY_LIGHT
-execution_lane = direct_llm
-fast_lane = true
-fast_lane_kind = light_query
-allow_template_reply = false
-```
-
-鍏抽敭鐐规槸锛?
-```text
-light_query 涔熻蛋 fast lane锛屼絾绂佹妯℃澘鍥炲銆?```
-
-鎵€浠モ€滀粖澶╁悆浠€涔堚€濅笉鑳藉啀鍥炵瓟鈥滄垜鍦ㄢ€濄€傚畠蹇呴』杩涘叆 direct LLM锛岃妯″瀷鍥炵瓟闂鏈韩銆?
-### 5.3 chat_direct锛氭櫘閫氶棽鑱?
-鍏稿瀷杈撳叆锛?
-```text
-闄垜鑱婅亰
-鎴戜粖澶╂湁鐐圭疮
-璋㈣阿
-娌′簨
-濂藉惂
-```
-
-璺敱缁撴灉閫氬父鏄細
-
-```text
-CHIT_CHAT + direct_llm + fast_lane
-```
-
-瀹冧細璺宠繃瀹屾暣涓婁笅鏂囨绱紝浣嗙敱妯″瀷鐢熸垚鑷劧鍥炲銆?
-### 5.4 SHORT_TASK锛氱煭浠诲姟
-
-鍏稿瀷杈撳叆锛?
-```text
-甯垜鎵撳紑璁＄畻鍣?鎻愰啋鎴戜笅鍗堝紑浼?鏌ヤ竴涓嬪ぉ姘?鎵撳紑 Chrome
-```
-
-璺敱缁撴灉锛?
-```text
-tier = SHORT_TASK
-intent_class = TASK_SYNC
-execution_lane = foreground
-fast_lane = false
-play_task_ack = true
-```
-
-鍓嶇浼氬厛鎾竴涓煭鎻愮ず锛屾瘮濡傦細
-
-```text
-鎴戞兂鎯炽€?```
-
-鐒跺悗鎶婁换鍔′氦缁?L3 鐨勬甯搁摼璺€?
-### 5.5 LONG_TASK锛氶暱浠诲姟
-
-鍏稿瀷杈撳叆锛?
-```text
-鎶婃暣涓洰褰曠敓鎴愭姤鍛?鎵归噺鍒嗘瀽杩欎簺鏂囦欢
-鎶婃墍鏈?md 鏂囨。閫愪釜鎽樿骞剁敓鎴愭姤鍛?```
-
-璺敱缁撴灉锛?
-```text
-tier = LONG_TASK
-intent_class = TASK_ASYNC
-execution_lane = background_submit
-force_background = true
-acceptance_round = true
-play_task_ack = true
-hud_terminal = true
-```
-
-鍓嶇浼氬敖蹇粰鐢ㄦ埛涓€涓‘璁わ細
-
-```text
-鏀跺埌锛屾垜鏉ュ鐞嗐€?```
-
-鐒跺悗璁?L3 / task engine 鍘诲鐞嗛暱浠诲姟銆?
-### 5.6 CONTROL锛氭湁浠诲姟杩愯鏃剁殑鎺у埗璇煶
-
-濡傛灉褰撳墠宸茬粡鏈?active task锛岀敤鎴疯锛?
-```text
-鍋滀竴涓?鍙栨秷
-鍋氬埌鍝簡
-杩涘害鎬庝箞鏍?鏀规垚杩欐牱
-缁х画
-```
-
-璺敱浼氫紭鍏堣涓鸿繖鏄宸叉湁浠诲姟鐨勬帶鍒躲€?
-鍙兘缁撴灉锛?
-```text
-interrupt_verdict = ABORT
-interrupt_verdict = STATUS
-interrupt_verdict = MODIFY
-interrupt_verdict = RESUME
-interrupt_verdict = PARALLEL
-```
-
-杩欏氨鏄€滀换鍔¤繕娌℃墽琛屽畬鏃剁敤鎴风户缁璇濃€濈殑涓昏璋冮厤鏈哄埗銆?
-## 6. 鍓嶇濡備綍鎶婅矾鐢辩粨鏋滃彂缁?L3
-
-璺敱瀹屾垚鍚庯紝鍓嶇涓嶄細鍙彂涓€鍙ユ枃鏈€?
-瀹冧細鎶婄敤鎴峰師濮?STT銆佷慨姝ｅ悗鏂囨湰銆佽矾鐢辩粨鏋溿€乫ast lane 鏍囪銆佷换鍔′笂涓嬫枃涓€璧峰杩?`implicit_signals`銆?
-澶ф鍖呮嫭锛?
 ```text
 desktop_companion = true
 voice_raw_stt_text
 voice_asr_raw_text
 voice_corrected_text
 voice_final_text
-voice_routed_text
-voice_dispatcher_decision
-voice_dispatch_tier
-voice_intent_class
-voice_dispatch_lane
-voice_interrupt_verdict
-voice_fast_lane
-voice_fast_lane_kind
-voice_allow_template_reply
-voice_route_evidence
-skip_context_retrieval
-skip_context_sniffer
-skip_experience_rag
-skip_gateway_enrich
-prefer_direct_llm
-force_background
-acceptance_round
-inject_task_context
-inject_light_task_context
-light_task_context
-target_task_id
-task_context_summary
+voice_stt_backend
+voice_stt_source
+voice_stt_confidence
+voice_stt_duration_ms
+voice_stt_hotword_count
+voice_stt_hotword_status
+voice_stt_hotword_sources
+voice_cloud_diagnostics
+voice_stt_orchestration
+voice_sv_status
+voice_session_id
+voice_companion_ui
+active_task_context
 ```
 
-杩欏寘涓滆タ寰堥噸瑕併€傚畠鍛婅瘔 L3锛?
-- 杩欏彞璇濆師濮?STT 鏄粈涔堛€?- 鍓嶇淇鍚庡噯澶囪妯″瀷鐪嬪埌浠€涔堛€?- 杩欐槸闂茶亰銆佽交闂瓟銆佺煭浠诲姟杩樻槸闀夸换鍔°€?- 瑕佷笉瑕佽烦杩囬噸閾捐矾銆?- 鑳戒笉鑳界敤妯℃澘銆?- 鏄惁鏈夊悗鍙颁换鍔℃鍦ㄨ窇銆?
-## 7. L3 鏀跺埌璇煶鍚庣殑璺緞
+这些字段只描述“发生了什么”和“识别证据是什么”。它们不应该作为最终任务裁决。
 
-L3 WebSocket 鍦細
+桌面语音入口不再发送旧前端路由字段。当前真正的事实来源是 L3 主循环日志里的理解、任务编排、工具选择、验证结果和最终回复。
+
+## 7. L3 主循环内部怎么处理
+
+主循环不是简单地把一句话扔给模型。它大致按这个顺序工作：
+
+1. 接收用户文本和语音证据。
+2. 归一化输入，比如清理 STT 噪声、合并上下文、识别本轮是新问题还是上一轮补充。
+3. 读取必要的环境状态、短期记忆、长期记忆、当前任务状态。
+4. 理解用户真正想要的结果。
+5. 判断是直接回答、继续对话、追问补槽，还是进入任务执行。
+6. 如果需要执行任务，生成工单：目标、对象、边界、风险、可用工具、验证方式。
+7. 选择模型、工具、MCP、OS workflow、后台任务或子 agent。
+8. 执行或委派执行。
+9. 验证结果。
+10. 组织用户能听懂的最终回复。
+
+不是每一轮都必须完整跑完所有昂贵步骤。比如一句普通闲聊不需要真的启动工具链；但架构责任仍然在 L3 主循环，而不是前端路由。
+
+## 8. 模型和工具如何参与
+
+旧文档里曾经把语音链路写成类似这样的分层：
 
 ```text
-l3_node/ws_server.py
+快路由 / 直连模型 / 完整 Agent
 ```
 
-鏀跺埌娑堟伅鍚庯紝鍏堝仛涓€涓垽鏂細
+这个说法现在容易误导。更准确的说法是：
 
 ```text
-杩欐槸涓嶆槸 voice fast lane锛?```
-
-### 7.1 presence_template 鐨勬渶蹇矾寰?
-濡傛灉鏄?`presence_template`锛屽苟涓?`allow_template_reply = true`锛孡3 鍙互涓嶈皟澶фā鍨嬶紝鐩存帴杩斿洖妯℃澘銆?
-杩欐潯璺緞鏈€蹇細
-
-```text
-鍓嶇璺敱
-  -> L3 妯℃澘閫夋嫨
-  -> chunk
-  -> answer
-  -> TTS
+L3 认知内核主循环
+  -> 根据任务需要选择轻量回答、完整推理、工具、MCP、OS workflow、后台任务或子 agent
 ```
 
-閫傚悎鈥滃湪鍚?浣犲ソ/鍚緱鍒板悧鈥濄€?
-### 7.2 light_query / chat_direct 鐨?fast lane
+也就是说，`direct_llm`、fast lane、短任务、长任务这些概念如果还存在，只能是 L3 内部的执行优化或兼容字段，不再是前端对语音请求做出的顶层路由判断。
 
-濡傛灉鏄?`light_query` 鎴栨櫘閫氶棽鑱婏細
+对用户来说，真实链路应该理解成：
 
 ```text
-voice_fast_lane = true
-allow_template_reply = false
+我说一句话
+  -> STT 把声音变成文本和证据
+  -> 前端把文本和证据交给 L3
+  -> L3 主循环判断我要什么
+  -> L3 决定直接回答还是调工具做事
+  -> L3 验证后给出人话回复
+  -> 前端把回复播出来
 ```
 
-L3 浼氳蛋鐩磋繛妯″瀷锛?
-```text
-_voice_fast_lane_messages
-  -> engine.generate_response_stream
-  -> 1 鍒?2 鍙ョ煭鍥炲
-```
+## 9. 从 L3 文字到 TTS
 
-杩欐潯璺緞璺宠繃锛?
-- 瀹屾暣涓婁笅鏂囨绱€?- context sniffer銆?- gateway enrich銆?- experience RAG銆?- 宸ュ叿姹犲姞杞姐€?- ReAct 宸ュ叿寰幆銆?
-浣嗘槸瀹冧粛鐒朵細璋冪敤 LLM锛屾墍浠ュ鏋滆繙绔ā鍨嬮 token 鍗′綇锛岀敤鎴疯繕鏄細瑙夊緱鎱€?
-L3 杩樻湁涓€涓 token 瓒呮椂淇濇姢锛?
-```text
-JACHIN_VOICE_FAST_LANE_TIMEOUT_SEC 榛樿绾?1.4 绉?```
+前端不是等完整回答结束才开始朗读。
 
-濡傛灉 presence ack 瓒呮椂锛屽彲浠ュ厹搴曗€滄垜鍦ㄣ€傗€濄€?
-浣嗗鏋滄槸闈?presence 鐨勮交闂瓟锛屼笉鑳藉厹搴曗€滄垜鍦ㄢ€濓紝鍚﹀垯灏变細绛旈潪鎵€闂紝鎵€浠ヤ細鎶涚粰鍚庣画閾捐矾鎴栨姤閿欍€?
-### 7.3 瀹屾暣 Agent 璺緞
+它会接收 L3 的 chunk：
 
-濡傛灉涓嶆槸 fast lane锛屾垨鑰?fast lane 澶辫触锛屽氨杩涘叆锛?
-```text
-run_agent
-```
-
-瀹屾暣璺緞鍙兘鍖呭惈锛?
-- 浼氳瘽鍘嗗彶銆?- Memory Nexus銆?- Intent Gateway銆?- output format signals銆?- direct_llm_bypass 鍒ゆ柇銆?- OOD veto銆?- DAG / subintent 鎷嗚В銆?- 宸ュ叿鍔犺浇銆?- ReAct 寰幆銆?- 鏈湴宸ュ叿鎵ц銆?- 闀夸换鍔¤皟搴︺€?- 璁板繂鍐欏叆銆?
-杩欐潯璺緞鑳藉姏寮猴紝浣嗘參锛屼篃鏇村鏄撳嚭鐜扳€滅敤鎴峰彧鏄兂鑱婂ぉ锛岀郴缁熷嵈鍍忓湪鍋氶」鐩皟搴︹€濈殑鎰熻銆?
-## 8. L3 閲屾ā鍨嬪浣曡繍浣?
-### 蹇矾鐢辨ā鍨嬭皟鐢?
-璇煶 fast lane 浼氭瀯閫犱竴涓潪甯哥煭鐨?system prompt銆?
-瀹冨憡璇夋ā鍨嬶細
-
-- 浣犳槸 Jachin 鐨勯櫔浼存€佽闊冲姪鎵嬨€?- 褰撳墠鏄闊抽棽鑱婂揩璺緞銆?- 鐩存帴銆佽嚜鐒躲€佹俯鏌斻€?- 涓枃鐭瓟锛? 鍒?2 鍙ャ€?- 涓嶈宸ュ叿銆?- 涓嶈灞曠ず鎺ㄧ悊銆?- 濡傛灉鏄交闂瓟锛屽繀椤诲洖绛旈棶棰樻湰韬紝涓嶈兘鍙鈥滄垜鍦ㄢ€濄€?
-妯″瀷鍙傛暟澶ц嚧鍋忎繚瀹堬細
-
-```text
-temperature 绾?0.35
-max_tokens 绾?80
-```
-
-鍙互閫氳繃鐜鍙橀噺鎸囧畾蹇矾鐢辨ā鍨嬶細
-
-```text
-JACHIN_VOICE_FAST_LANE_MODEL
-```
-
-### direct_llm_bypass
-
-鍦?`agent_core.py` 閲岋紝濡傛灉鍒ゆ柇鍙互鐩磋繛妯″瀷锛屼細璧帮細
-
-```text
-_run_direct_llm_completion
-```
-
-濡傛灉鏄闊?fast lane锛屽畠浼氾細
-
-- 绂佺敤瀹屾暣 ReAct銆?- 闄愬埗杈撳嚭 tokens銆?- 鎻愮ず涓嶈闀跨瘒銆?- 瀵?light_query 棰濆寮鸿皟涓嶈绛斺€滄垜鍦ㄢ€濄€?- 灏濊瘯鍏抽棴妯″瀷 thinking銆?
-### 瀹屾暣 ReAct / 宸ュ叿璺緞
-
-浠诲姟绫昏姹備細杩涘叆鏇村畬鏁寸殑 agent銆?
-杩欐椂妯″瀷涓嶆槸鍙€滃洖绛斺€濓紝鑰屾槸鍙兘锛?
-- 鍒ゆ柇瑕佽皟鐢ㄤ粈涔堝伐鍏枫€?- 璇诲彇鏂囦欢銆?- 鎿嶄綔绐楀彛銆?- 鍙戞秷鎭€?- 寤轰换鍔°€?- 鍐欒蹇嗐€?- 姹囨姤鎵ц缁撴灉銆?
-鎵€浠ヤ换鍔＄被璇煶澶╃劧姣旈棽鑱婃參銆?
-## 9. 浠?L3 鏂囧瓧鍒?TTS
-
-鍓嶇涓嶆槸绛夊畬鏁村洖绛旂粨鏉熸墠寮€濮嬫湕璇汇€?
-瀹冧細鎺ユ敹 L3 鐨?chunk锛?
 ```text
 l3.chunk
 ```
 
-鐒跺悗浜ょ粰锛?
+然后交给：
+
 ```text
 voiceOrchestrator.onL3Chunk
 ```
 
-`voiceOrchestrator` 鍋氬嚑浠朵簨锛?
-1. 鍚堝苟娴佸紡 delta銆?2. 鐢?`sentenceBuffer.ts` 鎸夋爣鐐规媶鍙ャ€?3. 鐢?`speakableText.ts` 娓呯悊涓嶉€傚悎鏈楄鐨勫唴瀹广€?4. 鍘婚噸锛岄伩鍏嶉噸澶嶈鍚屼竴鍙ャ€?5. 閫愬彞璋冪敤 JVS TTS銆?6. 鏀惧叆鎾斁闃熷垪銆?
-### 鍒嗗彞瑙勫垯
+`voiceOrchestrator` 做几件事：
 
-纭柇鍙ワ細
+1. 合并流式 delta。
+2. 用 `sentenceBuffer.ts` 按标点拆句。
+3. 用 `speakableText.ts` 清理不适合朗读的内容。
+4. 去重，避免重复说同一句。
+5. 逐句调用 JVS TTS。
+6. 放入播放队列。
+
+### 分句规则
+
+硬断句：
 
 ```text
-銆傦紒锛?!?
+。！？.!?
 ```
 
-杞柇鍙ワ細
+软断句：
 
 ```text
-锛?銆?```
+，,、
+```
 
-浣嗚蒋鏂彞瑕佹眰褰撳墠鐗囨鑷冲皯鏈変竴瀹氶暱搴︼紝閬垮厤澶煭灏卞垏銆?
-### TTS 娓呮礂
+但软断句要求当前片段至少有一定长度，避免太短就切。
 
-鏈楄鍓嶄細鍘绘帀锛?
-- Markdown 浠ｇ爜鍧椼€?- 琛屽唴浠ｇ爜銆?- 閮ㄥ垎绗﹀彿銆?- emoji銆?- 澶儚杩囩▼璇存槑鐨勫彞瀛愩€?- 澶儚鍒楄〃姝ラ浣嗘病鏈夌粨鏋滄彁绀虹殑鍙ュ瓙銆?
-鍘熷洜鏄闊抽櫔浼存€佷笉閫傚悎鎶婂畬鏁存棩蹇椼€佽〃鏍笺€佹帹鐞嗛摼鏉°€佷唬鐮佸潡蹇靛嚭鏉ャ€?
-## 10. TTS 妯″瀷
+### TTS 清洗
 
-褰撳墠 JVS TTS 鏄?Kokoro ONNX銆?
-鏍稿績鏂囦欢锛?
+朗读前会去掉：
+
+- Markdown 代码块。
+- 行内代码。
+- 部分符号。
+- emoji。
+- 太像过程说明的句子。
+- 太像列表步骤但没有结果提示的句子。
+
+原因是语音陪伴态不适合把完整日志、表格、推理链条、代码块念出来。
+
+## 10. TTS 模型
+
+当前 JVS TTS 默认走云端 DashScope CosyVoice：
+
+核心文件：
+
 ```text
+voice_server/services/cloud_tts_service.py
 voice_server/services/tts_service.py
 ```
 
-榛樿閰嶇疆锛?
+当前健康检查里常见的云端配置是：
+
 ```text
-voice = zm_053
-speed = 1.25
+tts_backend = cloud
+tts_model = cosyvoice-v3-plus
+tts_fast_model = cosyvoice-v3-flash
+tts_voice = longanhuan
+speed = 1.0
 sample_rate = 24000
-model = Kokoro-82M-v1.1-zh-ONNX
 ```
 
-鍓嶇榛樿鍊硷細
+前端默认值：
 
 ```text
 clients/desktop/src/voice/voiceDefaults.ts
 ```
 
-### Kokoro 鍚堟垚娴佺▼
+注意：前端日志里可能还会出现 `zm_053` 这类本地 voice alias 或 UI 配置字段；最终云端实际使用的声音要看 JVS 返回的 stream meta 或 `/health`。
 
-JVS `/v1/tts/synthesize` 鏀跺埌鏂囨湰鍚庯紝澶ф娴佺▼锛?
+### 云端 CosyVoice 合成流程
+
+JVS `/v1/tts/synthesize` 收到文本后，大概流程：
+
 ```text
-鏂囨湰褰掍竴鍖?  -> 涓枃鍓嶇澶勭悊
-  -> jieba 鍒嗚瘝
-  -> pypinyin 鍙栨嫾闊冲拰澹拌皟
-  -> misaki zh 杞?IPA
-  -> phoneme 鏄犲皠鍒?tokenizer vocab
-  -> 閫夋嫨 voice bin
-  -> 鏍规嵁 token 闀垮害閫夋嫨 style vector
-  -> ONNX 鎺ㄧ悊
-  -> 淇壀棣栧熬闈欓煶
-  -> 杈撳嚭 WAV
+文本清洗 / 归一化
+  -> 调 DashScope CosyVoice HTTP 接口
+  -> 返回 WAV / PCM 音频
+  -> 前端播放
 ```
 
-杩欓噷瑕佹敞鎰忥細TTS 涓嶆槸鈥滆皟鐢ㄤ竴涓嬪氨瀹屼簨鈥濄€侹okoro 涓枃閾捐矾闇€瑕佽嚜宸卞鐞嗭細
+流式 TTS 会走：
 
-- 鏁板瓧鎬庝箞璇汇€?- 鑻辨枃鎬庝箞娣疯銆?- 涓枃鏍囩偣鎬庝箞褰卞搷鍋滈】銆?- 鎷奸煶澹拌皟鎬庝箞淇濈暀銆?- phoneme 閲屾ā鍨嬩笉璁よ瘑鐨勭鍙锋€庝箞鏄犲皠銆?- voice bin 鐨?style index 鎬庝箞閫夈€?- 棣栧熬闈欓煶鎬庝箞瑁併€?
-鎵€浠ヤ箣鍓嶅嚭鐜扳€滄柟瑷€鎰熴€侀粡杩炪€佽嫳鏂囦笉璇汇€佸畬鎴愯涓嶆竻妤氣€濇椂锛屾湰璐ㄥ鍗婁笉鏄挱鏀鹃棶棰橈紝鑰屾槸涓枃鍓嶇銆乸honeme 鏄犲皠銆佹爣鐐瑰仠椤裤€乻tyle vector 閫夋嫨杩欎簺灞傚嚭浜嗗亸宸€?
-### TTS 杩斿洖缁欏墠绔殑璇婃柇澶?
-JVS TTS 浼氬湪 HTTP header 閲屽甫璇婃柇淇℃伅锛?
+```text
+/v1/tts/stream
+  -> DashScope CosyVoice streaming
+  -> tts.jvs_stream_start
+  -> tts.jvs_stream_meta
+  -> tts.playback_pcm_chunk
+  -> tts.jvs_stream_done
+```
+
+这就是现在日志里常见的云端 TTS 形态。
+
+### 本地 Kokoro 路径
+
+如果 `JACHIN_TTS_BACKEND` 配成 local，JVS 才会使用 Kokoro ONNX：
+
+```text
+voice_server/services/tts_service.py
+model = Kokoro-82M-v1.1-zh-ONNX
+```
+
+本地 Kokoro 路径大概会做：
+
+```text
+文本归一化
+  -> 中文前端处理
+  -> jieba 分词
+  -> pypinyin 取拼音和声调
+  -> misaki zh 转 IPA
+  -> phoneme 映射到 tokenizer vocab
+  -> 选择 voice bin
+  -> 根据 token 长度选择 style vector
+  -> ONNX 推理
+  -> 修剪首尾静音
+  -> 输出 WAV
+```
+
+所以，如果系统当前是云端 TTS，就不要把口音、延迟、英文读法问题直接归因到 Kokoro。只有 `/health` 显示 `tts_backend = local` 时，Kokoro 中文前端、phoneme 映射、style vector 这些才是主排查对象。
+
+云端 TTS 的问题更多要看 DashScope 返回延迟、stream 首包时间、voice 配置和前端播放队列。
+
+### TTS 返回给前端的诊断头
+
+JVS TTS 会在 HTTP header 里带诊断信息：
+
 ```text
 X-Jachin-Duration-Ms
 X-Jachin-Sample-Rate
@@ -1108,64 +1164,106 @@ X-Jachin-TTS-Trim-Leading-Ms
 X-Jachin-TTS-Trim-Trailing-Ms
 ```
 
-鍓嶇浼氭妸杩欎簺鍐欏埌 `voice_chat.log`锛岀敤浜庡垽鏂埌搴曟槸锛?
-- L3 鎱€?- TTS 鍚堟垚鎱€?- 鎾斁闃熷垪鎱€?- 闊抽鏈韩澶暱銆?- 棣栧熬闈欓煶澶暱銆?
-## 11. 鎾斁鍜屾墦鏂?
-鎾斁鐢憋細
+前端会把这些写到 `voice_chat.log`，用于判断到底是：
+
+- L3 慢。
+- TTS 合成慢。
+- 播放队列慢。
+- 音频本身太长。
+- 首尾静音太长。
+
+## 11. 播放和打断
+
+播放由：
 
 ```text
 voicePlaybackController
 ```
 
-璐熻矗銆?
-瀹冩湁涓€涓?generation 鏈哄埗銆?
-绠€鍗曡锛?
+负责。
+
+它有一个 generation 机制。
+
+简单说：
+
 ```text
-姣忔鏂拌闊充細璇?/ 鎵撴柇 -> generation +1
-鏃?generation 鐨?TTS 缁撴灉鍗充娇鏅氬埌锛屼篃涓嶈缁х画鎾斁
+每次新语音会话 / 打断 -> generation +1
+旧 generation 的 TTS 结果即使晚到，也不该继续播放
 ```
 
-鎵撴柇鍏ュ彛锛?
+打断入口：
+
 ```text
 voiceOrchestrator.bargeIn()
 ```
 
-瀹冧細锛?
-- 鍋滄褰撳墠鎾斁銆?- 娓呯┖鎾斁闃熷垪銆?- bump generation銆?- 璋?JVS `/v1/session/cancel` 鍙栨秷瀵瑰簲 session 鐨?TTS銆?- UI 鍥炲埌 listening銆?
-杩欏氨鏄敤鎴封€滄棫璇锋眰澶參锛屾垜鍙堝彂浜嗘柊璇煶鈥濇椂锛岀郴缁熷簲璇ュ仛鐨勪簨銆?
-## 12. 浠诲姟娌℃墽琛屽畬鏃剁敤鎴风户缁璇?
-杩欎釜鍦烘櫙鐢变袱涓眰鍏卞悓澶勭悊銆?
-### 鍓嶇璺敱灞?
-鍓嶇淇濆瓨 active voice tasks銆?
-濡傛灉鏈変换鍔℃鍦ㄨ窇锛屾柊璇煶浼氬厛琚垽鏂槸涓嶆槸鎺у埗璇锋眰锛?
+它会：
+
+- 停止当前播放。
+- 清空播放队列。
+- bump generation。
+- 调 JVS `/v1/session/cancel` 取消对应 session 的 TTS。
+- UI 回到 listening。
+
+这就是用户“旧请求太慢，我又发了新语音”时，系统应该做的事。
+
+## 12. 任务没执行完时用户继续说话
+
+这个场景由前端状态传递和 L3 主循环共同处理。
+
+### 前端状态层
+
+前端可以保存 active voice tasks，用来展示状态、打断播放、取消当前语音会话，并把当前任务摘要作为上下文发给 L3。
+
+前端不直接判断这一句到底是取消、查进度、修改任务还是新话题。它只把这些事实交给 L3：
+
 ```text
-鍙栨秷 / 鍋滄 -> ABORT
-杩涘害 / 鍋氬埌鍝簡 -> STATUS
-鏀规垚 / 鍐嶅姞 -> MODIFY
-缁х画 -> RESUME
-鍏朵粬鏂拌瘽棰?-> PARALLEL 鎴?direct_llm
+active_task_id
+active_task_status
+active_task_summary
+last_user_turn
+voice_final_text
+voice_stt_evidence
 ```
 
-杩欎竴姝ョ殑鐩爣鏄笉瑕佹妸鈥滃仠涓€涓嬧€濊褰撴垚鏅€氳亰澶┿€?
-### L3 / task 灞?
-濡傛灉璺敱缁撴灉鏄换鍔℃帶鍒讹紝浼氳繘鍏?L3 鐨勫悗鍙版帶鍒惰矾寰勩€?
-濡傛灉鏄櫘閫氳亰澶╀絾鏈?active task锛屽墠绔彲浠ユ敞鍏ヨ交閲忎换鍔′笂涓嬫枃锛?
+这一步的目标是让 L3 主循环有足够上下文判断用户是在控制已有任务，还是开启一个新问题。
+
+### L3 主循环 / task 层
+
+L3 主循环根据用户原话和 active task context 判断本轮意图：
+
+```text
+取消 / 停止 -> ABORT
+进度 / 做到哪了 -> STATUS
+改成 / 再加 -> MODIFY
+继续 -> RESUME
+其他新话题 -> PARALLEL 或普通回答
+```
+
+如果判断是任务控制，会进入 L3 的后台控制路径。
+
+如果是普通聊天但有 active task，前端注入的任务上下文只作为背景证据：
+
 ```text
 inject_light_task_context = true
 ```
 
-杩欐牱妯″瀷鍙互鐭ラ亾鈥滃悗鍙版湁涓换鍔♀€濓紝浣嗕笉浼氱紪閫犺繘搴︺€?
-## 13. 鏃ュ織鎬庝箞鐪?
+这样模型可以知道“后台有个任务”，但不会编造进度。
+
+## 13. 日志怎么看
+
 ### voice_chat.log
 
-璺緞閫氬父鏄細
+路径通常是：
 
 ```text
 C:/Users/Samuel/.jachin/jachin_debug/voice_chat.log
 ```
 
-杩欐槸鏈€閲嶈鐨勭鍒扮璇煶閾捐矾鏃ュ織銆?
-鍏抽敭闃舵锛?
+这是最重要的端到端语音链路日志。
+
+关键阶段：
+
 ```text
 turn.begin
 stt.audio_ready
@@ -1174,7 +1272,17 @@ stt.prepare
 stt.wav_ready
 stt.jvs_ready
 stt.jvs_transcribe_request
+stt.cloud_start
+stt.cloud_dns
+stt.cloud_connect
+stt.cloud_upload_start
+stt.cloud_result / stt.cloud_exception
+stt.cloud_soft_timeout
+stt.fallback_start
+stt.fallback_result
+stt.cloud_late_result
 stt.jvs_transcribe_ok
+stt.local_fallback_used
 stt.recognized
 l3.send_start
 l3.route_decision
@@ -1187,6 +1295,10 @@ tts.orchestrator.request
 tts.jvs_fetch_start
 tts.jvs_fetch_response
 tts.jvs_blob_ok
+tts.jvs_stream_start
+tts.jvs_stream_meta
+tts.playback_pcm_chunk
+tts.jvs_stream_done
 tts.orchestrator.ok
 tts.playback_enqueue
 tts.playback_native_start / tts.playback_web_start
@@ -1194,25 +1306,46 @@ tts.playback_native_done / tts.playback_web_ended
 turn.end
 ```
 
-濡傛灉鏂囧瓧寰堜箙鎵嶅嚭鏉ワ紝鐪嬶細
+如果文字很久才出来，看：
 
 ```text
 l3.send_start -> l3.chunk / l3.answer
 ```
 
-濡傛灉鏂囧瓧鍑烘潵浜嗕絾寰堜箙鎵嶈璇濓紝鐪嬶細
+如果文字出来了但很久才说话，看：
 
 ```text
 tts.orchestrator.request -> tts.jvs_fetch_response -> tts.playback_start
 ```
 
-濡傛灉 STT 鎱紝鐪嬶細
+如果 STT 慢，看：
 
 ```text
 stt.audio_ready -> stt.recognized
 ```
 
-濡傛灉澹扮汗鎱紝鐪嬶細
+如果要进一步判断云端 STT 慢在哪里，看：
+
+```text
+stt.cloud_dns
+stt.cloud_connect
+stt.cloud_vocabulary_sync_*
+stt.cloud_upload_start
+stt.cloud_result / stt.cloud_exception
+stt.cloud_soft_timeout
+stt.fallback_result
+stt.cloud_late_result
+```
+
+如果出现：
+
+```text
+stt.local_fallback_used
+```
+
+说明这一轮最终用了本地 sherpa 兜底，而不是云端直接成功。
+
+如果声纹慢，看：
 
 ```text
 sv.owner_track_ptt latencyMs
@@ -1220,85 +1353,121 @@ sv.owner_track_ptt latencyMs
 
 ### voice_companion.log
 
-璺緞閫氬父鏄細
+路径通常是：
 
 ```text
 C:/Users/Samuel/.jachin/jachin_debug/voice_companion.log
 ```
 
-瀹冩洿鍋?UI / 闄即鎬佺姸鎬佹祦锛屾瘮濡?Orb銆丠UD銆佷細璇濄€乀TS 闃熷垪鐘舵€併€?
-### terminal_turn 鏃ュ織
+它更偏 UI / 陪伴态状态流，比如 Orb、HUD、会话、TTS 队列状态。
 
-璺緞閫氬父鏄細
+### terminal_turn 日志
+
+路径通常是：
 
 ```text
 C:/Users/Samuel/.jachin/jachin_debug/terminal_turn_*.log
 ```
 
-瀹冩洿鍋?L3 鍐呴儴 agent 杩囩▼锛屾瘮濡?direct_llm_bypass銆丷eAct銆佸伐鍏疯皟鐢ㄣ€佸紓甯搞€?
-## 14. 褰撳墠绯荤粺鏈€瀹规槗娣蜂贡鐨勫湴鏂?
-### 14.1 鈥滃揩璺敱鈥濇湁涓ゅ眰
+它更偏 L3 内部过程，比如认知内核主循环、归一化、记忆/环境状态读取、任务编排、工具调用、验证、异常。
 
-绗竴灞傚湪鍓嶇锛?
+## 14. 当前系统最容易混乱的地方
+
+### 14.1 不要再把旧前端路由当事实源
+
+旧版本里前端和 L3 都有路由判断，容易出现两层理解不一致：
+
+- 前端认为是轻问答。
+- L3 当成任务或 presence ack。
+- 用户问正常问题，系统给出不相干回复。
+
+当前文档按新架构描述：前端不再做任务意图裁决。前端只传语音文本、STT 证据、声纹状态、UI 状态和 active task context；真正的理解、路由、任务编排和工具选择由 L3 认知内核主循环负责。
+
+### 14.2 “结构边界”和“大模型自由度”要分清
+
+新架构不是完全不要结构，也不是把所有事情交给一段自由文本模型输出。
+
+结构负责：
+
+- 主循环步骤。
+- 工单字段。
+- 工具和 MCP 调用边界。
+- 风险控制。
+- 验证要求。
+- 失败恢复策略。
+
+大模型负责：
+
+- 理解用户真实意图。
+- 填写对象、动作、约束、缺槽。
+- 判断是否需要追问。
+- 选择合适的执行路径。
+- 把结果组织成自然、人话的回复。
+
+问题通常不在“有没有结构”，而在结构是否抢走了 L3 主循环本该做的语义判断。
+
+### 14.3 TTS 要先区分云端还是本地
+
+当前默认是云端 DashScope CosyVoice。排查口音、停顿、英文混读、延迟时，先看 `/health`：
+
 ```text
-voiceIntentRouter.ts
+tts_backend = cloud  -> 看 CosyVoice、voice、首包时间、stream chunk、播放队列
+tts_backend = local  -> 看 Kokoro 中文前端、phoneme mapping、style、静音裁剪
 ```
 
-绗簩灞傚湪 L3锛?
+如果是云端 TTS，重点看：
+
+- `tts.jvs_stream_meta` 里的 backend、model、voice、synthesisText。
+- `firstAudioMs` 是否过高。
+- `tts.playback_pcm_chunk` 是否连续。
+- 播放队列是否被旧 generation 占住。
+
+如果是本地 Kokoro，才重点看：
+
+- 中文标点被处理错，断句会怪。
+- phoneme OOV 被丢，字会含混。
+- 声调符号丢失，会有方言感。
+- style index 不合适，语气会飘。
+- 英文混读没归一化，会跳读或乱读。
+- 首尾静音裁剪不合适，会黏连或抢拍。
+
+### 14.4 旧请求晚到与新请求抢播放
+
+系统用 generation 和 session cancel 解决这个问题。
+
+但如果某个旧请求在 L3 或 TTS 内部卡很久，仍然可能出现“晚到结果”。这时要看日志确认：
+
+- 旧请求是否被 cancel。
+- 旧 TTS 是否仍然进入播放队列。
+- generation 是否正确拦截旧音频。
+
+## 15. 一句话总结
+
+现在语音陪伴态可以理解成四层：
+
 ```text
-ws_server.py
-agent_core.py
+感知层：录音、声纹、STT
+传递层：前端整理最终文本、语音诊断、UI 状态和任务上下文
+认知层：L3 主循环理解意图、补槽、编排任务、选择工具、验证恢复
+表达层：流式文字、分句、TTS、播放、打断
 ```
 
-濡傛灉涓ゅ眰鐞嗚В涓嶄竴鑷达紝灏变細鍑虹幇锛?
-- 鍓嶇璁や负鏄交闂瓟銆?- L3 褰撴垚 presence ack銆?- 鐢ㄦ埛闂€滀粖澶╁悆浠€涔堚€濓紝绯荤粺绛斺€滄垜鍦ㄢ€濄€?
-鐜板湪宸茬粡閫氳繃 `voice_fast_lane_kind` 鍜?`voice_allow_template_reply` 鎶婅繖浠朵簨鎷夐綈锛?
+最理想的运行方式是：
+
+- “你好 / 在吗”秒回连接感。
+- “今天吃什么”由 L3 主循环判断为普通问答，不进任务链，也不模板敷衍。
+- “帮我打开计算器”由 L3 主循环判断为本地 OS 任务，再选择对应工具。
+- “把目录生成报告”由 L3 主循环判断为更长任务，再决定后台执行或分派。
+- 任务执行中用户说“停一下 / 进度怎么样 / 改成这样”，由 L3 主循环结合 active task context 判断任务控制意图。
+- 用户打断旧语音时，旧 TTS 和旧播放队列被取消，新请求优先。
+
+如果之后要继续优化，建议按日志把问题归因到具体层：
+
 ```text
-presence_template 鎵嶈兘妯℃澘绛斺€滄垜鍦ㄢ€?light_query 绂佹妯℃澘锛屽繀椤婚棶妯″瀷
+STT 慢或错 -> 看 voice_server STT / hotword / owner-track
+意图或任务判断错 -> 看 terminal_turn 里的 L3 主循环、归一化、任务编排、工具选择、验证证据
+文字慢 -> 看 L3 主循环耗时、模型首 token、工具执行耗时
+文字对但说话慢 -> 看 TTS synth / playback queue
+说得难听 -> 先看 tts_backend；cloud 看 CosyVoice/voice/首包，local 看 Kokoro frontend / phoneme mapping / pause / style
+旧话乱插 -> 看 generation / cancel / playback queue
 ```
-
-### 14.2 鈥滆鍒欒竟鐣屸€濆拰鈥滃ぇ妯″瀷鑷敱搴︹€濊鍒嗘竻
-
-鐜板湪鐨勮矾鐢卞亸瑙勫垯涓诲锛屼絾涓嶆槸瑙勫垯鍐欐鎵€鏈夊洖澶嶃€?
-瑙勫垯璐熻矗锛?
-- 鍒嗗眰銆?- 瀹夊叏杈圭晫銆?- 鏄惁鎵ц銆?- 鏄惁鍚庡彴銆?- 鏄惁璺宠繃閲嶉摼璺€?- 鏄惁鍏佽妯℃澘銆?
-澶фā鍨嬭礋璐ｏ細
-
-- 闂茶亰鎬庝箞璇淬€?- 杞婚棶绛旀€庝箞鍥炵瓟銆?- 杩介棶鎬庝箞鑷劧琛ㄨ揪銆?- 浠诲姟缁撴灉鎬庝箞缁勭粐璇█銆?
-杩欐槸姣旇緝鍚堢悊鐨勬柟鍚戙€傞棶棰橀€氬父涓嶅湪鈥滄湁娌℃湁瑙勫垯鈥濓紝鑰屽湪瑙勫垯鏄惁鎶婃煇绫昏瘽璇垎鍒伴敊璇溅閬撱€?
-### 14.3 TTS 鐨勪腑鏂囧墠绔緢鏁忔劅
-
-Kokoro 涓嶆槸瀹屾暣涓枃浜у搧绾?TTS 灏佽锛岃€屾槸 ONNX 妯″瀷鍔犱竴鍫嗘湰鍦板墠绔€傞厤銆?
-浠讳綍涓€灞傚嚭閿欓兘鍙兘褰卞搷鍚劅锛?
-- 涓枃鏍囩偣琚鐞嗛敊锛屾柇鍙ヤ細鎬€?- phoneme OOV 琚涪锛屽瓧浼氬惈娣枫€?- 澹拌皟绗﹀彿涓㈠け锛屼細鏈夋柟瑷€鎰熴€?- style index 涓嶅悎閫傦紝璇皵浼氶銆?- 鑻辨枃娣疯娌″綊涓€鍖栵紝浼氳烦璇绘垨涔辫銆?- 棣栧熬闈欓煶瑁佸壀涓嶅悎閫傦紝浼氶粡杩炴垨鎶㈡媿銆?
-### 14.4 鏃ц姹傛櫄鍒颁笌鏂拌姹傛姠鎾斁
-
-绯荤粺鐢?generation 鍜?session cancel 瑙ｅ喅杩欎釜闂銆?
-浣嗗鏋滄煇涓棫璇锋眰鍦?L3 鎴?TTS 鍐呴儴鍗″緢涔咃紝浠嶇劧鍙兘鍑虹幇鈥滄櫄鍒扮粨鏋溾€濄€傝繖鏃惰鐪嬫棩蹇楃‘璁わ細
-
-- 鏃ц姹傛槸鍚﹁ cancel銆?- 鏃?TTS 鏄惁浠嶇劧杩涘叆鎾斁闃熷垪銆?- generation 鏄惁姝ｇ‘鎷︽埅鏃ч煶棰戙€?
-## 15. 涓€鍙ヨ瘽鎬荤粨
-
-鐜板湪璇煶闄即鎬佸彲浠ョ悊瑙ｆ垚鍥涘眰锛?
-```text
-鎰熺煡灞傦細褰曢煶銆佸０绾广€丼TT
-璺敱灞傦細鍒ゆ柇闂茶亰銆佽交闂瓟銆佺煭浠诲姟銆侀暱浠诲姟銆佷换鍔℃帶鍒?鏅鸿兘灞傦細妯℃澘銆佸揩妯″瀷銆乨irect LLM銆佸畬鏁?Agent / 宸ュ叿 / 浠诲姟
-琛ㄨ揪灞傦細娴佸紡鏂囧瓧銆佸垎鍙ャ€乀TS銆佹挱鏀俱€佹墦鏂?```
-
-鏈€鐞嗘兂鐨勮繍琛屾柟寮忔槸锛?
-- 鈥滀綘濂?/ 鍦ㄥ悧鈥濈鍥炶繛鎺ユ劅銆?- 鈥滀粖澶╁悆浠€涔堚€濊蛋杞婚棶绛旓紝涓嶈繘浠诲姟閾撅紝涔熶笉妯℃澘鏁疯銆?- 鈥滃府鎴戞墦寮€璁＄畻鍣ㄢ€濊蛋鐭换鍔°€?- 鈥滄妸鐩綍鐢熸垚鎶ュ憡鈥濊蛋鍚庡彴闀夸换鍔°€?- 浠诲姟鎵ц涓敤鎴疯鈥滃仠涓€涓?/ 杩涘害鎬庝箞鏍?/ 鏀规垚杩欐牱鈥濓紝璧颁换鍔℃帶鍒躲€?- 鐢ㄦ埛鎵撴柇鏃ц闊虫椂锛屾棫 TTS 鍜屾棫鎾斁闃熷垪琚彇娑堬紝鏂拌姹備紭鍏堛€?
-濡傛灉涔嬪悗瑕佺户缁紭鍖栵紝寤鸿鎸夋棩蹇楁妸闂褰掑洜鍒板叿浣撳眰锛?
-```text
-STT 鎱㈡垨閿?-> 鐪?voice_server STT / hotword / owner-track
-璺敱閿?-> 鐪?voice_dispatch_decision / route_evidence
-鏂囧瓧鎱?-> 鐪?L3 fast lane / direct_llm / run_agent
-鏂囧瓧瀵逛絾璇磋瘽鎱?-> 鐪?TTS synth / playback queue
-璇村緱闅惧惉 -> 鐪?Kokoro frontend / phoneme mapping / pause / style
-鏃ц瘽涔辨彃 -> 鐪?generation / cancel / playback queue
-```
-
-- 主路径按当前本机配置写：cloud STT `fun-asr-realtime`，cloud TTS `cosyvoice-v3-plus`。
-- 本地 Sherpa 和 Kokoro 只作为 fallback 说明。
-- 语音层只做 STT、声纹、热词、实体纠错和 TTS，不做意图路由或缺槽追问。
-- L3 负责所有任务理解、追问、确认和执行。
-- 任何“语音层判断缺槽并追问用户”“前端 voiceIntentRouter 决定语音任务路径”“当前已经使用 SenseVoice”“当前 STT 是 Kokoro”的说法都是错误的。

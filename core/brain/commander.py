@@ -221,7 +221,6 @@ class CommanderAgent:
             reply = await self._chat_only(messages)
             if self.memory_manager:
                 self.memory_manager.add_dialogue(user_id, "assistant", reply)
-                self._maybe_trigger_dream(user_id)
             return reply
 
         client = self._get_client()
@@ -250,12 +249,10 @@ class CommanderAgent:
                 reply = content.strip()
                 if self.memory_manager:
                     self.memory_manager.add_dialogue(user_id, "assistant", reply)
-                    self._maybe_trigger_dream(user_id)
                 return reply
             reply = await self._chat_only(messages)
             if self.memory_manager:
                 self.memory_manager.add_dialogue(user_id, "assistant", reply)
-                self._maybe_trigger_dream(user_id)
             return reply
 
         # Step B: 沙箱执行
@@ -319,7 +316,6 @@ class CommanderAgent:
             reply = (content or "好的，主人。").strip()
             if self.memory_manager:
                 self.memory_manager.add_dialogue(user_id, "assistant", reply)
-                self._maybe_trigger_dream(user_id)
             return reply
         except Exception as e:
             logger.warning("Commander 总结回复失败: %s", e)
@@ -330,7 +326,6 @@ class CommanderAgent:
                     fallback = str(last_tool.get("content", ""))[:200] or fallback
             if self.memory_manager:
                 self.memory_manager.add_dialogue(user_id, "assistant", fallback)
-                self._maybe_trigger_dream(user_id)
             return fallback
 
     async def _chat_only(self, messages: List[Dict[str, Any]]) -> str:
@@ -356,49 +351,9 @@ class CommanderAgent:
         except Exception as e:
             logger.warning("Commander 闲聊回退失败: %s", e)
         return "我在。"
-
-    def _maybe_trigger_dream(self, user_id: str) -> None:
-        """
-        战役三：当 STM 达到阈值时，异步触发梦境提炼。
-        不阻塞主流程。
-        """
-        if not self.memory_manager:
-            return
-        try:
-            from core.memory.manager import CONSOLIDATION_THRESHOLD
-            if self.memory_manager.get_stm_count(user_id) >= CONSOLIDATION_THRESHOLD:
-                client = self._get_client()
-                asyncio.create_task(
-                    self.memory_manager.consolidate_memory(user_id, client, self.model)
-                )
-                logger.info("梦境提炼已触发: user_id=%s", user_id)
-        except Exception as e:
-            logger.warning("触发梦境失败: %s", e)
-
-
 def _create_memory_manager() -> Optional[Any]:
-    """创建记忆协调中枢（战役二）。失败时返回 None，Commander 将无记忆运行。"""
-    try:
-        from core.memory import get_lancedb_store, OpenAIEmbedder, MemoryManager
-        from core.config import settings
-
-        store = get_lancedb_store()
-        key = settings.QWEN_API_KEY or settings.DASHSCOPE_API_KEY or settings.QWEN_AI_API_KEY
-        if not key:
-            key = getattr(settings, "OPENAI_API_KEY", None)
-        base_url = None
-        if settings.LLM_PROVIDER in ("qwen", "qwen-v2") and key:
-            try:
-                from core.brain.llm.dashscope_regional import get_dashscope_regional_api_base
-
-                base_url = get_dashscope_regional_api_base()
-            except ImportError:
-                base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        embedder = OpenAIEmbedder(model="text-embedding-3-small", api_key=key, base_url=base_url)
-        return MemoryManager(store=store, embedder=embedder)
-    except Exception as e:
-        logger.warning("MemoryManager 未就绪，Commander 将无记忆运行: %s", e)
-        return None
+    """Legacy Commander memory is disabled; Memory Growth is the only mainline."""
+    return None
 
 
 def get_commander_agent(
@@ -410,7 +365,7 @@ def get_commander_agent(
     获取 CommanderAgent 单例（延迟初始化）。
 
     从 core.config 读取 LLM 配置，兼容 Qwen / 本地模型。
-    战役二：自动注入 MemoryManager，实现 RAG 长短期记忆融合。
+    Memory Growth is the active memory architecture; Commander delegates memory to the main kernel.
     """
     try:
         from core.config import settings

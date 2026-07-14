@@ -309,6 +309,19 @@ pub fn start_ptt_capture(
     if state.capture_busy() {
         return Err("麦克风已被占用，请先停止当前语音采集".to_string());
     }
+    crate::l3_spawn::write_voice_chat_trace(
+        "ptt",
+        "stream_prewarm_start",
+        "ensure_jvs_before_ptt",
+        "",
+    );
+    let jvs_base = ensure_jvs_blocking(&app_handle)?;
+    crate::l3_spawn::write_voice_chat_trace(
+        "ptt",
+        "stream_prewarm_ok",
+        "ensure_jvs_before_ptt",
+        &jvs_base,
+    );
     wake.stop();
     if !wake.wait_until_stopped(2500) {
         return Err("无法释放麦克风：唤醒监听仍在运行，请稍后重试".to_string());
@@ -332,6 +345,25 @@ pub fn start_ptt_capture(
         return Err("PTT 采音线程启动超时，请重试".to_string());
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn prewarm_ptt_stt_stream(app_handle: tauri::AppHandle) -> Result<String, String> {
+    crate::l3_spawn::write_voice_chat_trace(
+        "ptt",
+        "stream_prewarm_start",
+        "prewarm_ptt_stt_stream",
+        "",
+    );
+    let jvs_base = ensure_jvs_blocking(&app_handle)?;
+    let session_id = super::stream_stt_client::prewarm(&jvs_base)?;
+    crate::l3_spawn::write_voice_chat_trace(
+        "ptt",
+        "stream_prewarm_ok",
+        "prewarm_ptt_stt_stream",
+        &format!("base={} session_id={}", jvs_base, session_id),
+    );
+    Ok(session_id)
 }
 
 /// PTT 松开：触发立即截句，等待采音线程完成后返回 WAV（同时仍发射 `STT_AUDIO_READY` 供 VAD 路径复用）。

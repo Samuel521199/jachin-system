@@ -1,4 +1,4 @@
-﻿"""Arbiter for ReviewSummary -> DecisionContract -> WorkOrder planning."""
+"""Arbiter for ReviewSummary -> DecisionContract -> WorkOrder planning."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Any
 
 from .contracts import DecisionContract, ReviewSummary, RiskLevel, ToolPolicy, WorkOrder
 from .ledger import append_event, record_decision, record_work_order
+from .task_decomposer import DecomposedTaskNode, decompose_task
 
 
 def _new_id(prefix: str) -> str:
@@ -31,6 +32,8 @@ def arbitrate_review_summary(summary: ReviewSummary, *, goal: str = "") -> Decis
     clarification = summary.clarification_question
     if requires_confirmation and not clarification:
         clarification = "这个操作风险较高，请确认后再执行。"
+    memory_context_refs = _memory_context_refs(summary)
+    memory_rationale = _memory_rationale(memory_context_refs)
 
     contract = DecisionContract(
         decision_id=_new_id("decision"),
@@ -53,8 +56,10 @@ def arbitrate_review_summary(summary: ReviewSummary, *, goal: str = "") -> Decis
         verification_criteria=_verification_criteria(summary),
         rationale=[
             "Arbiter accepted ReviewBoard evidence and produced the final DecisionContract.",
+            *memory_rationale,
             *summary.rationale,
         ],
+        memory_context_refs=memory_context_refs,
     )
     record_decision(contract)
     append_event(
@@ -71,50 +76,96 @@ def arbitrate_review_summary(summary: ReviewSummary, *, goal: str = "") -> Decis
             "candidate_tools": summary.candidate_tools,
             "risk_level": contract.risk_level.value,
             "requires_confirmation": contract.tool_policy.requires_confirmation,
+            "memory_context_refs": memory_context_refs,
         },
     )
     return contract
 
 
 def build_work_order_from_decision(contract: DecisionContract, summary: ReviewSummary) -> WorkOrder | None:
+    work_orders = build_work_orders_from_decision(contract, summary)
+    return work_orders[0] if work_orders else None
+
+
+def build_work_orders_from_decision(contract: DecisionContract, summary: ReviewSummary) -> list[WorkOrder]:
     if not contract.tool_policy.allowed_tools:
-        return None
+        return []
     if not contract.execution_allowed and not contract.tool_policy.requires_confirmation:
-        return None
-    role_agent = _executor_role(contract.selected_roles)
-    tool = contract.tool_policy.allowed_tools[0]
-    work_order_input = _work_order_input_for(summary, tool)
-    work_order = WorkOrder(
-        work_order_id=_new_id("work"),
-        decision_id=contract.decision_id,
-        role_agent=role_agent,
-        task=_task_text(summary),
-        inputs={
-            "tool": tool,
-            "work_order_input": work_order_input,
-            "intent": summary.top_intent,
-            "target": summary.target,
-            "review_session_id": summary.review_session_id,
-        },
-        tool_policy=contract.tool_policy,
-        expected_outputs=["execution_report", "observable_evidence"],
-        verification_criteria=contract.verification_criteria,
-        status="pending",
-    )
-    record_work_order(work_order, contract.turn_id)
+        return []
+    decomposition = decompose_task(contract=contract, summary=summary)
+    work_orders = [_work_order_from_decomposed_node(contract, summary, node) for node in decomposition.nodes]
+    for work_order in work_orders:
+        record_work_order(work_order, contract.turn_id)
     append_event(
-        "arbiter_work_order_created",
+        "arbiter_work_orders_created",
         contract.turn_id,
         {
             "review_session_id": summary.review_session_id,
             "decision_id": contract.decision_id,
-            "work_order_id": work_order.work_order_id,
-            "role_agent": work_order.role_agent,
-            "tool": tool,
-            "target": summary.target,
+            "work_order_ids": [work_order.work_order_id for work_order in work_orders],
+            "decomposition": decomposition.to_dict(),
+            "memory_context_refs": contract.memory_context_refs,
         },
     )
-    return work_order
+    return work_orders
+
+
+def _work_order_from_decomposed_node(contract: DecisionContract, summary: ReviewSummary, node: DecomposedTaskNode) -> WorkOrder:
+    tool_policy = ToolPolicy(
+        allowed_tools=[node.tool] if node.tool else [],
+        denied_tools=list(contract.tool_policy.denied_tools),
+        risk_level=node.risk_level,
+        requires_confirmation=contract.tool_policy.requires_confirmation,
+        confirmation_reason=contract.tool_policy.confirmation_reason,
+        verification_required=contract.tool_policy.verification_required,
+    )
+    inputs = {
+        **dict(node.inputs or {}),
+        "tool": node.tool,
+        "capability": node.capability,
+        "work_order_input": node.work_order_input,
+        "review_session_id": summary.review_session_id,
+        "memory_context_refs": contract.memory_context_refs,
+        "decomposition_node_id": node.node_id,
+        "depends_on": list(node.depends_on),
+        "recovery_policy": dict(node.recovery_policy),
+    }
+    return WorkOrder(
+        work_order_id=_new_id("work"),
+        decision_id=contract.decision_id,
+        role_agent=node.role_agent,
+        task=node.goal,
+        inputs=inputs,
+        tool_policy=tool_policy,
+        expected_outputs=["execution_report", "observable_evidence"],
+        verification_criteria=list(node.verification_criteria or contract.verification_criteria),
+        status="pending",
+    )
+
+
+def _memory_context_refs(summary: ReviewSummary, limit: int = 8) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for review in summary.reviews or []:
+        for evidence in review.evidence or []:
+            if not isinstance(evidence, dict):
+                continue
+            for ref in evidence.get("memory_growth_refs") or []:
+                if isinstance(ref, dict):
+                    refs.append(ref)
+                    if len(refs) >= limit:
+                        return refs
+    return refs
+
+
+def _memory_rationale(refs: list[dict[str, Any]]) -> list[str]:
+    out: list[str] = []
+    playbook_refs = [ref for ref in refs if "playbook" in str(ref.get("memory_id") or "").lower()]
+    concept_refs = [ref for ref in refs if "concept" in str(ref.get("memory_id") or "").lower()]
+    if playbook_refs:
+        out.append(f"Arbiter considered {len(playbook_refs)} Memory Growth playbook reference(s).")
+    if concept_refs:
+        out.append(f"Arbiter considered {len(concept_refs)} Memory Growth concept reference(s).")
+    return out
 
 
 def _requires_confirmation(summary: ReviewSummary) -> bool:
@@ -133,6 +184,8 @@ def _goal_from_summary(summary: ReviewSummary) -> str:
 
 
 def _workflow_for(summary: ReviewSummary) -> str:
+    if summary.task_type == "calculator_calculate":
+        return "reviewed_calculator_calculate_workflow"
     if summary.task_type == "app_control":
         return "reviewed_app_control_workflow"
     if summary.task_type == "message_delivery":
@@ -156,6 +209,12 @@ def _verification_criteria(summary: ReviewSummary) -> list[str]:
         ]
     if summary.top_intent == "switch_app":
         return [f"{target or 'target app'} becomes foreground window"]
+    if summary.task_type == "calculator_calculate":
+        expression = str((summary.target or {}).get("expression") or "").strip()
+        return [
+            f"Windows Calculator receives expression {expression}" if expression else "Windows Calculator receives the requested expression",
+            "Calculator result is verified by clipboard or visual/OCR evidence",
+        ]
     if summary.task_type == "message_delivery":
         return ["message target and content preview match", "send result has observable evidence"]
     if summary.task_type == "file_operation":
@@ -181,6 +240,9 @@ def _task_text(summary: ReviewSummary) -> str:
 
 def _work_order_input_for(summary: ReviewSummary, tool: str) -> str:
     target = summary.target or {}
+    if tool == "mcp:windows_calculator_calculate":
+        expression = str(target.get("expression") or "").strip()
+        return json.dumps({"expression": expression, "expected": ""}, ensure_ascii=False)
     if tool == "mcp:windows_lark_send_message":
         recipients = target.get("recipients") if isinstance(target.get("recipients"), list) else []
         message = str(target.get("message") or "").strip()

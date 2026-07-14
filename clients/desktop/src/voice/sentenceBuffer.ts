@@ -1,6 +1,6 @@
-﻿const HARD_TTS_BREAK_PUNCTUATIONS = /[。！？.!?]/;
-const SOFT_TTS_BREAK_PUNCTUATIONS = /[，,、]/;
-const MIN_SOFT_BREAK_CHARS = 32;
+const HARD_TTS_BREAK_PUNCTUATIONS = /[。！？.!?]/;
+const SOFT_TTS_BREAK_PUNCTUATIONS = /[，,、；;：:]/;
+const MIN_SOFT_BREAK_CHARS = 90;
 
 export type SentenceSplit = {
   complete: string[];
@@ -27,4 +27,3 @@ export function splitSentences(buffer: string, incoming: string): SentenceSplit 
 
   return { complete, remainder: acc };
 }
-

@@ -56,6 +56,10 @@ mod stt_voice_stub {
         Err("请使用 --features ambient 构建以启用语音采集".to_string())
     }
     #[tauri::command]
+    pub fn prewarm_ptt_stt_stream() -> Result<String, String> {
+        Err("请使用 --features ambient 构建以启用语音采集".to_string())
+    }
+    #[tauri::command]
     pub fn stop_ptt_capture() -> Result<serde_json::Value, String> {
         Err("请使用 --features ambient 构建以启用语音采集".to_string())
     }
@@ -1590,6 +1594,8 @@ fn main() {
             #[cfg(feature = "ambient")]
             stt::commands::start_ptt_capture,
             #[cfg(feature = "ambient")]
+            stt::commands::prewarm_ptt_stt_stream,
+            #[cfg(feature = "ambient")]
             stt::commands::stop_ptt_capture,
             #[cfg(feature = "ambient")]
             stt::commands::is_ptt_capture_running,
@@ -1603,6 +1609,8 @@ fn main() {
             stt_voice_stub::is_voice_capture_running,
             #[cfg(not(feature = "ambient"))]
             stt_voice_stub::start_ptt_capture,
+            #[cfg(not(feature = "ambient"))]
+            stt_voice_stub::prewarm_ptt_stt_stream,
             #[cfg(not(feature = "ambient"))]
             stt_voice_stub::stop_ptt_capture,
             #[cfg(not(feature = "ambient"))]

@@ -49,9 +49,8 @@ core/
 │   ├── v2_admin.py       # 子账号、Key、节点分配
 │   ├── v2_inventory.py   # /skills, /download
 │   ├── v2_mcp.py         # /tools（Redis 聚合 + 可选 L2 stdio）/invoke（委托优先；JACHIN_L2_STDIO_MCP 本机）
-│   ├── v2_memory.py      # sync, search
 │   └── v2_coordinate.py  # task, poll, result
-├── db/                   # LanceDB, dream_weaver
+├── db/                   # Memory Growth indices, graph/vector stores
 ├── inventory_scanner.py  # 侧载扫描、.local_meta（L2 默认不向 MCPManager 注入 stdio）
 ├── l2_stdio_mcp_flag.py  # JACHIN_L2_STDIO_MCP：L2 本机 stdio 回滚开关
 ├── mcp_task_token.py     # 跨节点 MCP 委托 Task Token（HMAC）
@@ -121,4 +120,3 @@ l3_node/
 
 - `core/dapr/`
 - `core/ray_cluster/`
-- `core/memory/schema/`

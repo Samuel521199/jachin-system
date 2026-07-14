@@ -1,16 +1,16 @@
-﻿/**
+/**
  * 桌面 Voice Core — STT/TTS 统一入口（JVS + L3，不依赖 L2 :18888 voice API）
- * @see clients/desktop/docs/VOICE_UNIFIED_PIPELINE_PROPOSAL.md
+ * @see clients/desktop/docs/VOICE_COMPANION_PIPELINE_READABLE.md
  */
 
-import { getJvsHealth, startJvsProcess, transcribeByJvs } from "./voiceBridge";
+import { getJvsHealth, startJvsProcess, transcribeByJvs, transcribeLocalByJvs } from "./voiceBridge";
 import type { VoiceUxProfile } from "./voiceProfiles";
 import { voiceChatTrace, voiceChatTraceIfActive } from "./voiceChatTraceLog";
 
 export class VoiceServiceError extends Error {
   constructor(
     message: string,
-    readonly code: "jvs" | "stt" | "l3" | "mic" | "clarification" | "unknown" = "unknown",
+    readonly code: "jvs" | "stt" | "l3" | "mic" | "unknown" = "unknown",
     readonly details?: Record<string, unknown>,
   ) {
     super(message);
@@ -25,9 +25,6 @@ export interface VoiceTranscriptionResult {
   text: string;
   rawText: string;
   correctedText: string;
-  userMessage: string;
-  userMessageSource?: string;
-  replyPlan?: Record<string, unknown>;
   confidence: number;
   durationMs: number;
   language: string;
@@ -46,6 +43,7 @@ export interface VoiceTranscriptionResult {
 export interface VoiceTranscriptionOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
+  localFirst?: boolean;
 }
 
 function sanitizeSttText(text: string): string {
@@ -158,39 +156,67 @@ export async function transcribeBlobDetailed(
       profile,
       latencyMs: Date.now() - healthStartedAt,
     });
-    voiceChatTraceIfActive("stt.jvs_transcribe_request", {
+    voiceChatTraceIfActive(options.localFirst ? "stt.jvs_local_transcribe_request" : "stt.jvs_transcribe_request", {
       profile,
       wavBytes: wavBlob.size,
+      localFirst: Boolean(options.localFirst),
     });
     const sttStarted = Date.now();
-    const stt = await transcribeByJvs(wavBlob, {
+    const stt = await (options.localFirst ? transcribeLocalByJvs : transcribeByJvs)(wavBlob, {
       signal: options.signal,
       timeoutMs: options.timeoutMs,
     });
     const correctedText = (stt.text || "").trim();
     const rawText = (stt.raw_text || stt.text || "").trim();
-    const userMessage = "";
-    const replyPlan = {} as Record<string, unknown>;
     const text = sanitizeSttText(correctedText);
-    voiceChatTraceIfActive("stt.jvs_transcribe_ok", {
+    const understanding = stt.understanding ?? {};
+    const cloudDiagnostics = Array.isArray((understanding as any).cloud_diagnostics)
+      ? ((understanding as any).cloud_diagnostics as Array<Record<string, unknown>>)
+      : [];
+    const sttOrchestration = Array.isArray((understanding as any).stt_orchestration)
+      ? ((understanding as any).stt_orchestration as Array<Record<string, unknown>>)
+      : [];
+    for (const event of cloudDiagnostics) {
+      const stage = String(event.stage || "cloud_diagnostic");
+      voiceChatTraceIfActive(`stt.${stage}`, {
+        profile,
+        source: "jvs_server_cloud_diagnostics",
+        ...event,
+      });
+    }
+    for (const event of sttOrchestration) {
+      const stage = String(event.stage || "stt_orchestration");
+      voiceChatTraceIfActive(`stt.${stage}`, {
+        profile,
+        source: "jvs_server_orchestration",
+        ...event,
+      });
+    }
+    voiceChatTraceIfActive(options.localFirst ? "stt.jvs_local_transcribe_ok" : "stt.jvs_transcribe_ok", {
       profile,
       text,
       rawText,
       correctedText,
-      userMessage,
-      userMessageSource: "",
-      replyPlan,
       confidence: stt.confidence,
       durationMs: stt.duration_ms,
       language: stt.language,
       backend: stt.backend,
-      understanding: {},
+      understanding,
       hotwordCount: stt.hotword_count,
       hotwordStatus: stt.hotword_status,
       hotwordSources: stt.hotword_sources,
       latencyMs: Date.now() - sttStarted,
       pipelineMs: Date.now() - pipelineStartedAt,
     });
+    if (String(stt.backend || "").includes("fallback_from_cloud") || understanding.stt_fallback) {
+      voiceChatTraceIfActive("stt.local_fallback_used", {
+        profile,
+        backend: stt.backend,
+        fallback: understanding.stt_fallback,
+        latencyMs: Date.now() - sttStarted,
+        pipelineMs: Date.now() - pipelineStartedAt,
+      });
+    }
     if (!text || text.startsWith("【STT错误】")) {
       voiceChatTraceIfActive("stt.jvs_empty_or_error", { profile, raw: text });
       throw new VoiceServiceError(text || "未能识别语音内容，请重试", "stt");
@@ -199,13 +225,12 @@ export async function transcribeBlobDetailed(
       text,
       rawText,
       correctedText,
-      userMessage,
       confidence: stt.confidence,
       durationMs: stt.duration_ms,
       language: stt.language,
       backend: stt.backend,
-      understanding: {},
-      source: "jvs_http_transcribe",
+      understanding,
+      source: options.localFirst ? "jvs_local_fallback" : "jvs_http_transcribe",
       finalized: true,
       provisional: false,
       hotwordCount: stt.hotword_count,

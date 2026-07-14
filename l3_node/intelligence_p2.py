@@ -1,8 +1,8 @@
-"""
-智能化 P2：修正意图（P2-7）、意图-技能统计（P2-8）配置与入口。
+"""P2 correction and intent-statistics helpers.
 
-- 配置：`~/.jachin/nexus_config.json` → `intelligence_p2`
-- 修正记忆写入：经 `add_local_memory` → **Memory Nexus（SQLite + FastEmbed）**；可选 v8 向量碎片（`core_memory`）
+Correction memories are written as structured profile records. Ranking,
+promotion, lifecycle, and long-term synthesis are handled by Memory Growth
+agents instead of legacy prompt ordering.
 """
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 _NEXUS = Path.home() / ".jachin" / "nexus_config.json"
 
-# 与梦境排序、Prompt 一致的标记前缀（勿改，否则 dream 优先级失效）
 CORRECTION_TEXT_PREFIX = "【用户修正】【p2】"
 
 
@@ -114,34 +113,7 @@ def maybe_record_user_correction(user_text: str) -> None:
     except Exception as e:
         logger.debug("[P2-7] Memory Nexus 未写入: %s", e)
 
-    cfg = get_intel_p2_config()
-    if cfg.get("correction_write_vector_fragment", True) is not False:
-        try:
-            from core.memory_store import add_memory_fragment
-
-            add_memory_fragment(formatted, is_consolidated=False)
-        except Exception as e:
-            logger.debug("[P2] add_memory_fragment 失败（可能无 core 上下文）: %s", e)
-
     logger.info("[P2-7] 已记录用户修正记忆 len=%d", len(formatted))
-
-
-def dream_prioritize_correction_enabled() -> bool:
-    return get_intel_p2_config().get("dream_prioritize_correction", True) is not False
-
-
-def sort_fragments_correction_first(fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """梦境：含修正标记的碎片排在前面，便于 LLM 优先看见。"""
-
-    def _is_corr(f: dict[str, Any]) -> bool:
-        tx = str(f.get("text", ""))
-        return CORRECTION_TEXT_PREFIX in tx or "【用户修正】" in tx
-
-    def _key(f: dict[str, Any]) -> tuple[int, float]:
-        ts = float(f.get("timestamp", f.get("created_at", 0)) or 0)
-        return (0 if _is_corr(f) else 1, ts)
-
-    return sorted(fragments, key=_key)
 
 
 def intent_stats_enabled() -> bool:

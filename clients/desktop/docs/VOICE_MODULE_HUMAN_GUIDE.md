@@ -1,8 +1,8 @@
 # Jachin 语音模块 — 人话版全链路说明
 
 > **写给谁看**：产品、联调、新同学——想搞懂「喊一声 Jachin 到听见它回答」中间到底发生了什么，以及**为什么有时感觉不够流畅**。
-> **状态**：2026-06 更新，描述**当前已落地实现**（含统一 Voice Core、声纹门禁、意图路由）。
-> **关联文档**：`VOICE_UNIFIED_PIPELINE_PROPOSAL.md`（架构 SSOT）、`VOICE_WAKE_ARCHITECTURE.md`、`VOICE_BARGE_IN_AND_WAKE_ACK.md`、`VOICE_INTENT_ROUTING_AND_TASK_ORCHESTRATION.md`、`VOICE_SPEAKER_VERIFICATION_PROPOSAL.md`
+> **状态**：2026-07 更新，描述**当前已落地实现**（统一 Voice Core、声纹门禁、L3 认知内核主循环）。
+> **关联文档**：`VOICE_COMPANION_PIPELINE_READABLE.md`（当前语音链路 SSOT）、`VOICE_WAKE_ARCHITECTURE.md`、`VOICE_BARGE_IN_AND_WAKE_ACK.md`、`VOICE_SPEAKER_VERIFICATION_PROPOSAL.md`
 
 ---
 
@@ -10,7 +10,7 @@
 
 **麦克风只在桌面 App（Rust）里开一次；JVS 管「听成字、字变声、识主人」；L3 只管「想答案」——桌面 App 当调度员把整条链串起来。**
 
-你说话 → 桌面截句 →（可选）声纹过滤 → JVS 转文字 → 意图路由 → 文字送 L3 思考 → L3 流式回文字 → 桌面断句 → JVS 合成语音 → 扬声器播放。
+你说话 → 桌面截句 →（可选）声纹过滤 → JVS 转文字 → 前端整理语音证据 → 文字送 L3 认知内核主循环 → L3 流式回文字 → 桌面断句 → JVS 合成语音 → 扬声器播放。
 
 L3 **从不**碰麦克风，也 **从不**直接播声音。
 
@@ -54,7 +54,6 @@ jachin-system-main/
     │   ├── voiceCore.ts                STT 统一入口（JVS，不走 L2 voice API）
     │   ├── voiceProfiles.ts            wake / chat_ptt / chat_vad 三 Profile
     │   ├── voiceOrchestrator.ts        断句 → JVS TTS → 排队播放
-    │   ├── voiceIntentRouter.ts        进 L3 前的规则路由（闲聊/任务/打断）
     │   ├── voiceCompanionBridge.ts     chat ↔ HUD 事件桥
     │   ├── voicePlaybackController.ts  播放锁、打断止音
     │   └── voiceBridge.ts              HTTP 调 JVS
@@ -103,9 +102,8 @@ jachin-system-main/
 Rust wake_pipeline 截句 → JVS STT → inject_companion_user
     → HUD 显示 user 气泡
     → chat.tsx dispatchVoiceUtterance
-        → voiceIntentRouter（规则路由：闲聊/任务/打断等）
         → doActualSend(text, implicit_signals)
-    → L3
+    → L3 认知内核主循环
 ```
 
 **大窗 PTT / VAD 路径**
@@ -121,7 +119,7 @@ Rust start_ptt_capture / stop_ptt_capture 或 VAD 截句
 **关键点**
 
 - 桌面 **不再** 调用 L2 `:18888` 的 `voice/process` / `voice/chat`（`api.ts` 已标 `@deprecated`）。
-- `implicit_signals` 里会带上 `voice_dispatcher_decision`、`voice_raw_stt_text` 等，供 L3 理解语音上下文（见 `VOICE_INTENT_ROUTING_AND_TASK_ORCHESTRATION.md`）。
+- `implicit_signals` 只携带 STT 文本、声纹状态、云端诊断、UI 状态等证据；不携带前端意图裁决。
 
 ---
 
@@ -135,7 +133,7 @@ Rust start_ptt_capture / stop_ptt_capture 或 VAD 截句
 | **C. 截句器** | 「判断你说完一句了没」 | 唤醒后 / PTT / VAD | VAD 静音 800ms 或 PTT 松开即截 |
 | **C′. 声纹 S2** | 「录指令时识主」 | 可选 | 主人轨提取，剔旁人窗再 STT |
 | **D. JVS** | 「耳朵 + 嘴巴 + 声纹」 | 按需/可预热 | STT、TTS、SV |
-| **E. 桌面编排** | 「现场导演」 | 有语音会话时 | 意图路由、断句、TTS 队列、Orb |
+| **E. 桌面编排** | 「现场导演」 | 有语音会话时 | 转发语音证据、断句、TTS 队列、Orb |
 | **F. L3** | 「大脑」 | 桌面启动时 | ReAct、工具、流式正文 |
 | **G. 播放 & 打断** | 「嘴和急刹车」 | 播报时 | Rust 播放优先、barge-in |
 
@@ -143,7 +141,7 @@ Rust start_ptt_capture / stop_ptt_capture 或 VAD 截句
 
 ## 5. 三种入口，一条 Core（已实现）
 
-详见 `VOICE_UNIFIED_PIPELINE_PROPOSAL.md`。简要对照：
+详见 `VOICE_COMPANION_PIPELINE_READABLE.md`。简要对照：
 
 | Profile | 入口 | 滴声/我在 | Orb/HUD | 门卫 | 进 L3 |
 |---------|------|-----------|---------|------|-------|
@@ -170,9 +168,9 @@ Rust start_ptt_capture / stop_ptt_capture 或 VAD 截句
    ↓
 [STT] JVS SenseVoice → HUD user 气泡
    ↓
-[路由] voiceIntentRouter → doActualSend
+[发送] dispatchVoiceUtterance → doActualSend（只携带文本和语音证据）
    ↓
-[思考] Orb 变紫，L3 流式出字
+[思考] Orb 变紫，L3 认知内核主循环理解、追问、编排或执行
    ↓
 [播报] 断句 → MOSS ONNX TTS（speed 默认 1.25）→ 最多 3 句
    ↓
@@ -239,8 +237,7 @@ sequenceDiagram
   R->>J: STT（PTT 流式优先）
   J-->>R: 文本
   R->>C: companion user / PTT submit
-  C->>C: voiceIntentRouter
-  C->>L: doActualSend
+  C->>L: doActualSend(text + voice evidence)
   L-->>C: chunk 流
   C->>J: 按停顿片段 TTS（逗号/顿号可触发）
   J-->>C: WAV
@@ -278,10 +275,10 @@ sequenceDiagram
 
 | 想改… | 先看… |
 |--------|--------|
-| 统一架构 / Profile | `VOICE_UNIFIED_PIPELINE_PROPOSAL.md`, `voiceProfiles.ts`, `voiceCore.ts` |
+| 当前语音链路 / Profile | `VOICE_COMPANION_PIPELINE_READABLE.md`, `voiceProfiles.ts`, `voiceCore.ts` |
 | 唤醒/截句/声纹 | `stt/wake_pipeline.rs`, `speaker_verification.rs` |
 | PTT 采音 | `stt/commands.rs`, `chat.tsx` submitVoiceUtterance |
-| 意图路由 | `voiceIntentRouter.ts`, `VOICE_INTENT_ROUTING_AND_TASK_ORCHESTRATION.md` |
+| 意图理解 / 追问 / 编排 | L3 认知内核主循环 |
 | chat ↔ HUD | `voiceCompanionBridge.ts`, `HUDMessagePanel.tsx` |
 | JVS STT/TTS/SV | `voice_server/`, `jvs/process_manager.rs` |
 | TTS 语速 | `voice_server/config.py` → `JACHIN_VOICE_TTS_SPEED`（默认 1.25） |

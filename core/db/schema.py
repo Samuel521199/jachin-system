@@ -332,7 +332,7 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_sub_account ON api_keys_vault(sub_accoun
 CREATE INDEX IF NOT EXISTS idx_api_keys_provider ON api_keys_vault(provider);
 
 -- =============================================================================
--- L2 控制面 - 记忆碎片（L3 同步，梦境优化后持久化）
+-- L2 控制面 - legacy memory table retained only for migration compatibility
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS memory_fragments (
     id TEXT PRIMARY KEY,

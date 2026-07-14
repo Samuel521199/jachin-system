@@ -1122,6 +1122,53 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
         return f"[Wasm 执行失败: {e}]"
 
 
+def _run_mcp_tool_via_registry_sync(
+    tool_id: str,
+    work_order_input: str,
+    allowed_skills: Optional[list[str]],
+) -> str:
+    """
+    Native/JPP loader 的 MCP 统一出口。
+
+    Tool pool 会把本地和远端 MCP 暴露为 ``mcp:*``，但 loader 本身只执行 core/JPP。
+    这里把所有 MCP 调用交给 MCP Registry，避免能力目录里“看得见”而真实执行层报未知工具。
+    """
+    import asyncio
+    import threading
+
+    async def _invoke() -> str:
+        from l3_node.primitives.mcp.registry import get_mcp_registry
+
+        return await get_mcp_registry().invoke(
+            tool_id,
+            work_order_input,
+            allowed_skills=allowed_skills,
+        )
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_invoke())
+
+    if not loop.is_running():
+        return loop.run_until_complete(_invoke())
+
+    box: dict[str, Any] = {}
+
+    def _runner() -> None:
+        try:
+            box["result"] = asyncio.run(_invoke())
+        except BaseException as exc:  # pragma: no cover - re-raised below
+            box["error"] = exc
+
+    thread = threading.Thread(target=_runner, name="jachin-mcp-registry-sync-dispatch", daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in box:
+        raise box["error"]
+    return str(box.get("result") or "")
+
+
 def run_tool(
     tool_id: str,
     work_order_input: str,
@@ -1141,6 +1188,32 @@ def run_tool(
     if not is_tool_allowed(tool_id, allowed_skills):
         print(f"[Skill Execute] 权限拒绝 tool_id={tool_id}", file=sys.stderr, flush=True)
         return "[权限拒绝: 当前子账号未开启该技能]"
+
+    if tool_id.startswith("mcp:"):
+        print(
+            f"[Skill Execute] [MCP Registry] 委托执行 tool_id={tool_id}",
+            file=sys.stderr,
+            flush=True,
+        )
+        try:
+            return _run_mcp_tool_via_registry_sync(tool_id, inp, allowed_skills)
+        except Exception as e:
+            print(
+                f"[Skill Execute] [MCP Registry] 异常 tool_id={tool_id} error={e}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return json.dumps(
+                {
+                    "ok": False,
+                    "status": "failed",
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "tool_id": tool_id,
+                    "channel": "mcp_registry",
+                },
+                ensure_ascii=False,
+            )
 
     # JPP Wasm 插件：JSON 参数序列化后传入 wasm_runner
     # 兼容 skill_id 无 jpp: 前缀（如 API 传入 com.jachin.hr.analyzer4）

@@ -383,7 +383,7 @@ _last_user_interaction_time: float = time.time()
 
 
 def get_last_interaction_time() -> float:
-    """v8.0 Dream Weaver：获取上次用户交互时间戳，用于空闲检测"""
+    """获取上次用户交互时间戳，用于主动任务与状态监控"""
     return _last_user_interaction_time
 
 

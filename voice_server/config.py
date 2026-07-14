@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 from dataclasses import dataclass
@@ -19,6 +19,7 @@ class VoiceServerConfig:
     stt_backend: str
     tts_backend: str
     dashscope_api_key: str
+    dashscope_tts_api_key: str
     dashscope_api_base: str
     dashscope_http_api_base: str
     dashscope_ws_api_base: str
@@ -121,6 +122,16 @@ def _dashscope_api_key() -> str:
     return _first_env(("DASHSCOPE_API_KEY_CN", "DASHSCOPE_API_KEY", "QWEN_API_KEY", "QWEN_AI_API_KEY"))
 
 
+def _tts_region() -> str:
+    return os.getenv("JACHIN_TTS_REGION", "CN").strip().upper() or "CN"
+
+
+def _dashscope_tts_api_key() -> str:
+    if _tts_region() == "SEA":
+        return _first_env(("DASHSCOPE_API_KEY_SEA", "DASHSCOPE_API_KEY", "QWEN_API_KEY", "QWEN_AI_API_KEY"))
+    return _first_env(("DASHSCOPE_API_KEY_CN", "DASHSCOPE_API_KEY", "QWEN_API_KEY", "QWEN_AI_API_KEY"))
+
+
 def _dashscope_api_base() -> str:
     if _active_region() == "SEA":
         return _first_env(
@@ -133,10 +144,27 @@ def _dashscope_api_base() -> str:
     )
 
 
-def _dashscope_http_api_base(compatible_base: str) -> str:
+def _dashscope_tts_compatible_base() -> str:
+    explicit = _first_env(("JACHIN_TTS_API_BASE", "JACHIN_TTS_COMPATIBLE_API_BASE"))
+    if explicit:
+        return explicit.rstrip("/")
+    if _tts_region() == "SEA":
+        return _first_env(
+            ("DASHSCOPE_API_BASE_SEA", "DASHSCOPE_API_BASE"),
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        )
+    return _first_env(
+        ("DASHSCOPE_API_BASE_CN",),
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
+
+
+def _dashscope_http_api_base(compatible_base: str, *, tts: bool = False) -> str:
     explicit = _first_env(("JACHIN_TTS_HTTP_API_BASE", "DASHSCOPE_HTTP_API_BASE"))
     if explicit:
         return explicit.rstrip("/")
+    if tts:
+        compatible_base = _dashscope_tts_compatible_base()
     base = compatible_base.rstrip("/")
     if base.endswith("/compatible-mode/v1"):
         return base[: -len("/compatible-mode/v1")] + "/api/v1"
@@ -189,8 +217,9 @@ def load_config() -> VoiceServerConfig:
         stt_backend=stt_backend,
         tts_backend=tts_backend,
         dashscope_api_key=_dashscope_api_key(),
+        dashscope_tts_api_key=_dashscope_tts_api_key(),
         dashscope_api_base=dashscope_api_base,
-        dashscope_http_api_base=_dashscope_http_api_base(dashscope_api_base),
+        dashscope_http_api_base=_dashscope_http_api_base(dashscope_api_base, tts=True),
         dashscope_ws_api_base=_dashscope_ws_api_base(dashscope_api_base),
         dashscope_workspace_id=_first_env(("JACHIN_DASHSCOPE_WORKSPACE_ID", "DASHSCOPE_WORKSPACE_ID", "DASHSCOPE_WORKSPACE")),
         stt_model=os.getenv("JACHIN_STT_MODEL", "fun-asr-realtime").strip() or "fun-asr-realtime",
@@ -204,7 +233,7 @@ def load_config() -> VoiceServerConfig:
         tts_model=os.getenv("JACHIN_TTS_MODEL", "cosyvoice-v3-plus").strip() or "cosyvoice-v3-plus",
         tts_fast_model=os.getenv("JACHIN_TTS_FAST_MODEL", "cosyvoice-v3-flash").strip() or "cosyvoice-v3-flash",
         tts_cloud_voice=os.getenv("JACHIN_CLOUD_TTS_VOICE", "longanhuan").strip() or "longanhuan",
-        tts_format=os.getenv("JACHIN_TTS_FORMAT", "wav").strip().lower() or "wav",
+        tts_format=os.getenv("JACHIN_TTS_FORMAT", "pcm").strip().lower() or "pcm",
         tts_sample_rate=_env_int("JACHIN_TTS_SAMPLE_RATE", 24000),
         model_root=model_root,
         stt_dir=model_root / stt_rel,

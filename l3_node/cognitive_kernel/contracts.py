@@ -218,6 +218,8 @@ class ReviewSummary:
     clarification_question: str = ""
     conflicts: list[dict[str, Any]] = field(default_factory=list)
     rationale: list[str] = field(default_factory=list)
+    semantic_candidates: list[dict[str, Any]] = field(default_factory=list)
+    capability_candidates: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return _json_ready(asdict(self))
@@ -250,6 +252,7 @@ class DecisionContract:
     clarification_question: str = ""
     verification_criteria: list[str] = field(default_factory=list)
     rationale: list[str] = field(default_factory=list)
+    memory_context_refs: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return _json_ready(asdict(self))

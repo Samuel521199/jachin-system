@@ -2576,6 +2576,28 @@ MemoryWriteRequest
 4. 写入后记录到 TaskLedger，供下一轮 recent_action_chain 和历史审计使用
 ```
 
+### 6.4.1 任务经验、工具习惯和失败模式回流
+
+每次真实执行结束后，`TurnClosure` 不能只写“最后回复了什么”，还必须把本轮任务沉淀成可复用经验。这个回流由任务经验构建器生成 `MemoryWriteRequest`，再交给 `MemoryWriteAgent` 和记忆生命周期层统一处理，不能绕过主记忆架构。
+
+任务结束至少写回三类经验：
+
+| 写回类型 | 触发条件 | 记忆类型 | 生命周期 | 作用 |
+| -------- | -------- | -------- | -------- | ---- |
+| 任务摘要 | 每个有 `DecisionContract` 的执行轮次 | `historical_task_summary` | 中期，默认 30 天 | 让“继续刚才/上次做到哪”可被恢复 |
+| 工具习惯 | 工具或能力通过验证 | `tool_habit` / `capability_usage` | 长期，去重合并 | 下次类似任务优先选择已验证路径 |
+| 失败经验 | WorkOrder 或 Verification 失败 | `failure_hint` | 中期，默认 14 天 | RecoveryPlanner 避免重复失败路径 |
+
+任务经验内容必须包含：
+
+- `task_type`、用户目标、workflow、role_agent。
+- WorkOrder id、使用过的 tool/capability、验证结果。
+- 成功时记录“何种任务下哪个工具有效”。
+- 失败时记录失败原因、失败路径、后续恢复建议。
+- 最终对用户返回的可见结论。
+
+这些经验在下一轮由 `MemoryRecallAgent` 按候选任务域检索，进入 `RelevantMemoryBundle.tool_habits`、`failure_hints` 和 `historical_task_summaries`。认知内核和 RecoveryPlanner 只能把它们当证据和候选，不允许因为一次成功或一次失败就永久固化不可推翻的事实。
+
 
 
 ## 7. 语音 APP 控制场景设计

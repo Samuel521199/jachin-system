@@ -170,12 +170,6 @@ except ImportError as e:
     logger.warning(f"V2 Local Admin API router not available: {e}")
 
 try:
-    from core.api.routes.v2_memory import router as v2_memory_router
-except ImportError as e:
-    v2_memory_router = None
-    logger.warning(f"V2 Memory API router not available: {e}")
-
-try:
     from core.api.routes.v2_coordinate import router as v2_coordinate_router
 except ImportError as e:
     v2_coordinate_router = None
@@ -252,15 +246,6 @@ async def lifespan(app: FastAPI):
                 logger.info("单机模式：已从环境变量同步 %d 个 API Key 到默认子账号", n)
         except Exception as e:
             logger.warning("ensure_default_sub_account/sync_api_keys 跳过: %s", e)
-        # L2 向量梦境引擎：初始化 LanceDB (~/.jachin/lancedb_data)
-        try:
-            from core.db.l2_memory_lancedb import init_l2_lancedb
-            if init_l2_lancedb():
-                logger.info("L2 LanceDB 向量梦境引擎已初始化")
-            else:
-                logger.warning("L2 LanceDB 初始化跳过（Embedder 或 lancedb 不可用）")
-        except Exception as e:
-            logger.warning("init_l2_lancedb 跳过: %s", e)
         # L1-L2 策略同步心跳：启动后台守护进程（任务挂 app.state 供配对后热重启）
         app.state.l1_heartbeat_task = None
         app.state.cloud_sync_task = None
@@ -415,8 +400,6 @@ if v2_admin_router:
     app.include_router(v2_admin_router)
 if v2_local_admin_router:
     app.include_router(v2_local_admin_router)
-if v2_memory_router:
-    app.include_router(v2_memory_router)
 if v2_coordinate_router:
     app.include_router(v2_coordinate_router)
 if v2_devices_router:
@@ -431,7 +414,7 @@ if v2_skills_router:
     app.include_router(v2_skills_router)
 if v2_events_router:
     app.include_router(v2_events_router)
-logger.info("Routes: /api, /api/v2/auth/sync, /api/v2/auth/check, /api/v2/keys, /api/v2/devices, /api/v2/memory/*, /api/v2/mcp/*, /api/v2/inventory/*, /api/v2/events/*, /api/v2/coordinate/*, /api/v2/admin/*, /api/v3/*")
+logger.info("Routes: /api, /api/v2/auth/sync, /api/v2/auth/check, /api/v2/keys, /api/v2/devices, /api/v2/mcp/*, /api/v2/inventory/*, /api/v2/events/*, /api/v2/coordinate/*, /api/v2/admin/*, /api/v3/*")
 
 # 浏览器打开 /gateway/ 等页面时会请求站点根 /favicon.ico；未处理时访问日志出现 404
 _FAVICON_PNG_BYTES = base64.b64decode(

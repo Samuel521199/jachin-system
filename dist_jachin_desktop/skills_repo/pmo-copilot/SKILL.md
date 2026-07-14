@@ -1,4 +1,4 @@
-﻿---
+---
 name: pmo_project_governance_hub
 version: "7.2.17"
 description: "PMO 项目治理中枢：自动读飞书多维表，生成项目战报和变更风险预警。"
@@ -178,7 +178,7 @@ Step 3 **有且仅有 1 次** `core:db_query`，**必须**使用下方「明细 
 
 **Step 3 · 人员看板明细 SQL（编号 B-S1 / B-4，复制即用）**：
 
-> ❌ **绝对禁忌**：在 `vewCz1FFJi` 上**单独** `json_each(Person…)` 扫全表 → Person 常为 plain string（`Buck`/`Seth`）时会 **malformed JSON**。  
+> ❌ **绝对禁忌**：在 `vewCz1FFJi` 上**单独** `json_each(Person…)` 扫全表 → Person 常为 plain string（`Buck`/`Seth`）时会 **malformed JSON**。
 > ✅ 须先 **B-S1** 取近三周 `recent_sprints`，再 **B-4 UNION**（字符串分支 `typeof`+`NOT GLOB '[*'` + 数组分支 `json_each`），且 **任务编号 IS NOT NULL**。
 
 可执行 SQL 模板：`l3_node/pmo_multi_agent_queries.py` 中 **B-S1 + B-4** 块（与 §1.2.1 Step 3 同一查法）。
@@ -229,7 +229,7 @@ GROUP BY status_text;
 
 **Epic 顶层需求（父记录链接 text 为空 + 排除部门占位行）**
 
-**视图硬约束**：Epic 筛选 **只能**在 `source_view='vewpI8lyYw'` 执行。  
+**视图硬约束**：Epic 筛选 **只能**在 `source_view='vewpI8lyYw'` 执行。
 **禁止**在 `vewCz1FFJi` 上使用 `父记录[0].text IS NULL`——人员看板每行任务 **几乎都有父记录 text**（Step 2 样本已确认），该条件在人员表 **恒 0 行**。
 
 **禁止**在下列条件之外追加 `priority` / `Sprint` / `状态` 等额外 AND 过滤（易导致 0 行）；Epic 筛选只用下面 4 条条件：
@@ -332,9 +332,9 @@ LIMIT 100;
 
 > ⚠️ Step6a 与 Step6b **必须**各用一次 `core:db_query` 完成，禁止单条 JOIN 或合并 SQL。
 
-- **Step 6a**（vewpI8lyYw）：取 TOP 5 延期/进行中 Requirement  
+- **Step 6a**（vewpI8lyYw）：取 TOP 5 延期/进行中 Requirement
   `SELECT json_extract(fields,'$.Requirement') AS req FROM pmo_raw_records WHERE source_view='vewpI8lyYw' AND json_extract(json_extract(fields,'$."状态"'),'$[0].text')='🔴 延期' LIMIT 5`
-- **Step 6b**（vewCz1FFJi）：逐条核对  
+- **Step 6b**（vewCz1FFJi）：逐条核对
   `SELECT COUNT(*) FROM pmo_raw_records WHERE source_view='vewCz1FFJi' AND fields LIKE '%<Requirement名>%'`
 - **禁止** `r1.json_extract(...)` 写法；须 `json_extract(r1.fields, '$.xxx')`
 - 若无矛盾，战报摘要须写「跨视图一致性：vewpI8lyYw 与 vewCz1FFJi 负责人覆盖无明显缺口」；若有，须 ⚠️ 逐条列出
@@ -391,7 +391,7 @@ WHERE source_view IN ('vew8TxMcSh', 'vewL9Mofgd');
 4. **C-3**：**子任务全量**（`COALESCE` 父记录 + `json_each` 执行人）；`parent_epic=开发` 时按 **row_index** 归到上一个 Epic（同 Sprint）。
 5. **C-6**（兜底，最多 1 次）：C-3 为 0 或 parent 无法关联时，按 `row_index` 拉层级探针。
 
-**优先**：`core:pmo_sprint_epic_report`（全量采集 `{"recent_window": true}`；单 Sprint `{"sprint":"2026/05/11-Sprint"}`），再按需 `db_query` 补洞。宿主 FanOut 可能已预取 epics[]，**禁止**重复步骤 0。  
+**优先**：`core:pmo_sprint_epic_report`（全量采集 `{"recent_window": true}`；单 Sprint `{"sprint":"2026/05/11-Sprint"}`），再按需 `db_query` 补洞。宿主 FanOut 可能已预取 epics[]，**禁止**重复步骤 0。
 **兜底 SQL**：`pmo_multi_agent_queries.py` 中 **C-1～C-6**；Worker C 护栏由 PMO 能力包内联规则维护。
 
 结构化输出须能归纳：`current_sprint`、`recent_sprints[]`、`epics[]`、`epic_children[]`（或 Tool 等价 JSON）。
@@ -426,8 +426,8 @@ WHERE source_view IN ('vew8TxMcSh', 'vewL9Mofgd');
 | 2 | **`core:pmo_sprint_epic_report`**（必须） | `{"sprint":"2026/05/11-Sprint"}` |
 | 3 | `core:db_query`（可选） | 仅补 `vewCz1FFJi` 执行人交叉 |
 
-- 字段表：本文档 §1 用户说法 ↔ JSON 键；null → `—`，禁止编造。  
-- 输出：摘要表 + 按 Epic 分节开发任务子表（同案例 §6）；**禁止**窄路径双群 notifier（除非用户要战报）。  
+- 字段表：本文档 §1 用户说法 ↔ JSON 键；null → `—`，禁止编造。
+- 输出：摘要表 + 按 Epic 分节开发任务子表（同案例 §6）；**禁止**窄路径双群 notifier（除非用户要战报）。
 - 执行映射：查对逻辑 `l3_node/tools/pmo_sprint_query.py`；案例规则由 PMO 能力包维护。
 
 ### 1.2.3 业务语义：周汇报「大需求」层级 & 人员任务 SSOT
@@ -497,7 +497,7 @@ PMO_PUSH_MONITOR=0
 
 ### 1.4 推送版式（分支 A 三表 + 摘要）
 
-> **§1.4 为兜底路径**（`core:pmo_macro_dashboard_push` 不可用或用户要求特殊版式时使用）。  
+> **§1.4 为兜底路径**（`core:pmo_macro_dashboard_push` 不可用或用户要求特殊版式时使用）。
 > **默认推宏观看板**：见 **§1.2.5 阶段三 Publisher · 工具优先**。
 
 #### 1.4.0 战报版式契约（确定性 · 禁止开盲盒）
@@ -671,7 +671,7 @@ PMO_PUSH_MONITOR=0
 
 ### 分支 B：`webhook_table_change` — 变更预警（独立子 Skill）
 
-> **子 Skill SSOT**：[`SKILL.change-alert.md`](./SKILL.change-alert.md)  
+> **子 Skill SSOT**：[`SKILL.change-alert.md`](./SKILL.change-alert.md)
 > 变更预警策略由 PMO 能力包维护；宿主只负责加载能力和执行工具。
 
 **触发**：飞书 Bitable 变更（`pmo_bitable_watch` 轮询 + 防抖 **或** `POST /webhook/pmo_table_change`）→ 会话结束 → **`core:pmo_change_alert_analyze`**（宿主 Python 三轴分析 + 有问题才推）。

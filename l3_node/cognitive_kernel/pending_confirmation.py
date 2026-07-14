@@ -22,6 +22,9 @@ class PendingConfirmation:
     expires_at_ms: int
 
 
+_TRAILING_CONFIRMATION_PUNCTUATION = " .!?,;:\t\r\n。！？、，；：…"
+
+
 def confirmation_session_key(*, session_id: str = "", channel: str = "") -> str:
     sid = str(session_id or "").strip()
     if sid:
@@ -33,8 +36,7 @@ def confirmation_session_key(*, session_id: str = "", channel: str = "") -> str:
 
 
 def is_confirmation_text(text: str) -> bool:
-    normalized = str(text or "").strip().lower()
-    normalized = normalized.strip(" .!?,;:\t\r\n")
+    normalized = _normalize_confirmation_reply(text)
     return normalized in {
         "confirm",
         "confirmed",
@@ -48,6 +50,12 @@ def is_confirmation_text(text: str) -> bool:
         "execute",
         "\u786e\u8ba4",
         "\u786e\u5b9a",
+        "\u662f",
+        "\u662f\u7684",
+        "\u5bf9",
+        "\u5bf9\u7684",
+        "\u6ca1\u9519",
+        "\u5c31\u662f",
         "\u6279\u51c6",
         "\u540c\u610f",
         "\u7ee7\u7eed",
@@ -58,8 +66,7 @@ def is_confirmation_text(text: str) -> bool:
 
 
 def is_cancellation_text(text: str) -> bool:
-    normalized = str(text or "").strip().lower()
-    normalized = normalized.strip(" .!?,;:\t\r\n")
+    normalized = _normalize_confirmation_reply(text)
     return normalized in {
         "cancel",
         "cancelled",
@@ -67,11 +74,23 @@ def is_cancellation_text(text: str) -> bool:
         "stop",
         "no",
         "do not execute",
+        "\u5426",
+        "\u4e0d",
+        "\u4e0d\u662f",
+        "\u4e0d\u5bf9",
         "\u53d6\u6d88",
         "\u505c\u6b62",
         "\u4e0d\u6267\u884c",
         "\u4e0d\u8981\u6267\u884c",
     }
+
+
+def _normalize_confirmation_reply(text: str) -> str:
+    normalized = str(text or "").strip().lower()
+    normalized = normalized.strip(_TRAILING_CONFIRMATION_PUNCTUATION)
+    normalized = normalized.replace("\u3000", " ")
+    normalized = " ".join(normalized.split())
+    return normalized
 
 
 def save_pending_confirmation(
@@ -113,40 +132,17 @@ def save_pending_confirmation(
 def load_pending_confirmation(*, session_id: str = "", channel: str = "") -> PendingConfirmation | None:
     key = confirmation_session_key(session_id=session_id, channel=channel)
     path = _pending_path(key)
-    if not path.exists():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        contract = _contract_from_dict(payload.get("contract") or {})
-        work_order = _work_order_from_dict(payload.get("work_order") or {})
-        saved_at_ms = int(payload.get("saved_at_ms") or 0)
-        expires_at_ms = int(payload.get("expires_at_ms") or (saved_at_ms + pending_confirmation_ttl_ms()))
-        if expires_at_ms and int(time.time() * 1000) > expires_at_ms:
-            append_event(
-                "confirmation_expired",
-                contract.turn_id,
-                {
-                    "session_key": key,
-                    "decision_id": contract.decision_id,
-                    "work_order_id": work_order.work_order_id,
-                    "expires_at_ms": expires_at_ms,
-                },
-            )
-            clear_pending_confirmation(session_id=session_id, channel=channel)
-            return None
-        return PendingConfirmation(
-            session_key=key,
-            contract=contract,
-            work_order=work_order,
-            saved_at_ms=saved_at_ms,
-            expires_at_ms=expires_at_ms,
-        )
-    except Exception:
-        return None
+    if path.exists():
+        return _load_pending_path(path, expected_key=key)
+    return _load_single_recent_pending_fallback(missing_key=key)
 
 
 def clear_pending_confirmation(*, session_id: str = "", channel: str = "") -> None:
     key = confirmation_session_key(session_id=session_id, channel=channel)
+    clear_pending_confirmation_by_key(key)
+
+
+def clear_pending_confirmation_by_key(key: str) -> None:
     try:
         _pending_path(key).unlink(missing_ok=True)
     except Exception:
@@ -168,7 +164,7 @@ def cancel_pending_confirmation(*, session_id: str = "", channel: str = "", reas
             "tool": pending.work_order.inputs.get("tool"),
         },
     )
-    clear_pending_confirmation(session_id=session_id, channel=channel)
+    clear_pending_confirmation_by_key(pending.session_key)
     return pending
 
 
@@ -207,6 +203,64 @@ def _pending_path(key: str) -> Path:
     return state_dir() / "pending_confirmations" / f"{safe}.json"
 
 
+def _load_pending_path(path: Path, *, expected_key: str = "") -> PendingConfirmation | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        key = str(payload.get("session_key") or expected_key or path.stem)
+        contract = _contract_from_dict(payload.get("contract") or {})
+        work_order = _work_order_from_dict(payload.get("work_order") or {})
+        saved_at_ms = int(payload.get("saved_at_ms") or 0)
+        expires_at_ms = int(payload.get("expires_at_ms") or (saved_at_ms + pending_confirmation_ttl_ms()))
+        if expires_at_ms and int(time.time() * 1000) > expires_at_ms:
+            append_event(
+                "confirmation_expired",
+                contract.turn_id,
+                {
+                    "session_key": key,
+                    "decision_id": contract.decision_id,
+                    "work_order_id": work_order.work_order_id,
+                    "expires_at_ms": expires_at_ms,
+                },
+            )
+            clear_pending_confirmation_by_key(key)
+            return None
+        return PendingConfirmation(
+            session_key=key,
+            contract=contract,
+            work_order=work_order,
+            saved_at_ms=saved_at_ms,
+            expires_at_ms=expires_at_ms,
+        )
+    except Exception:
+        return None
+
+
+def _load_single_recent_pending_fallback(*, missing_key: str) -> PendingConfirmation | None:
+    pending_dir = state_dir() / "pending_confirmations"
+    if not pending_dir.exists():
+        return None
+    candidates: list[PendingConfirmation] = []
+    for path in pending_dir.glob("*.json"):
+        pending = _load_pending_path(path)
+        if pending is not None:
+            candidates.append(pending)
+    if len(candidates) != 1:
+        return None
+    pending = candidates[0]
+    append_event(
+        "confirmation_pending_session_fallback",
+        pending.contract.turn_id,
+        {
+            "missing_session_key": missing_key,
+            "fallback_session_key": pending.session_key,
+            "decision_id": pending.contract.decision_id,
+            "work_order_id": pending.work_order.work_order_id,
+            "tool": pending.work_order.inputs.get("tool"),
+        },
+    )
+    return pending
+
+
 def _risk(value: Any) -> RiskLevel:
     try:
         return RiskLevel(str(value or RiskLevel.LOW.value))
@@ -239,6 +293,7 @@ def _contract_from_dict(data: dict[str, Any]) -> DecisionContract:
         clarification_question=str(data.get("clarification_question") or ""),
         verification_criteria=[str(x) for x in data.get("verification_criteria") or []],
         rationale=[str(x) for x in data.get("rationale") or []],
+        memory_context_refs=[x for x in data.get("memory_context_refs") or [] if isinstance(x, dict)],
     )
 
 

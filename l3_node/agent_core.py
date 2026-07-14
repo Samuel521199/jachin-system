@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin L3 RoleExecutionAgent transport.
 
 The architecture is the Memory-first Cognitive Kernel described in
@@ -27,7 +27,6 @@ from core.deep_execution_log import (
 )
 from l3_node.engine.hooks_pipeline import (
     HOOK_AFTER_TOOL_EXEC,
-    HOOK_BEFORE_LLM_THINK,
     HOOK_BEFORE_RESPONSE,
     HOOK_BEFORE_TOOL_EXEC,
     HOOK_ON_EXECUTION_BRIEF,
@@ -3750,26 +3749,5 @@ async def run_agent(
     return _kernel_only_reply
 
 # ---------------------------------------------------------------------------
-# L5 本地记忆梦境合并（后台调度）— **已停用**，见 Memory Nexus / memory_compactor。
+# 记忆：主路径为 Cognitive Kernel Memory Growth 与 MemoryRecallAgent。
 # ---------------------------------------------------------------------------
-
-
-def _schedule_local_memory_compaction_background(user_input: str) -> None:
-    """[已停用] 原：显式口令或 JACHIN_MEMORY_COMPACT_ON_SESSION 触发 JSON 梦境合并；现由 Memory Nexus 取代。"""
-    logger.debug(
-        "[MemoryCompact] 后台调度已禁用（忽略本轮）chars=%d",
-        len(user_input or ""),
-    )
-    return
-
-
-# ---------------------------------------------------------------------------
-# 记忆：已移除 L2 /memory/sync 守护进程；跨会话 SSOT 为 Memory Nexus（SQLite + FastEmbed），见 memory_nexus_bridge。
-# ---------------------------------------------------------------------------
-
-
-# 注册 L3 神盾 Compaction（阶段 A：锚点/审计与 L3 共用）
-try:
-    import l3_node.l3_compaction_bridge  # noqa: F401
-except Exception:
-    pass

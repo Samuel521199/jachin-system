@@ -1,4 +1,4 @@
-﻿# Changelog
+# Changelog
 
 All notable changes to this project will be documented in this file.
 
@@ -524,13 +524,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- **（续 2026-04-17 说明）** 下述 L5 JSON 梦境合并与定时整理**已废弃**；L3 主记忆为 **Memory Nexus / Chroma**（`docs/architecture/MEMORY_NEXUS_L3.md`），`compact_local_memory_if_needed` 为 no-op。
-- **L5 记忆坍缩（梦境合并）**（**已废弃，见上**）：`l3_local.json` 超阈值时轻量 LLM 合并；**双缓冲（影子副本）**、**原子覆写**、`memory_compact_control` 取消标记、快照后主库增量合并（`memory_compactor.py`）
-- **定时整理与 WS**：`memory_compact_schedule.py`（`~/.jachin/memory/compact_schedule.json`）、`ws_server` 在 manifest 后推送 `memory_compact_suggest`；控制帧 `memory_compact_confirm` / `defer` / `auto_start` / `cancel`
-- **桌面端**：`useSensoryWebSocket` 倒计时横幅；`chat.tsx` / `ChatPanel` 操作入口
-- **聊天调度**：间隔天数、倒计时秒、推迟整理等话术解析（`agent_core` 注入 system 确认）
-- **测试**：`tests/unit/test_memory_compactor_threshold5.py`（阈值 5、mock `litellm`，不依赖真实 API）
-- **文档/配置**：`.env.example` 增加 `JACHIN_MEMORY_*` 与坍缩相关说明
+- **Memory Growth 替代说明**：旧 L5 JSON 记忆坍缩、定时整理、WS 横幅、prompt 注入与相关测试/配置已从主线移除；长期记忆治理统一迁移到 Memory Growth / MemoryRecallAgent / ArtifactCurator / WeeklyReview 链路。
 
 ### Changed
 
@@ -611,7 +605,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- **智能化 / 记忆**：L3 本地记忆与 `core:local_memory_search`；混合检索 **MMR**、`memory_scoring`、`GET /api/v2/memory/search?explain=true`；隐式学习（`intelligence_implicit` / `intelligence_implicit_embedding`、`implicit_turn_attribution`、`POST /api/v2/intelligence/implicit-signal`）、`intelligence_e` 消费；文档 `INTELLIGENCE_UPGRADE_OVERVIEW`、`JACHIN_VS_OPENCLAW_*`、`IMPLICIT_SIGNALS`、`MEMORY_SCORING`、`ORCHESTRATION_ARCHITECTURE` 等
+- **智能化 / 记忆**：L3 本地记忆与 `core:local_memory_search`；混合检索 **MMR**、`Memory Growth scoring`、`Memory Growth scoring`；隐式学习（`intelligence_implicit` / `intelligence_implicit_embedding`、`implicit_turn_attribution`、`POST /api/v2/intelligence/implicit-signal`）、`intelligence_e` 消费；文档 `INTELLIGENCE_UPGRADE_OVERVIEW`、`JACHIN_VS_OPENCLAW_*`、`IMPLICIT_SIGNALS`、`Memory Growth scoring`、`ORCHESTRATION_ARCHITECTURE` 等
 - **任务范式与编排**：`intelligence_b_execution`、`task_plan_policy`、`workflow_spec_runner`（持久化 DAG / resume）、`l3_node/orchestration/`、`core:apply_patch` / 回滚、`shell_hitl` 等
 - **规则**：`.cursor/rules/078-intelligence-roadmap-and-hr-data.mdc` 等；配置规范统一为 `075-config-root-and-cloud-sync.mdc`（移除旧 `(1)` 文件名）
 
@@ -644,7 +638,7 @@ All notable changes to this project will be documented in this file.
 - **流式神经 (Streaming Chunk)**：LLM 逐 token 流式输出，`generate_response_stream` + `on_chunk` 回调，caps 含 `stream_chunk` 的客户端实时接收
 - **Session Multiplexing**：按 session_id 隔离 Agent Actor，多用户/多路输入零串话
 - **Nexus Hook Pipeline**：Koa.js 风格洋葱中间件，5 个生命周期 Hook
-- **Dream Weaver Consolidation**：LanceDB 记忆聚类/去重/融合，is_consolidated + 冲突消解
+- **Memory Growth lifecycle governance replaces old LanceDB consolidation.
 - **Capability Negotiation**：Layer 3 Manifest 握手，按 caps 动态推送
 - **Edge Mesh Swarm**：同网设备算力协同，heavy_tools 外包至虫群节点
 
@@ -682,7 +676,7 @@ All notable changes to this project will be documented in this file.
   - **Tools · jpp**：The Abyss Wasm 沙箱，商城第三方付费插件，零信任
 - **量子记忆 (Quantum Memory)**
   - Vector SQLite (sqlite-vss/lancedb) 扩展，百万级 Token 语义检索
-  - 自我修复 (Self-Healing)：工具报错时自动重试，梦境阶段生成 bug_fix 规则
+  - 自我修复 (Self-Healing)：工具报错时自动重试，RecoveryPlanner 生成可审计恢复策略
 - **生物钟主动心跳 (cron_thinker)**
   - 脱离云端，每 30 分钟主动环顾
   - 扫描系统日志、未读邮件，异常时 IM 推送报警
@@ -701,7 +695,7 @@ All notable changes to this project will be documented in this file.
 
 - Layer 2 定位由「边缘守护引擎」升级为「神经中枢总线 (Neural Bus)」
 - 技能体系由单一 JPP Wasm 扩展为 **MCP + Skills(SKILL.md) + Tools(jpp)**（四大原语）
-- 记忆系统由生物学梦境扩展为量子记忆（向量 + 自我修复）
+- 记忆系统已迁移为 Memory Growth（原始证据、知识图谱、Wiki、方法论与输出回流）
 - 主动能力由纯 10s 心跳拉取扩展为 cron_thinker 生物钟 + 云端心跳
 
 ---
@@ -734,10 +728,7 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - **生物学记忆管线 (Biological Memory Pipeline)**
-  - `core/biological_memory.py`：海马体 (short_term_logs) + 大脑皮层 (core_memory)，SQLite 极简存储
-  - `core/dreamer.py`：梦境引擎，凌晨 3 点对短期日志执行 LLM 提纯，遗忘无用内容
   - Agent Loop 集成：每次交互写入短期记忆，System Prompt 注入核心记忆
-  - Daemon 调度：dream_scheduler_loop 与心跳并行，每日 3:00 触发梦境
 - **进化战役三：JPP 开发者脚手架**
   - `jachin-plugin-sdk/`：Rust 模板，plugin.json、Makefile、标准 ABI
   - 示例：智能灯泡、数据清洗

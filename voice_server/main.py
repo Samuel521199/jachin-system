@@ -40,6 +40,7 @@ class WarmAudioRequest(BaseModel):
     stt: bool = False
     tts: bool = False
     sv: bool = False
+    reason: Optional[str] = None
 
 
 cfg = load_config()
@@ -104,7 +105,7 @@ def _make_tts_service():
             cfg.dashscope_http_api_base,
         )
         return CloudTtsService(
-            api_key=cfg.dashscope_api_key,
+            api_key=cfg.dashscope_tts_api_key,
             http_api_base=cfg.dashscope_http_api_base,
             model=cfg.tts_model,
             fast_model=cfg.tts_fast_model,
@@ -135,6 +136,34 @@ def _stt_http_timeout_seconds() -> float:
         return max(3.0, float(raw or "18"))
     except ValueError:
         return 18.0
+
+
+def _stt_cloud_soft_timeout_seconds(hard_timeout_sec: float) -> float:
+    raw = os.getenv("JACHIN_STT_CLOUD_SOFT_TIMEOUT_SEC", "").strip()
+    try:
+        value = float(raw or "7")
+    except ValueError:
+        value = 7.0
+    # Leave room for the local fallback before the HTTP/client hard timeout.
+    return max(1.0, min(value, max(1.0, hard_timeout_sec - 2.0)))
+
+
+def _stt_fallback_grace_seconds() -> float:
+    raw = os.getenv("JACHIN_STT_FALLBACK_GRACE_SEC", "").strip()
+    try:
+        value = float(raw or "8")
+    except ValueError:
+        value = 8.0
+    return max(0.0, min(value, 12.0))
+
+
+def _stt_stream_final_timeout_seconds() -> float:
+    raw = os.getenv("JACHIN_STT_STREAM_FINAL_TIMEOUT_SEC", "").strip()
+    try:
+        value = float(raw or "1.2")
+    except ValueError:
+        value = 1.2
+    return max(0.8, min(value, 1.5))
 
 # Raw TCP STT IPC frame types (lower framing overhead vs HTTP/WebSocket).
 _STT_TCP_START = 0x01
@@ -172,20 +201,29 @@ def _warmup_stt_engine() -> None:
             )
 
 
-def _warmup_tts_engine() -> None:
+def _warmup_tts_engine(reason: str = "startup") -> dict[str, Any]:
     if tts_service.ready:
         logger.info("Preloading %s TTS engine...", getattr(tts_service, "model_name", "unknown"))
-        if tts_service._load_engine() and cfg.tts_backend != "cloud":
+        loaded = tts_service._load_engine()
+        if loaded and cfg.tts_backend == "cloud" and hasattr(tts_service, "prewarm_stream"):
+            enabled = os.getenv("JACHIN_TTS_PREWARM_STREAM", "1").strip().lower() not in {"0", "false", "no", "off"}
+            if not enabled:
+                return {"ok": True, "status": "disabled"}
+            return tts_service.prewarm_stream(reason=reason)
+        if loaded and cfg.tts_backend != "cloud":
             # Local fallback only: avoid spending cloud TTS quota during warmup.
-            result = tts_service.synthesize("你好。", voice=cfg.tts_voice)
+            result = tts_service.synthesize("\u4f60\u597d\u3002", voice=cfg.tts_voice)
             logger.info(
                 "Local TTS warmed (voice=%s, sample_rate=%s, duration_ms=%s)",
                 cfg.tts_voice,
                 result.sample_rate,
                 result.duration_ms,
             )
+            return {"ok": True, "status": "local_warmed", "sample_rate": result.sample_rate, "duration_ms": result.duration_ms}
+        return {"ok": bool(loaded), "status": "loaded" if loaded else "load_failed"}
     else:
         logger.warning("TTS backend not ready: %s", getattr(tts_service, "model_path", "unknown"))
+        return {"ok": False, "status": "not_ready", "error": getattr(tts_service, "model_path", "unknown")}
 
 
 def _warmup_sv_engine() -> None:
@@ -213,7 +251,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Jachin Voice Server", version="0.1.0", lifespan=lifespan)
 
-# Tauri/Vite 开发页（如 http://localhost:31421）跨域访问 127.0.0.1:18982 时浏览器会先发 OPTIONS 预检
+# Allow browser preflight from the Tauri/Vite dev page to the local voice server.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -227,6 +265,8 @@ app.add_middleware(
 def health() -> dict:
     available_voices = tts_service.list_voices()
     current_tts_voice = cfg.tts_cloud_voice if cfg.tts_backend == "cloud" else cfg.tts_voice
+    tts_last_prewarm = getattr(tts_service, "_last_prewarm_trace", {})
+    tts_prewarm_checks = tts_last_prewarm.get("checks", {}) if isinstance(tts_last_prewarm, dict) else {}
     return {
         "ok": True,
         "stt_ready": stt_service.ready,
@@ -234,11 +274,25 @@ def health() -> dict:
         "sv_ready": sv_service.ready,
         "stt_model": stt_service.model_name,
         "tts_model": getattr(tts_service, "model_name", "unknown"),
+        "tts_format": getattr(tts_service, "audio_format", cfg.tts_format),
+        "tts_sample_rate": getattr(tts_service, "sample_rate", cfg.tts_sample_rate),
+        "tts_http_api_base": cfg.dashscope_http_api_base,
+        "tts_connection_reuse_supported": bool(getattr(tts_service, "_pool_enabled", lambda: False)()),
+        "tts_pool_ready": bool(getattr(tts_service, "_pool", None) is not None),
+        "tts_pool_trace": getattr(tts_service, "_pool_ready_trace", {}),
+        "tts_last_prewarm": tts_last_prewarm,
+        "tts_stream_cue_ready": bool((tts_prewarm_checks.get("cue") or {}).get("ok")),
+        "tts_stream_content_ready": bool((tts_prewarm_checks.get("content") or {}).get("ok")),
         "stt_backend": cfg.stt_backend,
+        "stt_http_timeout_sec": _stt_http_timeout_seconds(),
+        "stt_cloud_soft_timeout_sec": _stt_cloud_soft_timeout_seconds(_stt_http_timeout_seconds()),
         "stt_local_fallback_enabled": local_stt_fallback_service is not None,
         "stt_local_fallback_ready": bool(local_stt_fallback_service and local_stt_fallback_service.ready),
         "stt_local_fallback_model": getattr(local_stt_fallback_service, "model_name", ""),
         "stt_local_fallback_load_error": getattr(local_stt_fallback_service, "load_error", None),
+        "stt_cloud_realtime_stream_enabled": _stt_realtime_stream_enabled(),
+        "stt_cloud_realtime_stream_supported": hasattr(stt_service, "start_stream_session"),
+        "stt_stream_mode": "cloud_realtime" if _stt_realtime_stream_enabled() and hasattr(stt_service, "start_stream_session") else "batch_incremental",
         "tts_backend": cfg.tts_backend,
         "stt_realtime_model": cfg.stt_realtime_model,
         "stt_hotword_model": cfg.stt_hotword_model,
@@ -299,13 +353,49 @@ def _stt_transcribe_pcm_sync(pcm_bytes: bytes, sample_rate: int = 16000) -> "Stt
     return result
 
 
+def _stt_transcribe_pcm_local_fallback_sync(
+    pcm_bytes: bytes,
+    sample_rate: int = 16000,
+    reason: str = "stream_final_timeout",
+    cloud_elapsed_ms: int | None = None,
+) -> Any | None:
+    wav_bytes = _pcm16le_to_wav_bytes(pcm_bytes, sample_rate=sample_rate, channels=1)
+    return _transcribe_with_local_fallback_sync(wav_bytes, reason=reason, cloud_elapsed_ms=cloud_elapsed_ms)
+
+
+async def _stt_transcribe_pcm_local_fallback_async(
+    pcm_bytes: bytes,
+    sample_rate: int = 16000,
+    reason: str = "stream_final_timeout",
+    cloud_elapsed_ms: int | None = None,
+) -> Any | None:
+    return await asyncio.to_thread(
+        _stt_transcribe_pcm_local_fallback_sync,
+        pcm_bytes,
+        sample_rate,
+        reason,
+        cloud_elapsed_ms,
+    )
+
+
 def _stt_result_needs_local_fallback(result: Any) -> bool:
     text = str(getattr(result, "text", "") or "").strip()
-    if text.startswith("[STT error]") or text.startswith("【STT错误】"):
+    if text.startswith("[STT error]") or text.startswith("\u3010STT\u9519\u8bef\u3011"):
         return True
     if not text and float(getattr(result, "confidence", 0.0) or 0.0) <= 0.0:
         return True
     return False
+
+
+def _stt_stream_result_needs_local_fallback(result: Any) -> bool:
+    if _stt_result_needs_local_fallback(result):
+        return True
+    understanding = getattr(result, "understanding", {}) or {}
+    if not isinstance(understanding, dict):
+        return False
+    if understanding.get("streaming_mode") != "dashscope_recognition_start_send_audio_frame":
+        return False
+    return not bool(understanding.get("stream_finalized"))
 
 
 def _mark_local_fallback_result(result: Any, reason: str, cloud_elapsed_ms: int | None = None) -> Any:
@@ -325,6 +415,126 @@ def _mark_local_fallback_result(result: Any, reason: str, cloud_elapsed_ms: int 
     return result
 
 
+def _append_understanding_event(result: Any, key: str, event: dict[str, Any]) -> Any:
+    try:
+        understanding = dict(getattr(result, "understanding", {}) or {})
+        events = list(understanding.get(key) or [])
+        events.append(event)
+        understanding[key] = events
+        result.understanding = understanding
+    except Exception:
+        pass
+    return result
+
+
+def _attach_understanding_events(result: Any, key: str, events: list[dict[str, Any]]) -> Any:
+    try:
+        understanding = dict(getattr(result, "understanding", {}) or {})
+        existing = list(understanding.get(key) or [])
+        understanding[key] = existing + list(events)
+        result.understanding = understanding
+    except Exception:
+        pass
+    return result
+
+
+def _orchestration_event(event_stage: str, started: float, **payload: Any) -> dict[str, Any]:
+    if "stage" in payload:
+        payload["request_stage"] = payload.pop("stage")
+    event = {
+        "stage": event_stage,
+        "elapsed_ms": int((time.monotonic() - started) * 1000),
+    }
+    event.update({k: v for k, v in payload.items() if v is not None})
+    return event
+
+
+def _stt_realtime_stream_enabled() -> bool:
+    if cfg.stt_backend != "cloud":
+        return False
+    raw = os.getenv("JACHIN_STT_CLOUD_REALTIME_STREAM", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _start_realtime_stt_session(sample_rate: int, session_id: str | None) -> Any | None:
+    if not _stt_realtime_stream_enabled():
+        return None
+    starter = getattr(stt_service, "start_stream_session", None)
+    if starter is None:
+        return None
+    try:
+        session = starter(sample_rate=sample_rate, session_id=session_id)
+        logger.info(
+            "STT cloud realtime stream started session_id=%s sample_rate=%s",
+            session_id or "",
+            sample_rate,
+        )
+        return session
+    except Exception as e:
+        logger.warning(
+            "STT cloud realtime stream unavailable session_id=%s sample_rate=%s error=%s; falling back to batch stream",
+            session_id or "",
+            sample_rate,
+            e,
+        )
+        return None
+
+
+def _stt_stream_event_payload(event: dict[str, Any], session_id: str | None) -> dict[str, Any] | None:
+    event_type = str(event.get("type") or "").strip().lower()
+    text = str(event.get("text") or "").strip()
+    if event_type not in {"partial", "final"} or not text:
+        return None
+    return {
+        "type": event_type,
+        "session_id": session_id,
+        "text": text,
+        "raw_text": str(event.get("raw_text") or text),
+        "user_message": "",
+        "user_message_source": "",
+        "reply_plan": {},
+        "confidence": 0.92,
+        "duration_ms": 0,
+        "language": getattr(stt_service, "language", "") or "auto",
+        "backend": f"dashscope:{getattr(stt_service, 'hotword_model', getattr(stt_service, 'model_name', 'cloud'))}:stream",
+        "hotword_count": 0,
+        "hotword_status": "streaming",
+        "hotword_sources": [],
+        "understanding": {"streaming_mode": "dashscope_recognition_start_send_audio_frame"},
+    }
+
+
+def _observe_late_cloud_result(task: asyncio.Task[Any], started: float, stage: str, audio_bytes_len: int) -> None:
+    async def _observe() -> None:
+        try:
+            result = await task
+            logger.warning(
+                "STT cloud_late_result stage=%s bytes=%s elapsed_ms=%s text_len=%s backend=%s",
+                stage,
+                audio_bytes_len,
+                int((time.monotonic() - started) * 1000),
+                len(str(getattr(result, "text", "") or "")),
+                str(getattr(result, "backend", "") or ""),
+            )
+        except asyncio.CancelledError:
+            logger.warning(
+                "STT cloud_late_cancelled stage=%s bytes=%s elapsed_ms=%s",
+                stage,
+                audio_bytes_len,
+                int((time.monotonic() - started) * 1000),
+            )
+        except Exception as e:
+            logger.warning(
+                "STT cloud_late_exception stage=%s bytes=%s elapsed_ms=%s error=%r",
+                stage,
+                audio_bytes_len,
+                int((time.monotonic() - started) * 1000),
+                e,
+            )
+
+    asyncio.create_task(_observe())
+
+
 def _transcribe_with_local_fallback_sync(audio_bytes: bytes, reason: str, cloud_elapsed_ms: int | None = None) -> Any | None:
     if local_stt_fallback_service is None:
         return None
@@ -336,7 +546,25 @@ def _transcribe_with_local_fallback_sync(audio_bytes: bytes, reason: str, cloud_
         )
         return None
     started = time.monotonic()
-    fallback = local_stt_fallback_service.transcribe(audio_bytes)
+    logger.warning(
+        "Local STT fallback start reason=%s cloud_elapsed_ms=%s bytes=%s model=%s",
+        reason,
+        cloud_elapsed_ms,
+        len(audio_bytes or b""),
+        getattr(local_stt_fallback_service, "model_name", "unknown"),
+    )
+    try:
+        fallback = local_stt_fallback_service.transcribe(audio_bytes)
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        logger.exception(
+            "Local STT fallback failed reason=%s cloud_elapsed_ms=%s fallback_elapsed_ms=%s error=%s",
+            reason,
+            cloud_elapsed_ms,
+            elapsed_ms,
+            e,
+        )
+        return None
     elapsed_ms = int((time.monotonic() - started) * 1000)
     logger.warning(
         "Local STT fallback used reason=%s cloud_elapsed_ms=%s fallback_elapsed_ms=%s text_len=%s",
@@ -356,48 +584,309 @@ async def _transcribe_stt_with_local_fallback(
 ) -> Any:
     timeout_sec = timeout_sec or _stt_http_timeout_seconds()
     started = time.monotonic()
-    try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(stt_service.transcribe, audio_bytes),
-            timeout=timeout_sec,
+    hard_deadline = started + timeout_sec
+    orchestration_events: list[dict[str, Any]] = [
+        _orchestration_event(
+            "cloud_start",
+            started,
+            request_stage=stage,
+            bytes=len(audio_bytes),
+            timeout_sec=timeout_sec,
+            local_fallback_available=local_stt_fallback_service is not None,
         )
-    except asyncio.TimeoutError:
+    ]
+    cloud_task = asyncio.create_task(asyncio.to_thread(stt_service.transcribe, audio_bytes))
+
+    async def _local(reason: str, cloud_elapsed_ms: int | None = None) -> Any | None:
+        return await asyncio.to_thread(
+            _transcribe_with_local_fallback_sync,
+            audio_bytes,
+            reason,
+            cloud_elapsed_ms,
+        )
+
+    def _remaining() -> float:
+        return max(0.0, hard_deadline - time.monotonic())
+
+    try:
+        soft_timeout = _stt_cloud_soft_timeout_seconds(timeout_sec)
+        if local_stt_fallback_service is None:
+            soft_timeout = timeout_sec
+        orchestration_events.append(
+            _orchestration_event(
+                "cloud_wait_start",
+                started,
+                soft_timeout_sec=soft_timeout,
+                hard_timeout_sec=timeout_sec,
+            )
+        )
+
+        done, _pending = await asyncio.wait(
+            {cloud_task},
+            timeout=soft_timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if cloud_task in done:
+            try:
+                result = cloud_task.result()
+            except Exception:
+                cloud_elapsed_ms = int((time.monotonic() - started) * 1000)
+                orchestration_events.append(
+                    _orchestration_event("cloud_exception", started, elapsed_ms=cloud_elapsed_ms)
+                )
+                logger.exception(
+                    "Primary STT failed stage=%s bytes=%s elapsed_ms=%s; trying local fallback",
+                    stage,
+                    len(audio_bytes),
+                    cloud_elapsed_ms,
+                )
+                fallback = await _local("cloud_exception", cloud_elapsed_ms)
+                if fallback is not None:
+                    orchestration_events.append(
+                        _orchestration_event(
+                            "fallback_result",
+                            started,
+                            reason="cloud_exception",
+                            text_len=len(str(getattr(fallback, "text", "") or "")),
+                            backend=str(getattr(fallback, "backend", "") or ""),
+                        )
+                    )
+                    _attach_understanding_events(fallback, "stt_orchestration", orchestration_events)
+                    return fallback
+                raise
+
+            cloud_elapsed_ms = int((time.monotonic() - started) * 1000)
+            orchestration_events.append(
+                _orchestration_event(
+                    "cloud_result",
+                    started,
+                    elapsed_ms=cloud_elapsed_ms,
+                    text_len=len(str(getattr(result, "text", "") or "")),
+                    backend=str(getattr(result, "backend", "") or ""),
+                )
+            )
+            if _stt_result_needs_local_fallback(result):
+                logger.warning(
+                    "Primary STT returned unusable result stage=%s bytes=%s elapsed_ms=%s text=%r; trying local fallback",
+                    stage,
+                    len(audio_bytes),
+                    cloud_elapsed_ms,
+                    str(getattr(result, "text", "") or "")[:160],
+                )
+                fallback = await _local("cloud_error_result", cloud_elapsed_ms)
+                if fallback is not None:
+                    orchestration_events.append(
+                        _orchestration_event(
+                            "fallback_result",
+                            started,
+                            reason="cloud_error_result",
+                            text_len=len(str(getattr(fallback, "text", "") or "")),
+                            backend=str(getattr(fallback, "backend", "") or ""),
+                        )
+                    )
+                    _attach_understanding_events(fallback, "stt_orchestration", orchestration_events)
+                    return fallback
+            _attach_understanding_events(result, "stt_orchestration", orchestration_events)
+            return result
+
         cloud_elapsed_ms = int((time.monotonic() - started) * 1000)
+        orchestration_events.append(
+            _orchestration_event(
+                "cloud_soft_timeout",
+                started,
+                elapsed_ms=cloud_elapsed_ms,
+                soft_timeout_sec=soft_timeout,
+                hard_timeout_sec=timeout_sec,
+            )
+        )
         logger.warning(
-            "Primary STT timeout stage=%s bytes=%s timeout_sec=%.1f elapsed_ms=%s; trying local fallback",
+            "Primary STT soft timeout stage=%s bytes=%s soft_timeout_sec=%.1f hard_timeout_sec=%.1f elapsed_ms=%s; starting local fallback",
             stage,
             len(audio_bytes),
+            soft_timeout,
             timeout_sec,
             cloud_elapsed_ms,
         )
-        fallback = await asyncio.to_thread(
-            _transcribe_with_local_fallback_sync,
-            audio_bytes,
-            "cloud_timeout",
-            cloud_elapsed_ms,
-        )
-        if fallback is not None:
-            return fallback
-        raise
+        fallback_task = asyncio.create_task(_local("cloud_soft_timeout", cloud_elapsed_ms))
+        orchestration_events.append(_orchestration_event("fallback_start", started, reason="cloud_soft_timeout"))
+        pending: set[asyncio.Task[Any]] = {cloud_task, fallback_task}
+        fallback_exhausted = False
 
-    cloud_elapsed_ms = int((time.monotonic() - started) * 1000)
-    if _stt_result_needs_local_fallback(result):
+        while pending and _remaining() > 0:
+            done, pending = await asyncio.wait(
+                pending,
+                timeout=_remaining(),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                break
+            for task in done:
+                if task is fallback_task:
+                    try:
+                        fallback = task.result()
+                    except Exception as e:
+                        fallback = None
+                        fallback_exhausted = True
+                        orchestration_events.append(
+                            _orchestration_event("fallback_exception", started, error=type(e).__name__)
+                        )
+                        logger.exception(
+                            "Local STT fallback task failed stage=%s bytes=%s elapsed_ms=%s",
+                            stage,
+                            len(audio_bytes),
+                            int((time.monotonic() - started) * 1000),
+                        )
+                    if fallback is not None:
+                        orchestration_events.append(
+                            _orchestration_event(
+                                "fallback_result",
+                                started,
+                                reason="cloud_soft_timeout",
+                                text_len=len(str(getattr(fallback, "text", "") or "")),
+                                backend=str(getattr(fallback, "backend", "") or ""),
+                                cloud_still_running=not cloud_task.done(),
+                            )
+                        )
+                        if not cloud_task.done():
+                            orchestration_events.append(
+                                _orchestration_event(
+                                    "cloud_late_observer_started",
+                                    started,
+                                    reason="fallback_returned_first",
+                                )
+                            )
+                            _observe_late_cloud_result(cloud_task, started, stage, len(audio_bytes))
+                        _attach_understanding_events(fallback, "stt_orchestration", orchestration_events)
+                        return fallback
+                    fallback_exhausted = True
+                    orchestration_events.append(
+                        _orchestration_event("fallback_unavailable", started, reason="local_returned_none")
+                    )
+                    continue
+                if task is cloud_task:
+                    try:
+                        result = task.result()
+                    except Exception:
+                        orchestration_events.append(
+                            _orchestration_event("cloud_exception_after_soft_timeout", started)
+                        )
+                        logger.exception(
+                            "Primary STT failed after soft timeout stage=%s bytes=%s elapsed_ms=%s",
+                            stage,
+                            len(audio_bytes),
+                            int((time.monotonic() - started) * 1000),
+                        )
+                        if not fallback_exhausted and fallback_task in pending:
+                            continue
+                        raise
+                    if _stt_result_needs_local_fallback(result):
+                        orchestration_events.append(
+                            _orchestration_event(
+                                "cloud_error_result_after_soft_timeout",
+                                started,
+                                text_len=len(str(getattr(result, "text", "") or "")),
+                            )
+                        )
+                        logger.warning(
+                            "Primary STT returned unusable result after soft timeout stage=%s bytes=%s elapsed_ms=%s text=%r",
+                            stage,
+                            len(audio_bytes),
+                            int((time.monotonic() - started) * 1000),
+                            str(getattr(result, "text", "") or "")[:160],
+                        )
+                        if not fallback_exhausted and fallback_task in pending:
+                            continue
+                    orchestration_events.append(
+                        _orchestration_event(
+                            "cloud_late_result",
+                            started,
+                            text_len=len(str(getattr(result, "text", "") or "")),
+                            backend=str(getattr(result, "backend", "") or ""),
+                        )
+                    )
+                    _attach_understanding_events(result, "stt_orchestration", orchestration_events)
+                    return result
+
+        fallback_grace_sec = _stt_fallback_grace_seconds()
+        if fallback_task in pending and not fallback_exhausted and fallback_grace_sec > 0:
+            orchestration_events.append(
+                _orchestration_event(
+                    "fallback_grace_wait_start",
+                    started,
+                    hard_timeout_sec=timeout_sec,
+                    fallback_grace_sec=fallback_grace_sec,
+                )
+            )
+            logger.warning(
+                "STT hard timeout reached but local fallback still running stage=%s bytes=%s hard_timeout_sec=%.1f fallback_grace_sec=%.1f elapsed_ms=%s",
+                stage,
+                len(audio_bytes),
+                timeout_sec,
+                fallback_grace_sec,
+                int((time.monotonic() - started) * 1000),
+            )
+            try:
+                fallback = await asyncio.wait_for(fallback_task, timeout=fallback_grace_sec)
+            except asyncio.TimeoutError:
+                fallback = None
+                orchestration_events.append(
+                    _orchestration_event("fallback_grace_timeout", started, fallback_grace_sec=fallback_grace_sec)
+                )
+            except Exception as e:
+                fallback = None
+                orchestration_events.append(
+                    _orchestration_event("fallback_exception", started, error=type(e).__name__)
+                )
+                logger.exception(
+                    "Local STT fallback failed during grace wait stage=%s bytes=%s elapsed_ms=%s",
+                    stage,
+                    len(audio_bytes),
+                    int((time.monotonic() - started) * 1000),
+                )
+            if fallback is not None:
+                orchestration_events.append(
+                    _orchestration_event(
+                        "fallback_result_after_grace",
+                        started,
+                        reason="cloud_soft_timeout",
+                        text_len=len(str(getattr(fallback, "text", "") or "")),
+                        backend=str(getattr(fallback, "backend", "") or ""),
+                        cloud_still_running=not cloud_task.done(),
+                    )
+                )
+                if not cloud_task.done():
+                    orchestration_events.append(
+                        _orchestration_event("cloud_late_observer_started", started, reason="fallback_grace_returned")
+                    )
+                    _observe_late_cloud_result(cloud_task, started, stage, len(audio_bytes))
+                _attach_understanding_events(fallback, "stt_orchestration", orchestration_events)
+                return fallback
+
+        for task in pending:
+            if not task.done():
+                task.cancel()
+        orchestration_events.append(
+            _orchestration_event(
+                "stt_timeout",
+                started,
+                timeout_sec=timeout_sec,
+                fallback_grace_sec=fallback_grace_sec,
+            )
+        )
         logger.warning(
-            "Primary STT returned unusable result stage=%s bytes=%s elapsed_ms=%s text=%r; trying local fallback",
+            "STT timed out stage=%s bytes=%s timeout_sec=%.1f fallback_grace_sec=%.1f elapsed_ms=%s fallback_started=%s fallback_exhausted=%s",
             stage,
             len(audio_bytes),
-            cloud_elapsed_ms,
-            str(getattr(result, "text", "") or "")[:160],
+            timeout_sec,
+            fallback_grace_sec,
+            int((time.monotonic() - started) * 1000),
+            True,
+            fallback_exhausted,
         )
-        fallback = await asyncio.to_thread(
-            _transcribe_with_local_fallback_sync,
-            audio_bytes,
-            "cloud_error_result",
-            cloud_elapsed_ms,
-        )
-        if fallback is not None:
-            return fallback
-    return result
+        raise asyncio.TimeoutError()
+    except asyncio.CancelledError:
+        cloud_task.cancel()
+        raise
 
 
 def _pack_tcp_frame(msg_type: int, payload: bytes = b"") -> bytes:
@@ -436,9 +925,25 @@ class _SttTcpHandler(socketserver.BaseRequestHandler):
         partial_text = ""
         last_infer_at = 0.0
         last_infer_len = 0
+        realtime_session: Any | None = None
         min_new_bytes_for_partial = 3200 * 2
         min_infer_interval_sec = 0.30
         self._send_json(_STT_TCP_READY, {"type": "ready", "sample_rate": sample_rate})
+
+        def drain_realtime_events() -> None:
+            if realtime_session is None:
+                return
+            try:
+                for event in realtime_session.poll_events():
+                    payload = _stt_stream_event_payload(event, session_id)
+                    if not payload:
+                        continue
+                    if payload.get("type") == "final":
+                        self._send_json(_STT_TCP_FINAL, payload)
+                    else:
+                        self._send_json(_STT_TCP_PARTIAL, payload)
+            except Exception as e:
+                logger.warning("STT TCP realtime event drain failed session_id=%s error=%s", session_id or "", e)
 
         def maybe_partial(force: bool = False) -> None:
             nonlocal partial_text, last_infer_at, last_infer_len
@@ -479,6 +984,7 @@ class _SttTcpHandler(socketserver.BaseRequestHandler):
                     partial_text = ""
                     last_infer_at = 0.0
                     last_infer_len = 0
+                    realtime_session = _start_realtime_stt_session(sample_rate, session_id)
                     self._send_json(_STT_TCP_ACK, {"type": "ack_start", "session_id": session_id, "sample_rate": sample_rate})
                     continue
                 if msg_type == _STT_TCP_RESET:
@@ -486,6 +992,7 @@ class _SttTcpHandler(socketserver.BaseRequestHandler):
                     partial_text = ""
                     last_infer_at = 0.0
                     last_infer_len = 0
+                    realtime_session = _start_realtime_stt_session(sample_rate, session_id)
                     self._send_json(_STT_TCP_ACK, {"type": "ack_reset", "session_id": session_id})
                     continue
                 if msg_type == _STT_TCP_PING:
@@ -494,11 +1001,29 @@ class _SttTcpHandler(socketserver.BaseRequestHandler):
                 if msg_type == _STT_TCP_CHUNK:
                     if payload:
                         pcm_buffer.extend(payload)
-                        maybe_partial(force=False)
+                        if realtime_session is not None:
+                            realtime_session.push_pcm(payload)
+                            drain_realtime_events()
+                        else:
+                            maybe_partial(force=False)
                     continue
                 if msg_type == _STT_TCP_FINALIZE:
-                    maybe_partial(force=True)
-                    final = _stt_transcribe_pcm_sync(bytes(pcm_buffer), sample_rate=sample_rate)
+                    if realtime_session is not None:
+                        stream_started = time.monotonic()
+                        final = realtime_session.finish(timeout_sec=_stt_stream_final_timeout_seconds())
+                        drain_realtime_events()
+                        if _stt_stream_result_needs_local_fallback(final):
+                            fallback = _stt_transcribe_pcm_local_fallback_sync(
+                                bytes(pcm_buffer),
+                                sample_rate=sample_rate,
+                                reason="stream_final_timeout_or_partial",
+                                cloud_elapsed_ms=int((time.monotonic() - stream_started) * 1000),
+                            )
+                            if fallback is not None:
+                                final = fallback
+                    else:
+                        maybe_partial(force=True)
+                        final = _stt_transcribe_pcm_sync(bytes(pcm_buffer), sample_rate=sample_rate)
                     self._send_json(
                         _STT_TCP_FINAL,
                         {
@@ -618,6 +1143,42 @@ async def stt_transcribe(audio: UploadFile = File(...), session_id: Optional[str
     return {**_stt_result_payload(result), "session_id": session_id}
 
 
+@app.post("/v1/stt/transcribe_local")
+async def stt_transcribe_local(audio: UploadFile = File(...), session_id: Optional[str] = None) -> dict:
+    try:
+        raw = await audio.read()
+    finally:
+        await audio.close()
+    if not raw:
+        raise HTTPException(status_code=400, detail="empty audio payload")
+    local_service = local_stt_fallback_service or (stt_service if cfg.stt_backend != "cloud" else None)
+    if local_service is None or not getattr(local_service, "ready", False):
+        raise HTTPException(status_code=503, detail="local STT fallback not ready")
+    started = time.monotonic()
+    try:
+        result = await asyncio.to_thread(local_service.transcribe, raw)
+        result = _mark_local_fallback_result(
+            result,
+            reason="stream_miss_local_first",
+            cloud_elapsed_ms=None,
+        )
+        _append_understanding_event(
+            result,
+            "stt_orchestration",
+            _orchestration_event(
+                "local_first_result",
+                started,
+                reason="stream_miss_local_first",
+                text_len=len(str(getattr(result, "text", "") or "")),
+                backend=str(getattr(result, "backend", "") or ""),
+            ),
+        )
+    except Exception as e:
+        logger.exception("STT local transcribe failed session_id=%s bytes=%s", session_id, len(raw))
+        raise HTTPException(status_code=500, detail=f"local STT transcribe failed: {e}")
+    return {**_stt_result_payload(result), "session_id": session_id}
+
+
 @app.websocket("/v1/stt/stream")
 async def stt_stream(websocket: WebSocket, session_id: Optional[str] = None):
     await websocket.accept()
@@ -637,6 +1198,7 @@ async def stt_stream(websocket: WebSocket, session_id: Optional[str] = None):
     partial_text = ""
     last_infer_at = 0.0
     last_infer_len = 0
+    realtime_session: Any | None = None
     # 100ms @ 16kHz mono pcm16 => 3200 bytes
     min_new_bytes_for_partial = 3200 * 2
     min_infer_interval_sec = 0.35
@@ -661,6 +1223,17 @@ async def stt_stream(websocket: WebSocket, session_id: Optional[str] = None):
                 {"type": "partial", "session_id": session_id, **_stt_result_payload(result)}
             )
 
+    async def drain_realtime_events() -> None:
+        if realtime_session is None:
+            return
+        try:
+            for event in realtime_session.poll_events():
+                payload = _stt_stream_event_payload(event, session_id)
+                if payload:
+                    await websocket.send_json(payload)
+        except Exception as e:
+            logger.warning("STT WS realtime event drain failed session_id=%s error=%s", session_id or "", e)
+
     try:
         await websocket.send_json({"type": "ready", "session_id": session_id, "sample_rate": sample_rate})
         while True:
@@ -681,6 +1254,7 @@ async def stt_stream(websocket: WebSocket, session_id: Optional[str] = None):
                     partial_text = ""
                     last_infer_at = 0.0
                     last_infer_len = 0
+                    realtime_session = _start_realtime_stt_session(sample_rate, session_id)
                     await websocket.send_json({"type": "ack_start", "session_id": session_id, "sample_rate": sample_rate})
                     continue
                 if msg_type == "reset":
@@ -688,11 +1262,29 @@ async def stt_stream(websocket: WebSocket, session_id: Optional[str] = None):
                     partial_text = ""
                     last_infer_at = 0.0
                     last_infer_len = 0
+                    realtime_session = _start_realtime_stt_session(sample_rate, session_id)
                     await websocket.send_json({"type": "ack_reset", "session_id": session_id})
                     continue
                 if msg_type == "finalize":
-                    await maybe_infer_partial(force=True)
-                    final = await _stt_transcribe_pcm_async(bytes(pcm_buffer), sample_rate=sample_rate)
+                    if realtime_session is not None:
+                        stream_started = time.monotonic()
+                        final = await asyncio.to_thread(
+                            realtime_session.finish,
+                            _stt_stream_final_timeout_seconds(),
+                        )
+                        await drain_realtime_events()
+                        if _stt_stream_result_needs_local_fallback(final):
+                            fallback = await _stt_transcribe_pcm_local_fallback_async(
+                                bytes(pcm_buffer),
+                                sample_rate=sample_rate,
+                                reason="stream_final_timeout_or_partial",
+                                cloud_elapsed_ms=int((time.monotonic() - stream_started) * 1000),
+                            )
+                            if fallback is not None:
+                                final = fallback
+                    else:
+                        await maybe_infer_partial(force=True)
+                        final = await _stt_transcribe_pcm_async(bytes(pcm_buffer), sample_rate=sample_rate)
                     await websocket.send_json(
                         {
                             "type": "final",
@@ -710,7 +1302,11 @@ async def stt_stream(websocket: WebSocket, session_id: Optional[str] = None):
 
             if bytes_data is not None:
                 pcm_buffer.extend(bytes_data)
-                await maybe_infer_partial(force=False)
+                if realtime_session is not None:
+                    await asyncio.to_thread(realtime_session.push_pcm, bytes_data)
+                    await drain_realtime_events()
+                else:
+                    await maybe_infer_partial(force=False)
                 continue
 
             if message.get("type") == "websocket.disconnect":
@@ -814,6 +1410,8 @@ async def tts_stream(websocket: WebSocket):
                     {
                         "type": "done",
                         "first_packet_ms": event.get("first_packet_ms", 0),
+                        "opened_ms": event.get("opened_ms", 0),
+                        "total_ms": event.get("total_ms", 0),
                         "request_id": event.get("request_id", ""),
                     }
                 )
@@ -829,7 +1427,12 @@ async def tts_stream(websocket: WebSocket):
             elif event_type == "meta":
                 await websocket.send_json({k: v for k, v in event.items() if k != "data"})
             elif event_type in {"open", "close"}:
-                await websocket.send_json({"type": event_type})
+                await websocket.send_json(
+                    {
+                        "type": event_type,
+                        "elapsed_ms": event.get("elapsed_ms", 0),
+                    }
+                )
             else:
                 await websocket.send_json({"type": "event", "message": str(event.get("message") or "")[:1000]})
     except WebSocketDisconnect:
@@ -1004,16 +1607,17 @@ async def sv_filter_owner_track(
 @app.post("/v1/models/audio/warm")
 def warm_audio_models(req: WarmAudioRequest) -> dict:
     warmed: dict[str, bool] = {"stt": False, "tts": False, "sv": False}
+    details: dict[str, Any] = {}
     if req.stt:
         _warmup_stt_engine()
         warmed["stt"] = True
     if req.tts:
-        _warmup_tts_engine()
+        details["tts"] = _warmup_tts_engine(reason=req.reason or "warm_endpoint")
         warmed["tts"] = True
     if req.sv:
         _warmup_sv_engine()
         warmed["sv"] = True
-    return {"ok": True, "warmed": warmed}
+    return {"ok": True, "warmed": warmed, "details": details}
 
 
 if __name__ == "__main__":

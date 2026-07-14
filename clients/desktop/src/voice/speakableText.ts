@@ -2,8 +2,15 @@
 const RESULT_HINT_RE =
   /(已|已经|完成|成功|失败|结果|最终|搞定|好了|完成了|已为你|我已|无法|没法|失败了|报错|可以了|请重试)/;
 const PROCESS_HINT_RE =
-  /(首先|接下来|然后|步骤|第[一二三四五六七八九十]|先|再|最后|正在|我会|我将|分析|思路|计划|流程|执行中|处理中|如下)/;
+  /(首先|接下来|步骤|第[一二三四五六七八九十]+(?:步|点|轮)?|最后|正在(?:执行|处理|分析|检索|搜索|打开|发送)|我会|我将|分析(?:过程|思路)?|思路|计划|流程|执行中|处理中|如下)/;
 const LIST_PREFIX_RE = /^(\d+[\.\)]|[-*•]|第[一二三四五六七八九十]+步|步骤[:：]?)/;
+
+export type SpeakableTextPreparation = {
+  text: string | null;
+  normalizedText: string;
+  skipReason?: string;
+  matchedRule?: string;
+};
 
 function pickResultClause(s: string): string | null {
   const clauses = s
@@ -23,7 +30,11 @@ function pickResultClause(s: string): string | null {
   return `${hit}。`;
 }
 
-export function prepareSentenceForTts(raw: string): string | null {
+function skipped(normalizedText: string, skipReason: string, matchedRule?: string): SpeakableTextPreparation {
+  return { text: null, normalizedText, skipReason, matchedRule };
+}
+
+export function prepareSentenceForTtsDetailed(raw: string): SpeakableTextPreparation {
   let s = raw
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/`[^`]*`/g, " ")
@@ -31,20 +42,20 @@ export function prepareSentenceForTts(raw: string): string | null {
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "")
     .replace(/\s+/g, " ")
     .trim();
-  if (s.length < 2) return null;
+  if (s.length < 2) return skipped(s, "too_short");
 
   const letters = (s.match(/[\p{L}\p{N}]/gu) ?? []).length;
-  if (letters < 2) return null;
+  if (letters < 2) return skipped(s, "too_few_letters");
 
   const noisy = (s.match(/[^\p{L}\p{N}\s，。！？、；：]/gu) ?? []).length;
-  if (noisy / s.length > 0.45) return null;
+  if (noisy / s.length > 0.45) return skipped(s, "symbol_dense");
 
   const hasResultHint = RESULT_HINT_RE.test(s);
   const hasProcessHint = PROCESS_HINT_RE.test(s);
 
   // 列表步骤、执行过程类语句默认不朗读，避免把过程全念出来。
-  if (LIST_PREFIX_RE.test(s) && !hasResultHint) return null;
-  if (hasProcessHint && !hasResultHint) return null;
+  if (LIST_PREFIX_RE.test(s) && !hasResultHint) return skipped(s, "task_list_without_result", "LIST_PREFIX_RE");
+  if (hasProcessHint && !hasResultHint) return skipped(s, "task_process_without_result", "PROCESS_HINT_RE");
 
   // 混合语句优先抽取结果子句，尽量“只报结果”。
   if ((hasResultHint && hasProcessHint) || (hasResultHint && s.length > 36)) {
@@ -52,5 +63,10 @@ export function prepareSentenceForTts(raw: string): string | null {
     if (concise) s = concise;
   }
 
-  return s;
+  return { text: s, normalizedText: s };
+}
+
+export function prepareSentenceForTts(raw: string): string | null {
+  const prepared = prepareSentenceForTtsDetailed(raw);
+  return prepared.text;
 }

@@ -1,7 +1,7 @@
 # 安全锁四项风险与治理（实现说明）
 
 本文对应「上下文坍塌、密钥悖论、不可撤销、规则冲突」四类问题，与 **当前仓库实现** 对齐。
-总索引：[JACHIN_SAFETY_LOCK.md](./JACHIN_SAFETY_LOCK.md) · [JACHIN_SAFETY_LOCK_LEARNING.md](./JACHIN_SAFETY_LOCK_LEARNING.md)
+总索引：[JACHIN_SAFETY_LOCK.md](./JACHIN_SAFETY_LOCK.md)
 
 ---
 

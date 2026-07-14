@@ -32,9 +32,21 @@ from .kernel_prompts import (
 )
 from .memory_lifecycle import (
     LifecycleMemoryRecord,
+    record_lifecycle_memory_feedback,
     recall_lifecycle_memories,
     write_lifecycle_memory,
 )
+from .memory_confidence import (
+    MemoryFeedbackUpdate,
+    apply_feedback,
+    classify_memory_layer,
+    extract_memory_scope,
+    initial_confidence,
+    recall_score,
+)
+from .growth_scheduler import GrowthPipelineResult, run_growth_pipeline
+from .graph_connectors import GraphConnectorResult, sync_graph_engine_connectors
+from .graph_sync_adapter import GraphSyncResult, sync_memory_growth_graph
 from .memory_tools import recall_memory_search
 from .pipeline import CognitiveTurnContext, build_cognitive_turn_context
 from .prompt_policies import SQL_DATA_SOP_PROMPT
@@ -67,16 +79,23 @@ from .state_service import (
     stop_state_fabric_service,
 )
 from .task_dag import TaskDag, TaskDagNode, create_task_dag_from_work_orders, load_task_dag
+from .task_decomposer import DecomposedTaskNode, TaskDecompositionPlan, decompose_task
 from .task_guardian import TaskGuardian, get_task_guardian, scan_tasks_once, start_task_guardian, stop_task_guardian
+from .weekly_review import WeeklyReviewResult, run_weekly_review
 
 __all__ = [
     "AgentInputEnvelope",
     "CapabilityRecoveryRegistry",
     "CognitiveTurnContext",
     "DecisionContract",
+    "DecomposedTaskNode",
     "DispatchResult",
     "KernelPlanningResult",
+    "GrowthPipelineResult",
+    "GraphSyncResult",
+    "GraphConnectorResult",
     "LifecycleMemoryRecord",
+    "MemoryFeedbackUpdate",
     "MemoryRecallRequest",
     "MemoryWriteRequest",
     "RelevantMemoryBundle",
@@ -101,9 +120,11 @@ __all__ = [
     "TaskLedgerEntry",
     "TaskDag",
     "TaskDagNode",
+    "TaskDecompositionPlan",
     "TaskGuardian",
     "TurnClosure",
     "VerificationReport",
+    "WeeklyReviewResult",
     "WorkOrder",
     "arbitrate_review_summary",
     "build_cognitive_turn_context",
@@ -114,8 +135,12 @@ __all__ = [
     "build_fake_weather_error_recovery_prompt",
     "build_role_execution_system_prefix",
     "build_user_facing_reply_agent_system_prompt",
+    "apply_feedback",
+    "classify_memory_layer",
     "dispatch_tool_work_order",
     "dispatch_existing_work_order",
+    "decompose_task",
+    "extract_memory_scope",
     "get_default_role_executor_registry",
     "get_default_role_registry",
     "get_state_fabric_service",
@@ -126,10 +151,17 @@ __all__ = [
     "is_hallucinated_weather_service_error_json",
     "load_task_dag",
     "load_recovery_manifests",
+    "initial_confidence",
     "plan_cognitive_turn",
+    "recall_score",
     "recall_lifecycle_memories",
     "recall_memory_search",
+    "record_lifecycle_memory_feedback",
     "run_review_board",
+    "run_growth_pipeline",
+    "run_weekly_review",
+    "sync_memory_growth_graph",
+    "sync_graph_engine_connectors",
     "scan_tasks_once",
     "start_state_fabric_service",
     "start_task_guardian",

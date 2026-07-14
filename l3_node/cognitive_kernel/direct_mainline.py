@@ -1,4 +1,4 @@
-﻿"""Direct execution bridge for Arbiter-issued low-risk WorkOrders.
+"""Direct execution bridge for Arbiter-issued low-risk WorkOrders.
 
 This module is the narrow mainline bridge between ``run_agent`` and the
 Memory-first Cognitive Kernel. ReviewBoard and Arbiter plan first, then
@@ -17,10 +17,11 @@ from typing import Any, Callable, Optional
 from .closure_memory import execute_turn_closure_memory_writes
 from .contracts import DecisionContract, WorkOrder
 from .dispatcher import dispatch_existing_work_order
+from .entity_corrections import record_confirmed_entity_correction_from_work_order, record_entity_correction_usage_from_work_order
 from .kernel_loop import KernelPlanningResult
 from .pending_confirmation import (
     cancel_pending_confirmation,
-    clear_pending_confirmation,
+    clear_pending_confirmation_by_key,
     is_cancellation_text,
     is_confirmation_text,
     load_pending_confirmation,
@@ -28,6 +29,7 @@ from .pending_confirmation import (
     save_pending_confirmation,
 )
 from .runtime import close_turn, close_turn_waiting_user
+from .task_memory import build_task_experience_memory_requests
 
 logger = logging.getLogger(__name__)
 
@@ -151,59 +153,86 @@ async def try_execute_cognitive_direct_plan(
             reason="execution_not_allowed",
         )
         return None
-    tool_id = str(
-        work_order.inputs.get("tool")
-        or (contract.tool_policy.allowed_tools[0] if contract.tool_policy.allowed_tools else "")
-    ).strip()
-    if not _planned_direct_tool_allowed(plan, tool_id):
-        _log_direct_execution(
-            stage="skipped",
-            contract=contract,
-            work_order=work_order,
-            tool_id=tool_id,
-            reason="planned_direct_tool_not_allowed",
-        )
-        return None
-    if not _planned_direct_tool_available(tool_id, tools):
-        logger.info("[CognitiveKernel] direct mainline skipped: tool unavailable tool=%s", tool_id)
-        _log_direct_execution(
-            stage="skipped",
-            contract=contract,
-            work_order=work_order,
-            tool_id=tool_id,
-            reason="planned_direct_tool_unavailable",
-        )
-        return None
+    results = []
+    for work_order in plan.work_orders:
+        tool_id = str(
+            work_order.inputs.get("tool")
+            or (work_order.tool_policy.allowed_tools[0] if work_order.tool_policy.allowed_tools else "")
+            or (contract.tool_policy.allowed_tools[0] if contract.tool_policy.allowed_tools else "")
+        ).strip()
+        if not _planned_direct_tool_allowed(plan, tool_id):
+            _log_direct_execution(
+                stage="skipped",
+                contract=contract,
+                work_order=work_order,
+                tool_id=tool_id,
+                reason="planned_direct_tool_not_allowed",
+            )
+            return None
+        if not _planned_direct_tool_available(tool_id, tools):
+            logger.info("[CognitiveKernel] direct mainline skipped: tool unavailable tool=%s", tool_id)
+            _log_direct_execution(
+                stage="skipped",
+                contract=contract,
+                work_order=work_order,
+                tool_id=tool_id,
+                reason="planned_direct_tool_unavailable",
+            )
+            return None
 
-    _log_role_agent_prompt(
+        _log_role_agent_prompt(
+            contract=contract,
+            work_order=work_order,
+            tool_id=tool_id,
+            allowed_skills=allowed_skills,
+            available_tools=tools,
+            stage="direct_mainline_dispatch",
+        )
+        result = await _execute_work_order(
+            contract=contract,
+            work_order=work_order,
+            tool_id=tool_id,
+            allowed_skills=allowed_skills,
+            run_tool_func=run_tool_func,
+        )
+        results.append((work_order, tool_id, result))
+        record_entity_correction_usage_from_work_order(
+            work_order=work_order,
+            turn_id=contract.turn_id,
+            ok=bool(result.verification.ok),
+            failure_reason=str(getattr(result.verification, "failure_reason", "") or ""),
+        )
+        if not bool(result.verification.ok):
+            break
+    if not results:
+        return None
+    final_work_order, final_tool_id, final_result = results[-1]
+    reply_observation = _observation_with_verification_reason(final_result.observation, final_result.verification)
+    all_ok = all(bool(item[2].verification.ok) for item in results)
+    final_text = _planned_direct_reply(plan, all_ok, reply_observation)
+    executed_work_orders = [item[0] for item in results]
+    verification_reports = [item[2].verification for item in results]
+    task_memory_requests = build_task_experience_memory_requests(
         contract=contract,
-        work_order=work_order,
-        tool_id=tool_id,
-        allowed_skills=allowed_skills,
-        available_tools=tools,
-        stage="direct_mainline_dispatch",
+        work_orders=executed_work_orders,
+        verification_reports=verification_reports,
+        final_text=final_text,
     )
-    result = await _execute_work_order(
-        contract=contract,
-        work_order=work_order,
-        tool_id=tool_id,
-        allowed_skills=allowed_skills,
-        run_tool_func=run_tool_func,
-    )
-    final_text = _planned_direct_reply(plan, bool(result.verification.ok), result.observation)
     closure = close_turn(
         turn_id=contract.turn_id,
         final_text=final_text,
-        executed_work_orders=[work_order.work_order_id],
-        verification_reports=[result.verification],
-        aborted=not bool(result.verification.ok),
+        executed_work_orders=[item.work_order_id for item in executed_work_orders],
+        verification_reports=verification_reports,
+        aborted=not all_ok,
+        memory_context_refs=contract.memory_context_refs,
+        extra_memory_write_requests=task_memory_requests,
     )
     _log_direct_execution(
         stage="executed",
         contract=contract,
-        work_order=work_order,
-        tool_id=tool_id,
-        dispatch_result=result,
+        work_order=final_work_order,
+        tool_id=final_tool_id,
+        dispatch_result=final_result,
         closure=closure,
         final_text=final_text,
     )
@@ -212,9 +241,9 @@ async def try_execute_cognitive_direct_plan(
         "[CognitiveKernel] direct mainline executed turn=%s task=%s tool=%s ok=%s work_order=%s",
         contract.turn_id[:12],
         contract.task_type,
-        tool_id,
-        result.verification.ok,
-        work_order.work_order_id,
+        final_tool_id,
+        all_ok,
+        final_work_order.work_order_id,
     )
     return final_text
 
@@ -245,6 +274,14 @@ def _log_direct_execution(
         )
     except Exception:
         pass
+
+
+def _observation_with_verification_reason(observation: str, verification: Any) -> str:
+    text = str(observation or "")
+    reason = str(getattr(verification, "failure_reason", "") or "").strip()
+    if not reason or reason in text:
+        return text
+    return f"{text}\nverification_failure={reason}" if text.strip() else f"verification_failure={reason}"
 
 
 def _with_pending_confirmation_ui_protocol(
@@ -293,13 +330,14 @@ async def _try_resume_pending_confirmation(
     ).strip()
     if not _confirmed_direct_tool_allowed(contract, tool_id):
         final_text = "\u5df2\u6536\u5230\u786e\u8ba4\uff0c\u4f46\u8be5\u64cd\u4f5c\u6682\u672a\u63a5\u5165\u76f4\u63a5\u6267\u884c\u901a\u9053\uff0c\u8bf7\u91cd\u65b0\u53d1\u8d77\u4efb\u52a1\u3002"
-        clear_pending_confirmation(session_id=session_id, channel=channel)
+        clear_pending_confirmation_by_key(pending.session_key)
         closure = close_turn(
             turn_id=contract.turn_id,
             final_text=final_text,
             executed_work_orders=[],
             verification_reports=[],
             aborted=True,
+            memory_context_refs=contract.memory_context_refs,
         )
         await execute_turn_closure_memory_writes(closure)
         return final_text
@@ -311,6 +349,7 @@ async def _try_resume_pending_confirmation(
             executed_work_orders=[],
             verification_reports=[],
             aborted=True,
+            memory_context_refs=contract.memory_context_refs,
         )
         await execute_turn_closure_memory_writes(closure)
         return final_text
@@ -330,8 +369,15 @@ async def _try_resume_pending_confirmation(
         allowed_skills=allowed_skills,
         run_tool_func=run_tool_func,
     )
+    record_entity_correction_usage_from_work_order(
+        work_order=work_order,
+        turn_id=contract.turn_id,
+        ok=bool(result.verification.ok),
+        failure_reason=str(getattr(result.verification, "failure_reason", "") or ""),
+    )
     if result.verification.ok:
-        clear_pending_confirmation(session_id=session_id, channel=channel)
+        record_confirmed_entity_correction_from_work_order(work_order=work_order, turn_id=contract.turn_id)
+        clear_pending_confirmation_by_key(pending.session_key)
     final_text = _direct_reply_from_contract(contract, work_order, bool(result.verification.ok), result.observation)
     closure = close_turn(
         turn_id=contract.turn_id,
@@ -339,6 +385,7 @@ async def _try_resume_pending_confirmation(
         executed_work_orders=[work_order.work_order_id],
         verification_reports=[result.verification],
         aborted=not bool(result.verification.ok),
+        memory_context_refs=contract.memory_context_refs,
     )
     _log_direct_execution(
         stage="resumed_pending_executed",
@@ -434,14 +481,27 @@ def _planned_direct_tool_allowed(plan: KernelPlanningResult, tool_id: str) -> bo
         return False
     if contract.risk_level.value == "critical":
         return False
+    planned_tools = {str(wo.inputs.get("tool") or "").strip() for wo in plan.work_orders}
+    if tool_id not in planned_tools:
+        return False
     if contract.task_type == "app_control":
         return contract.risk_level.value == "low" and tool_id in {
             "mcp:windows_open_app",
             "mcp:windows_window_switch",
             "mcp:windows_window_close",
         }
+    if contract.task_type == "calculator_calculate":
+        return contract.risk_level.value == "low" and tool_id in {
+            "mcp:windows_open_app",
+            "mcp:windows_calculator_calculate",
+        }
     if contract.task_type == "message_delivery":
-        return tool_id in {"mcp:windows_lark_send_message", "util:lark_send_text", "mcp:lark_send_text"}
+        return tool_id in {
+            "mcp:windows_open_app",
+            "mcp:windows_lark_send_message",
+            "util:lark_send_text",
+            "mcp:lark_send_text",
+        }
     if contract.task_type == "file_operation":
         return contract.risk_level.value in {"low", "medium", "high"} and tool_id in {
             "core:fs_read",
@@ -461,6 +521,8 @@ def _confirmed_direct_tool_allowed(contract: DecisionContract, tool_id: str) -> 
             "mcp:windows_window_switch",
             "mcp:windows_window_close",
         }
+    if contract.task_type == "calculator_calculate":
+        return contract.risk_level.value == "low" and tool_id == "mcp:windows_calculator_calculate"
     if contract.task_type == "file_operation":
         return contract.risk_level.value == "low" and tool_id in {
             "core:fs_read",
@@ -495,6 +557,32 @@ def _direct_reply_from_contract(contract: DecisionContract, work_order: WorkOrde
     return _planned_direct_reply(pseudo_plan, ok, observation)
 
 
+def _calculator_result_reply(target_obj: dict[str, Any], observation: str) -> str:
+    expression = str(target_obj.get("expression") or "").strip()
+    result = ""
+    try:
+        obj = json.loads(str(observation or ""))
+    except Exception:
+        obj = None
+    if isinstance(obj, dict):
+        evidence = obj.get("evidence") if isinstance(obj.get("evidence"), dict) else obj
+        for key in ("clipboard_norm", "clipboard_raw", "expect", "result"):
+            value = str(evidence.get(key) or "").strip() if isinstance(evidence, dict) else ""
+            if value:
+                result = value
+                break
+        visual = evidence.get("visual") if isinstance(evidence, dict) and isinstance(evidence.get("visual"), dict) else {}
+        if not result:
+            result = str(visual.get("result_norm") or visual.get("result") or "").strip()
+    if expression and result:
+        return f"已用计算器计算：{expression}={result}。"
+    if expression:
+        return f"已用计算器完成计算：{expression}。"
+    if result:
+        return f"已用计算器完成计算，结果是 {result}。"
+    return "已用计算器完成计算。"
+
+
 def _planned_direct_reply(plan: KernelPlanningResult, ok: bool, observation: str) -> str:
     intent = plan.review_summary.top_intent
     task_type = plan.decision_contract.task_type
@@ -511,6 +599,8 @@ def _planned_direct_reply(plan: KernelPlanningResult, ok: bool, observation: str
             recipients = target_obj.get("recipients") if isinstance(target_obj.get("recipients"), list) else []
             names = "\u3001".join(str(x) for x in recipients if str(x).strip()) or "\u76ee\u6807\u4f1a\u8bdd"
             return f"\u5df2\u53d1\u9001\u6d88\u606f\u7ed9 {names}\u3002"
+        if task_type == "calculator_calculate":
+            return _calculator_result_reply(target_obj, observation)
         if task_type == "file_operation":
             return f"\u5df2\u5b8c\u6210\u6587\u4ef6\u64cd\u4f5c\uff1a{target}\u3002"
         return "\u5df2\u5b8c\u6210\u3002"

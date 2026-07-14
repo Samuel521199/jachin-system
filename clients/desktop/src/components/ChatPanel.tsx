@@ -48,9 +48,6 @@ export default function ChatPanel() {
     registerStepHandler,
     registerMirrorInputHandler,
     registerBackgroundTaskHandler,
-    memoryCompactSuggest,
-    sendMemoryCompactControl,
-    dismissMemoryCompactSuggest,
     zombieTasksPending,
     dismissZombieTasksPending,
     backgroundTaskPulse,
@@ -459,7 +456,7 @@ export default function ChatPanel() {
         stream.getTracks().forEach(track => track.stop());
         setIsRecording(false);
         setRecordingStatus("录音完成，正在处理...");
-        
+
         // 自动发送语音消息
         handleVoiceChat(audioBlob);
       };
@@ -485,10 +482,10 @@ export default function ChatPanel() {
     try {
       // 将 Blob 转换为 File
       const audioFile = new File([audioBlob], 'recording.wav', { type: 'audio/wav' });
-      
+
       // 调用语音聊天API
       const response = await voiceChat(audioFile, 'wav', 'zh-CN', true, DEFAULT_KOKORO_TTS_VOICE);
-      
+
       // 添加用户消息（显示识别出的文本）
       const userMessage: StoredMessage = {
         role: "user",
@@ -496,7 +493,7 @@ export default function ChatPanel() {
         timestamp: Date.now(),
       };
       setMessages((prev) => addMessage(prev, userMessage));
-      
+
       // 添加AI回复（使用打字机效果）
       const assistantMessage: StoredMessage = {
         role: "assistant",
@@ -504,11 +501,11 @@ export default function ChatPanel() {
         timestamp: Date.now(),
       };
       setMessages((prev) => addMessage(prev, assistantMessage));
-      
+
       // 使用打字机效果显示回复
       setIsTyping(true);
       let currentContent = "";
-      
+
       await typewriterAnimation(response.text, {
         speed: 20,
         onUpdate: (text) => {
@@ -535,17 +532,17 @@ export default function ChatPanel() {
           });
         },
       });
-      
+
       // 播放语音回复
       if (response.audio_base64 && chatAudioRef.current) {
         const audioBytes = Uint8Array.from(atob(response.audio_base64), c => c.charCodeAt(0));
         const audioBlob = new Blob([audioBytes], { type: 'audio/wav' });
         const audioUrl = URL.createObjectURL(audioBlob);
-        
+
         chatAudioRef.current.src = audioUrl;
         await chatAudioRef.current.play();
       }
-      
+
       setRecordingStatus("");
     } catch (error) {
       const errorMessage: StoredMessage = {
@@ -796,36 +793,6 @@ export default function ChatPanel() {
             </div>
           </div>
         )}
-        {memoryCompactSuggest && (
-          <div className="mb-3 rounded-lg border border-amber-500/40 bg-amber-950/90 px-3 py-2 text-xs text-amber-100">
-            <p className="mb-1 font-medium text-amber-50">记忆整理提醒</p>
-            <p className="mb-2 text-amber-100/90">{memoryCompactSuggest.content}</p>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-amber-200/80">
-                {memoryCompactSuggest.remainingSec > 0
-                  ? `${memoryCompactSuggest.remainingSec} 秒后自动开始…`
-                  : "正在启动…"}
-              </span>
-              <button
-                type="button"
-                className="rounded bg-amber-500/90 px-2 py-0.5 text-[11px] text-amber-950"
-                onClick={() => sendMemoryCompactControl("memory_compact_confirm")}
-              >
-                立即开始
-              </button>
-              <button
-                type="button"
-                className="rounded bg-white/10 px-2 py-0.5 text-[11px]"
-                onClick={() => sendMemoryCompactControl("memory_compact_defer", 24)}
-              >
-                推迟 24h
-              </button>
-              <button type="button" className="text-[11px] text-amber-300/80" onClick={() => dismissMemoryCompactSuggest()}>
-                关闭
-              </button>
-            </div>
-          </div>
-        )}
         {/* 清空消息按钮（仅在消息存在时显示） */}
         {messages.length > 0 && (
           <div className="mb-2 flex justify-end">
@@ -839,7 +806,7 @@ export default function ChatPanel() {
             </button>
           </div>
         )}
-        
+
         {/* 录音状态提示 */}
         {recordingStatus && (
           <div className={`mb-2 text-xs px-3 py-1.5 rounded ${
@@ -850,7 +817,7 @@ export default function ChatPanel() {
             {recordingStatus}
           </div>
         )}
-        
+
         <div className="flex gap-2">
           {/* 语音录制按钮 */}
           {/* VAD 语音采集（智能截断）测试按钮 */}
@@ -891,7 +858,7 @@ export default function ChatPanel() {
               <Mic className="w-4 h-4" />
             )}
           </button>
-          
+
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -917,7 +884,7 @@ export default function ChatPanel() {
             )}
           </button>
         </div>
-        
+
         {/* 隐藏的音频元素用于播放语音回复 */}
         <audio ref={chatAudioRef} style={{ display: 'none' }} />
       </div>

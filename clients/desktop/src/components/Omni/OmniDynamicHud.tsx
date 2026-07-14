@@ -3,10 +3,9 @@
  */
 import React, { useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Activity, AlertTriangle, Brain, ChevronDown, ChevronUp, Clock, X } from "lucide-react";
+import { Activity, AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
 import type {
   BackgroundTaskPulseState,
-  MemoryCompactSuggestState,
   ZombieTasksPendingBanner,
 } from "../../hooks/useSensoryWebSocket";
 
@@ -16,12 +15,6 @@ export interface OmniDynamicHudProps {
   backgroundTaskPulse: BackgroundTaskPulseState | null;
   zombieTasksPending: ZombieTasksPendingBanner | null;
   dismissZombieTasksPending: () => void;
-  memoryCompactSuggest: MemoryCompactSuggestState | null;
-  sendMemoryCompactControl: (
-    action: "memory_compact_confirm" | "memory_compact_defer" | "memory_compact_cancel",
-    hours?: number,
-  ) => void;
-  dismissMemoryCompactSuggest: () => void;
   setInput: (text: string) => void;
 }
 
@@ -31,21 +24,16 @@ export const OmniDynamicHud: React.FC<OmniDynamicHudProps> = ({
   backgroundTaskPulse,
   zombieTasksPending,
   dismissZombieTasksPending,
-  memoryCompactSuggest,
-  sendMemoryCompactControl,
-  dismissMemoryCompactSuggest,
   setInput,
 }) => {
   const zombieActive = zombieTasksPending != null && zombieTasksPending.count > 0;
-  const hasAny =
-    Boolean(backgroundTaskPulse) || zombieActive || Boolean(memoryCompactSuggest);
+  const hasAny = Boolean(backgroundTaskPulse) || zombieActive;
   const badgeCount = useMemo(() => {
     let n = 0;
     if (backgroundTaskPulse) n += 1;
     if (zombieActive) n += 1;
-    if (memoryCompactSuggest) n += 1;
     return n;
-  }, [backgroundTaskPulse, zombieActive, memoryCompactSuggest]);
+  }, [backgroundTaskPulse, zombieActive]);
 
   if (!hasAny) return null;
 
@@ -81,8 +69,6 @@ export const OmniDynamicHud: React.FC<OmniDynamicHudProps> = ({
           <span className="flex min-h-[1.25rem] min-w-[1.25rem] items-center justify-center border border-rose-500/80 bg-rose-950/90 px-1 text-[10px] font-bold text-rose-100 shadow-[0_0_14px_rgba(244,63,94,0.55)] animate-pulse">
             {zombieTasksPending!.count}
           </span>
-        ) : memoryCompactSuggest ? (
-          <span className="h-2 w-2 border border-amber-400 bg-amber-400/90 shadow-[0_0_12px_rgba(251,191,36,0.7)] animate-pulse" />
         ) : null}
         {expanded ? (
           <ChevronUp className="h-3.5 w-3.5 text-cyan-400/80" strokeWidth={2.5} />
@@ -168,47 +154,6 @@ export const OmniDynamicHud: React.FC<OmniDynamicHudProps> = ({
               </section>
             )}
 
-            {memoryCompactSuggest && (
-              <section
-                className={`border border-amber-500/45 bg-amber-950/50 px-3 py-2.5 text-xs text-amber-100 shadow-[0_0_18px_rgba(245,158,11,0.18),inset_0_0_12px_rgba(245,158,11,0.06)] ${clipTactical}`}
-              >
-                <p className="mb-1 flex items-center gap-2 font-medium text-amber-50">
-                  <Brain className="h-3.5 w-3.5 shrink-0 text-amber-300" />
-                  记忆整理
-                </p>
-                <p className="mb-2 leading-relaxed text-amber-100/90">{memoryCompactSuggest.content}</p>
-                <div className="mb-2 flex items-center gap-2 text-[11px] text-amber-200/85">
-                  <Clock className="h-3 w-3 shrink-0 opacity-70" />
-                  {memoryCompactSuggest.remainingSec > 0
-                    ? `${memoryCompactSuggest.remainingSec} 秒后自动开始…`
-                    : "正在请求启动…"}
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    className="border border-amber-400/60 bg-amber-500/20 px-2.5 py-1.5 text-[11px] font-medium text-amber-50 shadow-[0_0_12px_rgba(251,191,36,0.2)] hover:bg-amber-500/35"
-                    onClick={() => sendMemoryCompactControl("memory_compact_confirm")}
-                  >
-                    立即开始
-                  </button>
-                  <button
-                    type="button"
-                    className="border border-white/15 bg-white/5 px-2.5 py-1.5 text-[11px] text-amber-100 hover:bg-white/10"
-                    onClick={() => sendMemoryCompactControl("memory_compact_defer", 24)}
-                  >
-                    推迟 24h
-                  </button>
-                  <button
-                    type="button"
-                    className="border border-transparent p-1.5 text-amber-300/80 hover:border-amber-500/30 hover:bg-white/5 hover:text-amber-100"
-                    title="关闭"
-                    onClick={() => dismissMemoryCompactSuggest()}
-                  >
-                    <X className="h-4 w-4" strokeWidth={2} />
-                  </button>
-                </div>
-              </section>
-            )}
           </motion.div>
         )}
       </AnimatePresence>

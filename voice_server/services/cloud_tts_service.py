@@ -44,7 +44,7 @@ class CloudTtsService:
         fast_model: str = "cosyvoice-v3-flash",
         default_voice: str = "longanhuan",
         default_speed: float = 1.0,
-        audio_format: str = "wav",
+        audio_format: str = "pcm",
         sample_rate: int = 24000,
     ) -> None:
         self.api_key = api_key.strip()
@@ -53,10 +53,17 @@ class CloudTtsService:
         self.fast_model = fast_model.strip() or "cosyvoice-v3-flash"
         self.default_voice = default_voice.strip() or "longanhuan"
         self.default_speed = float(default_speed or 1.0)
-        self.audio_format = (audio_format or "wav").strip().lower()
+        self.audio_format = (audio_format or "pcm").strip().lower()
         self.sample_rate = int(sample_rate or 24000)
         self.model_path = f"cloud:{self.model_name}"
         self._load_error: str | None = None
+        self._prewarm_lock = threading.Lock()
+        self._last_prewarm_at = 0.0
+        self._last_prewarm_trace: dict[str, Any] = {}
+        self._pool_lock = threading.Lock()
+        self._pool: Any | None = None
+        self._pool_signature = ""
+        self._pool_ready_trace: dict[str, Any] = {}
 
     @property
     def ready(self) -> bool:
@@ -96,6 +103,119 @@ class CloudTtsService:
     def cancel_all(self) -> None:
         return None
 
+    def prewarm_stream(self, reason: str = "manual", min_interval_sec: float | None = None) -> dict[str, Any]:
+        """Warm the cloud streaming path and keep SDK WebSocket objects hot."""
+        ttl = self._prewarm_min_interval_seconds() if min_interval_sec is None else max(0.0, float(min_interval_sec))
+        now = time.time()
+        age = now - self._last_prewarm_at if self._last_prewarm_at > 0 else None
+        if age is not None and age < ttl:
+            return {
+                "ok": True,
+                "status": "skipped_recent",
+                "age_ms": int(age * 1000),
+                "trace": self._last_prewarm_trace,
+                "connection_reuse_supported": self._pool_enabled(),
+            }
+        if not self._prewarm_lock.acquire(blocking=False):
+            return {
+                "ok": True,
+                "status": "already_running",
+                "trace": self._last_prewarm_trace,
+                "connection_reuse_supported": self._pool_enabled(),
+            }
+        try:
+            text = os.getenv("JACHIN_TTS_PREWARM_TEXT", "\u6211\u5728\u3002").strip() or "\u6211\u5728\u3002"
+            trace: dict[str, Any] = {
+                "reason": reason,
+                "text_len": len(text),
+                "format": "pcm_s16le",
+                "sample_rate": self.sample_rate,
+                "connection_reuse_supported": self._pool_enabled(),
+                "checks": {},
+            }
+            checks = {
+                "cue": self._prewarm_stream_kind(text=text, kind="cue", reason=reason, now=now),
+                "content": self._prewarm_stream_kind(text=text, kind="content", reason=reason, now=now),
+            }
+            trace["checks"] = checks
+            trace["cue"] = checks["cue"]
+            trace["content"] = checks["content"]
+            ok = bool(checks["cue"].get("ok") and checks["content"].get("ok"))
+            trace["ok"] = ok
+            self._last_prewarm_at = time.time()
+            self._last_prewarm_trace = trace
+            if ok:
+                logger.info("DashScope TTS stream prewarm ok reason=%s trace=%s", reason, trace)
+            else:
+                logger.warning("DashScope TTS stream prewarm failed reason=%s trace=%s", reason, trace)
+            return {"ok": ok, "status": "warmed" if ok else "failed", "trace": trace, "connection_reuse_supported": self._pool_enabled()}
+        except Exception as e:
+            trace = {
+                "reason": reason,
+                "error": str(e),
+                "connection_reuse_supported": self._pool_enabled(),
+            }
+            self._last_prewarm_at = time.time()
+            self._last_prewarm_trace = trace
+            logger.warning("DashScope TTS stream prewarm exception reason=%s err=%s", reason, e)
+            return {"ok": False, "status": "failed", "trace": trace, "connection_reuse_supported": self._pool_enabled()}
+        finally:
+            self._prewarm_lock.release()
+
+    def _prewarm_stream_kind(self, *, text: str, kind: str, reason: str, now: float) -> dict[str, Any]:
+        started = time.perf_counter()
+        trace: dict[str, Any] = {
+            "reason": reason,
+            "kind": kind,
+            "text_len": len(text),
+            "requested_model": self._select_model(kind),
+            "format": "pcm_s16le",
+            "sample_rate": self.sample_rate,
+            "connection_reuse_supported": self._pool_enabled(),
+            "fallbacks": [],
+        }
+        chunks = 0
+        byte_count = 0
+        last_error = ""
+        session_id = f"prewarm-{kind}-{int(now)}"
+        for event in self.stream_synthesize(text, voice=self.default_voice, session_id=session_id, kind=kind):
+            event_type = str(event.get("type") or "")
+            if event_type == "open":
+                trace["tts_ws_open_ms"] = int(event.get("elapsed_ms") or 0)
+                trace["model"] = event.get("model") or trace.get("model") or trace.get("requested_model")
+            elif event_type == "meta":
+                trace["backend"] = event.get("backend")
+                trace["model"] = event.get("model")
+                trace["requested_model"] = event.get("requested_model") or trace.get("requested_model")
+                trace["voice"] = event.get("voice")
+                trace["format"] = event.get("format")
+                trace["sample_rate"] = event.get("sample_rate")
+            elif event_type == "event":
+                msg = event.get("message")
+                if isinstance(msg, dict) and msg.get("event") == "model_fallback":
+                    trace["fallbacks"].append(msg)
+            elif event_type == "audio":
+                chunks += 1
+                data = event.get("data") or b""
+                byte_count += len(data) if isinstance(data, bytes) else 0
+                trace.setdefault("tts_first_audio_ms", int(event.get("elapsed_ms") or 0))
+                trace["model"] = event.get("model") or trace.get("model")
+            elif event_type == "complete":
+                trace["tts_total_ms"] = int(event.get("total_ms") or int((time.perf_counter() - started) * 1000))
+                trace["request_id"] = event.get("request_id") or ""
+                trace["model"] = event.get("model") or trace.get("model")
+                break
+            elif event_type == "error":
+                last_error = str(event.get("message") or "")
+                trace["last_error"] = last_error[:500]
+        trace["chunks"] = chunks
+        trace["bytes"] = byte_count
+        trace.setdefault("tts_total_ms", int((time.perf_counter() - started) * 1000))
+        trace["ok"] = chunks > 0
+        if not trace["ok"] and last_error:
+            trace["error"] = last_error[:500]
+        return trace
+
     def synthesize(
         self,
         text: str,
@@ -128,7 +248,10 @@ class CloudTtsService:
                     logger.warning("DashScope TTS model failed model=%s voice=%s err=%s", candidate_model, selected_voice, e)
             if not audio:
                 raise last_error or RuntimeError("DashScope TTS returned empty audio")
-            audio = self._normalize_wav_header(audio)
+            if self.audio_format == "pcm":
+                audio = self._pcm16_to_wav(audio, self.sample_rate, channels=1)
+            else:
+                audio = self._normalize_wav_header(audio)
             synth_ms = int((time.perf_counter() - started) * 1000)
             duration_ms = self._estimate_wav_duration_ms(audio)
             logger.info(
@@ -152,6 +275,9 @@ class CloudTtsService:
                     "requested_model": selected_model,
                     "voice": selected_voice,
                     "backend": "dashscope-cosyvoice",
+                    "format": "wav_compat_from_pcm" if self.audio_format == "pcm" else self.audio_format,
+                    "requested_format": self.audio_format,
+                    "sample_rate": self.sample_rate,
                     "session_id": session_id or "",
                     "input_text": text,
                     "synthesis_text": synthesis_text,
@@ -238,6 +364,67 @@ class CloudTtsService:
             raise RuntimeError(self._load_error or "DashScope TTS not ready")
 
         synthesis_text = self._normalize_text_for_stable_style(text)
+        selected_model = self._select_model(kind)
+        selected_voice = self._select_voice(voice)
+        selected_rate = self._normalize_rate(speed)
+        candidates = self._model_candidates(selected_model)
+        last_error = ""
+        for idx, candidate_model in enumerate(candidates):
+            saw_audio = False
+            saw_complete = False
+            attempt_error = ""
+            if idx > 0:
+                yield {
+                    "type": "event",
+                    "message": {
+                        "event": "model_fallback",
+                        "from_model": candidates[idx - 1],
+                        "to_model": candidate_model,
+                        "reason": last_error[:300],
+                    },
+                }
+            for event in self._stream_synthesize_once(
+                text=text,
+                synthesis_text=synthesis_text,
+                requested_model=selected_model,
+                model=candidate_model,
+                voice=selected_voice,
+                rate=selected_rate,
+                session_id=session_id,
+                kind=kind,
+            ):
+                event_type = str(event.get("type") or "")
+                if event_type == "audio":
+                    saw_audio = True
+                elif event_type == "complete":
+                    saw_complete = True
+                elif event_type == "error":
+                    attempt_error = str(event.get("message") or "")
+                    last_error = attempt_error
+                    if (
+                        not saw_audio
+                        and idx < len(candidates) - 1
+                        and self._should_retry_stream_model_error(attempt_error)
+                    ):
+                        continue
+                yield event
+            if saw_complete or saw_audio:
+                return
+            if not self._should_retry_stream_model_error(attempt_error) or idx >= len(candidates) - 1:
+                return
+
+    def _stream_synthesize_once(
+        self,
+        *,
+        text: str,
+        synthesis_text: str,
+        requested_model: str,
+        model: str,
+        voice: str,
+        rate: float,
+        session_id: str | None,
+        kind: str | None,
+    ) -> Iterator[dict[str, Any]]:
         import dashscope  # type: ignore
         from dashscope.audio.tts_v2 import AudioFormat, ResultCallback, SpeechSynthesizer  # type: ignore
 
@@ -249,29 +436,52 @@ class CloudTtsService:
             except Exception:
                 pass
 
-        selected_model = self._select_model(kind)
-        selected_voice = self._select_voice(voice)
-        selected_rate = self._normalize_rate(speed)
         fmt = self._tts_v2_pcm_format(AudioFormat)
         events: "queue.Queue[dict[str, Any] | None]" = queue.Queue()
         started = time.perf_counter()
         first_packet_ms = 0
+        opened_ms = 0
+        pool_borrow_ms = 0
+        pool_reused = False
+        pool_enabled = self._pool_enabled()
+        pool_trace: dict[str, Any] = {}
+        stream_failed = False
+        stream_completed = False
 
         class _Callback(ResultCallback):  # type: ignore[misc, valid-type]
             def on_open(self) -> None:
-                events.put({"type": "open"})
+                nonlocal opened_ms
+                opened_ms = int((time.perf_counter() - started) * 1000)
+                if opened_ms > self_outer._ws_open_warn_ms():
+                    logger.warning(
+                        "DashScope TTS ws open slow opened_ms=%s threshold_ms=%s model=%s kind=%s session_id=%s",
+                        opened_ms,
+                        self_outer._ws_open_warn_ms(),
+                        model,
+                        kind or "",
+                        session_id or "",
+                    )
+                events.put({"type": "open", "elapsed_ms": opened_ms, "model": model, "requested_model": requested_model})
 
             def on_complete(self) -> None:
+                nonlocal stream_completed
+                stream_completed = True
                 events.put(
                     {
                         "type": "complete",
                         "first_packet_ms": first_packet_ms,
+                        "opened_ms": opened_ms,
+                        "total_ms": int((time.perf_counter() - started) * 1000),
                         "request_id": _safe_request_id(),
+                        "model": model,
+                        "requested_model": requested_model,
                     }
                 )
 
             def on_error(self, message: str) -> None:
-                events.put({"type": "error", "message": str(message)})
+                nonlocal stream_failed
+                stream_failed = True
+                events.put({"type": "error", "message": str(message), "model": model, "requested_model": requested_model})
                 events.put(None)
 
             def on_close(self) -> None:
@@ -287,41 +497,87 @@ class CloudTtsService:
                     return
                 if first_packet_ms <= 0:
                     first_packet_ms = int((time.perf_counter() - started) * 1000)
-                events.put({"type": "audio", "data": bytes(data), "elapsed_ms": int((time.perf_counter() - started) * 1000)})
+                    self_outer._log_first_audio_latency(
+                        first_packet_ms,
+                        model=model,
+                        kind=kind,
+                        session_id=session_id,
+                        text_len=len(synthesis_text),
+                    )
+                events.put({"type": "audio", "data": bytes(data), "elapsed_ms": int((time.perf_counter() - started) * 1000), "model": model, "requested_model": requested_model})
 
+        self_outer = self
         callback = _Callback()
-        synthesizer = SpeechSynthesizer(
-            model=selected_model,
-            voice=selected_voice,
-            format=fmt,
-            speech_rate=selected_rate,
-            language_hints=self._language_hints(text),
-            callback=callback,
-            url=ws_url,
-        )
+        synthesizer: Any | None = None
 
         def _safe_request_id() -> str:
             try:
-                return str(synthesizer.get_last_request_id() or "")
+                return str(synthesizer.get_last_request_id() or "") if synthesizer is not None else ""
             except Exception:
                 return ""
 
         def _run() -> None:
+            nonlocal synthesizer, pool_borrow_ms, pool_reused, pool_trace
             try:
-                synthesizer.call(synthesis_text, timeout_millis=int(self._timeout_seconds() * 1000))
+                borrow_started = time.perf_counter()
+                if pool_enabled:
+                    pool = self._ensure_synthesizer_pool(ws_url)
+                    pool_trace = dict(self._pool_ready_trace)
+                    synthesizer = pool.borrow_synthesizer(
+                        model=model,
+                        voice=voice,
+                        format=fmt,
+                        speech_rate=rate,
+                        language_hints=self._language_hints(text),
+                        callback=callback,
+                        additional_params={"enable_ssml": False},
+                    )
+                    pool_reused = self._synthesizer_is_connected(synthesizer)
+                else:
+                    synthesizer = SpeechSynthesizer(
+                        model=model,
+                        voice=voice,
+                        format=fmt,
+                        speech_rate=rate,
+                        language_hints=self._language_hints(text),
+                        callback=callback,
+                        url=ws_url,
+                        additional_params={"enable_ssml": False},
+                    )
+                pool_borrow_ms = int((time.perf_counter() - borrow_started) * 1000)
+                if pool_enabled:
+                    logger.info(
+                        "DashScope TTS pool borrow model=%s voice=%s borrow_ms=%s reused=%s session_id=%s",
+                        model,
+                        voice,
+                        pool_borrow_ms,
+                        pool_reused,
+                        session_id or "",
+                    )
+                synthesizer.streaming_call(synthesis_text)
+                synthesizer.streaming_complete(int(self._timeout_seconds() * 1000))
             except Exception as exc:  # noqa: BLE001
-                events.put({"type": "error", "message": str(exc)})
+                nonlocal_stream_failed["value"] = True
+                events.put({"type": "error", "message": str(exc), "model": model, "requested_model": requested_model})
                 events.put(None)
 
+        nonlocal_stream_failed = {"value": False}
         threading.Thread(target=_run, name="dashscope-tts-stream", daemon=True).start()
         yield {
             "type": "meta",
             "backend": "dashscope-cosyvoice-stream",
-            "model": selected_model,
-            "voice": selected_voice,
+            "model": model,
+            "requested_model": requested_model,
+            "voice": voice,
             "format": "pcm_s16le",
+            "requested_format": "pcm",
+            "sample_width": 2,
             "sample_rate": self.sample_rate,
             "channels": 1,
+            "connection_reuse_supported": pool_enabled,
+            "pool_reused": pool_reused,
+            "pool_borrow_ms": pool_borrow_ms,
+            "pool_ready_trace": pool_trace,
             "session_id": session_id or "",
             "input_text": text,
             "synthesis_text": synthesis_text,
@@ -331,11 +587,76 @@ class CloudTtsService:
             try:
                 event = events.get(timeout=self._timeout_seconds())
             except queue.Empty:
-                yield {"type": "error", "message": "DashScope TTS stream timeout"}
+                stream_failed = True
+                yield {"type": "error", "message": "DashScope TTS stream timeout", "model": model, "requested_model": requested_model}
                 break
             if event is None:
                 break
+            if str(event.get("type") or "") == "error":
+                stream_failed = True
             yield event
+        if pool_enabled and synthesizer is not None:
+            if stream_completed and not stream_failed and not nonlocal_stream_failed["value"]:
+                try:
+                    self._ensure_synthesizer_pool(ws_url).return_synthesizer(synthesizer)
+                except Exception as exc:
+                    logger.warning("DashScope TTS return synthesizer failed: %s", exc)
+            else:
+                logger.warning(
+                    "DashScope TTS stream object discarded model=%s requested_model=%s session_id=%s failed=%s completed=%s",
+                    model,
+                    requested_model,
+                    session_id or "",
+                    stream_failed or nonlocal_stream_failed["value"],
+                    stream_completed,
+                )
+
+    def _ensure_synthesizer_pool(self, ws_url: str | None) -> Any:
+        import dashscope  # type: ignore
+        from dashscope.audio.tts_v2.speech_synthesizer import SpeechSynthesizerObjectPool  # type: ignore
+
+        dashscope.api_key = self.api_key
+        if ws_url:
+            try:
+                dashscope.base_websocket_api_url = ws_url
+            except Exception:
+                pass
+        size = self._pool_size()
+        signature = f"{self.api_key[:6]}:{ws_url or ''}:{size}"
+        with self._pool_lock:
+            if self._pool is not None and self._pool_signature == signature:
+                return self._pool
+            started = time.perf_counter()
+            self._pool = SpeechSynthesizerObjectPool(max_size=size, url=ws_url)
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            self._pool_signature = signature
+            self._pool_ready_trace = {
+                "pool_size": size,
+                "pool_init_ms": elapsed_ms,
+                "ws_url": ws_url or "",
+                "connection_reuse_supported": True,
+            }
+            logger.info("DashScope TTS object pool ready size=%s init_ms=%s ws_url=%s", size, elapsed_ms, ws_url or "")
+            return self._pool
+
+    @staticmethod
+    def _synthesizer_is_connected(synthesizer: Any) -> bool:
+        try:
+            return bool(synthesizer._SpeechSynthesizer__is_connected())  # pylint: disable=protected-access
+        except Exception:
+            return False
+
+    @staticmethod
+    def _pool_enabled() -> bool:
+        raw = os.getenv("JACHIN_TTS_POOL_ENABLED", "1").strip().lower()
+        return raw not in {"0", "false", "no", "off"}
+
+    @staticmethod
+    def _pool_size() -> int:
+        try:
+            return max(1, min(20, int(os.getenv("JACHIN_TTS_POOL_SIZE", "2"))))
+        except Exception:
+            return 2
 
     def _tts_v2_ws_url(self) -> str | None:
         explicit = os.getenv("JACHIN_TTS_WS_API_BASE", "").strip()
@@ -378,6 +699,7 @@ class CloudTtsService:
         model = (model or "").strip()
         candidates = [model] if model else []
         fallback_map = {
+            "cosyvoice-v3": ["cosyvoice-v3-plus", "cosyvoice-v3-flash"],
             "cosyvoice-v3.5-plus": ["cosyvoice-v3-plus", "cosyvoice-v3-flash"],
             "cosyvoice-v3.5-flash": ["cosyvoice-v3-flash"],
         }
@@ -385,6 +707,22 @@ class CloudTtsService:
             if item not in candidates:
                 candidates.append(item)
         return candidates
+
+    @staticmethod
+    def _should_retry_stream_model_error(message: str) -> bool:
+        msg = str(message or "")
+        if not msg:
+            return False
+        retry_markers = (
+            "AccessDenied",
+            "Model not exist",
+            "model_not_exist",
+            "task-failed",
+            "does not support",
+            "InvalidParameter",
+            "DashScope TTS stream timeout",
+        )
+        return any(marker.lower() in msg.lower() for marker in retry_markers)
 
     def _select_voice(self, voice: str | None) -> str:
         v = str(voice or "").strip()
@@ -467,6 +805,26 @@ class CloudTtsService:
             return audio
 
     @staticmethod
+    def _pcm16_to_wav(pcm: bytes, sample_rate: int, channels: int = 1) -> bytes:
+        if pcm.startswith(b"RIFF") and pcm[8:12] == b"WAVE":
+            return CloudTtsService._normalize_wav_header(pcm)
+        sample_rate = int(sample_rate or 24000)
+        channels = max(1, int(channels or 1))
+        bits_per_sample = 16
+        block_align = channels * bits_per_sample // 8
+        byte_rate = sample_rate * block_align
+        data_len = len(pcm)
+        header = (
+            b"RIFF"
+            + struct.pack("<I", 36 + data_len)
+            + b"WAVEfmt "
+            + struct.pack("<IHHIIHH", 16, 1, channels, sample_rate, byte_rate, block_align, bits_per_sample)
+            + b"data"
+            + struct.pack("<I", data_len)
+        )
+        return header + pcm
+
+    @staticmethod
     def _estimate_wav_duration_ms(audio: bytes) -> int:
         try:
             with wave.open(io.BytesIO(audio), "rb") as wf:
@@ -497,3 +855,63 @@ class CloudTtsService:
             return max(5.0, min(120.0, float(os.getenv("JACHIN_TTS_TIMEOUT_SEC", "45"))))
         except Exception:
             return 45.0
+
+    @staticmethod
+    def _prewarm_min_interval_seconds() -> float:
+        try:
+            return max(0.0, min(600.0, float(os.getenv("JACHIN_TTS_PREWARM_MIN_INTERVAL_SEC", "20"))))
+        except Exception:
+            return 20.0
+
+    @staticmethod
+    def _ws_open_warn_ms() -> int:
+        try:
+            return max(100, int(os.getenv("JACHIN_TTS_WS_OPEN_WARN_MS", "500")))
+        except Exception:
+            return 500
+
+    @staticmethod
+    def _first_audio_warn_ms() -> int:
+        try:
+            return max(300, int(os.getenv("JACHIN_TTS_FIRST_AUDIO_WARN_MS", "1500")))
+        except Exception:
+            return 1500
+
+    @staticmethod
+    def _first_audio_severe_ms() -> int:
+        try:
+            return max(1000, int(os.getenv("JACHIN_TTS_FIRST_AUDIO_SEVERE_MS", "3000")))
+        except Exception:
+            return 3000
+
+    def _log_first_audio_latency(
+        self,
+        first_packet_ms: int,
+        *,
+        model: str,
+        kind: str | None,
+        session_id: str | None,
+        text_len: int,
+    ) -> None:
+        warn_ms = self._first_audio_warn_ms()
+        severe_ms = self._first_audio_severe_ms()
+        if first_packet_ms > severe_ms:
+            logger.warning(
+                "DashScope TTS first audio severely slow first_audio_ms=%s severe_ms=%s model=%s kind=%s session_id=%s text_len=%s",
+                first_packet_ms,
+                severe_ms,
+                model,
+                kind or "",
+                session_id or "",
+                text_len,
+            )
+        elif first_packet_ms > warn_ms:
+            logger.warning(
+                "DashScope TTS first audio slow first_audio_ms=%s warn_ms=%s model=%s kind=%s session_id=%s text_len=%s",
+                first_packet_ms,
+                warn_ms,
+                model,
+                kind or "",
+                session_id or "",
+                text_len,
+            )

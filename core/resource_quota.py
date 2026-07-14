@@ -2,7 +2,7 @@
 Jachin Nexus V2 - 子账号资源配额校验
 
 resource_quota JSON: max_memory_gb, monthly_task_limit
-在 memory/sync、coordinate/task 等 API 中拦截校验。
+在 coordinate/task 等 API 中拦截校验。
 """
 from __future__ import annotations
 

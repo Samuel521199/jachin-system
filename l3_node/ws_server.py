@@ -473,12 +473,6 @@ async def _send_safe(websocket, payload: dict) -> None:
         logger.debug("WebSocket send failed: %s", e)
 
 
-async def _maybe_push_memory_compact_suggest(websocket) -> None:
-    """[已停用] 原：定时推送 JSON 梦境合并横幅；Memory Nexus 下不再推送。"""
-    logger.debug("[L3 WS] memory_compact_suggest 已全局禁用（Memory Nexus）")
-    return
-
-
 async def _maybe_push_zombie_tasks_snapshot(websocket) -> None:
     """
     订阅 ``subscribe_background_tasks`` 后：若 zombie_tasks.json 仍有未读摘要，补推一条。
@@ -507,12 +501,6 @@ async def _maybe_push_zombie_tasks_snapshot(websocket) -> None:
         logger.info("[L3 WS] 已向订阅端补推 zombie_tasks_pending count=%d", len(tasks))
     except Exception as e:
         logger.debug("[L3 WS] zombie_tasks_pending 补推跳过: %s", e)
-
-
-async def _run_scheduled_memory_compact_background(*, force: bool = True) -> None:
-    """[已停用] 原：WS 确认后后台跑 JSON 合并；入口保留以兼容旧客户端消息类型。"""
-    logger.debug("[L3 WS] memory_compact 后台任务已禁用 force=%s（Memory Nexus）", force)
-    return
 
 
 async def _broadcast_to_mirror_subscribers(chat_id: str, payload: dict) -> None:
@@ -1361,7 +1349,6 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
             msg_type = msg.get("type") or msg.get("action", "")
             if msg_type == "manifest":
                 await _send_safe(websocket, {"type": "manifest_ack", "caps": msg.get("caps", [])})
-                asyncio.create_task(_maybe_push_memory_compact_suggest(websocket))
                 continue
 
             # 终端订阅 Lark 镜像：后续该 chat_id 的消息会广播到此连接
@@ -1451,51 +1438,6 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
                     except asyncio.CancelledError:
                         pass
                 active_turn_task = None
-                continue
-
-            # 记忆整理调度：控制帧（无 intent 亦可）
-            if msg_type == "memory_compact_defer":
-                try:
-                    from l3_node.memory_compact_schedule import defer_hours
-
-                    defer_hours(float(msg.get("hours", 24)))
-                except Exception as e:
-                    logger.debug("[L3 WS] memory_compact_defer: %s", e)
-                await _send_safe(
-                    websocket,
-                    {
-                        "step_type": "system_status",
-                        "content": json.dumps({"status": "记忆整理已推迟"}, ensure_ascii=False),
-                        "run_id": "",
-                    },
-                )
-                continue
-            if msg_type in ("memory_compact_confirm", "memory_compact_auto_start"):
-                asyncio.create_task(_run_scheduled_memory_compact_background())
-                await _send_safe(
-                    websocket,
-                    {
-                        "step_type": "system_status",
-                        "content": json.dumps({"status": "记忆整理已在后台启动"}, ensure_ascii=False),
-                        "run_id": "",
-                    },
-                )
-                continue
-            if msg_type == "memory_compact_cancel":
-                try:
-                    from l3_node.memory_compact_control import request_memory_compact_cancel
-
-                    request_memory_compact_cancel()
-                except Exception as e:
-                    logger.debug("[L3 WS] memory_compact_cancel: %s", e)
-                await _send_safe(
-                    websocket,
-                    {
-                        "step_type": "system_status",
-                        "content": json.dumps({"status": "已请求取消记忆整理（写入前生效）"}, ensure_ascii=False),
-                        "run_id": "",
-                    },
-                )
                 continue
 
             # 生成式 UI：前端提交 tool 参数，Native 执行或生成说明，不经本轮 LLM RoleExecutionAgent（会话仍落盘）

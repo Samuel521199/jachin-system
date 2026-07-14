@@ -1,4 +1,4 @@
-﻿/** Voice Core UX Profile — 管道相同，壳不同（见 VOICE_UNIFIED_PIPELINE_PROPOSAL.md） */
+/** Voice Core UX Profile: same pipeline, different UX shells. */
 export type VoiceUxProfile = "wake" | "chat_ptt" | "chat_vad";
 
 export type VoiceProfileConfig = {

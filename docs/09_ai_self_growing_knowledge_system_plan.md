@@ -480,3 +480,179 @@ MemoryRecall -> 读取 concepts/playbooks
 - 能把输出成果继续反哺知识系统。
 - 随着使用时间增长，执行更稳、更符合用户习惯。
 
+## 10. 最新实现进展：意图、能力和任务经验进入自生长闭环
+
+更新时间：2026-07-14
+
+本轮更新把“用户输入 -> 能力选择 -> 任务拆解 -> 执行结果 -> 经验记忆”的链路继续向自生长知识系统靠拢。重点不是新增一套孤立记忆，而是把任务经验、工具习惯、失败模式和用户纠错统一接入现有 Cognitive Kernel 与 MemoryWriteAgent。
+
+### 10.1 Capability / Skill Manifest 参与意图识别
+
+已实现能力：
+
+- `Capability Registry` 不再只依赖内置画像或 `review_board.py` 规则。
+- 系统会扫描 Skill / MCP / Model 的 `plugin.json`，把 manifest 中的名称、描述、关键词、任务类型、依赖、风险等级、decomposition 等 metadata 注册为可检索能力。
+- 用户输入进入 `ReviewBoard` 后，会同时生成规则候选、语义候选和 capability 候选。
+- 最终是否采用候选能力仍由 Arbiter / DecisionContract 门控，避免模型自由乱选工具。
+
+当前落点：
+
+```text
+l3_node/capability_semantic_registry.py
+l3_node/cognitive_kernel/review_board.py
+l3_node/cognitive_kernel/contracts.py
+```
+
+对应自生长意义：
+
+- Skill / MCP 自己声明“我能做什么”，主系统只负责理解、排序和授权。
+- 后续新增能力时，不需要继续把大量 if-else 写进主流程。
+
+### 10.2 轻量语义解析和多候选排序
+
+已实现能力：
+
+- 新增轻量 `SemanticIntentAgent`。
+- 规则解析仍然保留作为稳定底座。
+- 可选轻量 LLM 只输出候选 intent、target、confidence 和 reason。
+- 多候选会统一排序，例如：
+  - `lock` 可以被排序为 `Lark` 候选。
+  - “浏览器”可以同时生成 Chrome / Edge / Browser 候选。
+  - “发消息”可以候选 Lark / WeChat / Email 等通讯能力。
+- 高置信候选也不能直接越权执行，仍要进入 Arbiter。
+
+当前落点：
+
+```text
+l3_node/cognitive_kernel/semantic_intent_agent.py
+l3_node/cognitive_kernel/review_board.py
+```
+
+对应自生长意义：
+
+- 系统开始从“固定状态机”升级为“候选理解 + 证据排序 + 门控执行”。
+- 错误识别可以被用户纠正，并在下一轮通过统一记忆反哺候选排序。
+
+### 10.3 用户确认后的纠错写入统一记忆
+
+已实现能力：
+
+- 低置信或歧义实体不会静默乱执行，而是生成候选澄清。
+- 用户确认后，纠错会写入统一记忆体系，而不是只存在当前对话。
+- 下次遇到相似输入时，纠错记忆会成为高优先级证据。
+
+适用例子：
+
+```text
+用户说：打开 lock
+系统候选：你是不是要打开 Lark？
+用户回复：是
+系统执行：打开 Lark
+记忆写入：在类似上下文中 lock 更可能指 Lark
+```
+
+对应自生长意义：
+
+- 用户纠错成为系统生长的燃料。
+- 不是简单 alias 表补丁，而是进入 MemoryRecall / ReviewBoard / Arbiter 的统一证据链。
+
+### 10.4 TaskDecomposer 使用 capability metadata 自动拆 DAG
+
+已实现能力：
+
+- 新增正式 `TaskDecomposerAgent` 路径。
+- TaskDecomposer 不再只能靠固定代码拆任务。
+- 如果 Skill / MCP manifest 提供 `decomposition.nodes`，系统会按 metadata 自动生成 Task DAG。
+- DAG 节点包含 goal、role_agent、tool/capability、inputs、depends_on、risk_level、verification_criteria、recovery_policy。
+- 没有 metadata 的能力仍可走保守 fallback。
+
+当前落点：
+
+```text
+l3_node/cognitive_kernel/task_decomposer.py
+docs/12_task_decomposer_agent_architecture.md
+```
+
+对应自生长意义：
+
+- 每个能力可以自描述“我应该如何被拆成任务”。
+- 后续新增 Skill/MCP 时，主流程不需要反复新增硬编码拆解逻辑。
+
+### 10.5 任务经验、工具习惯和失败模式自动回流
+
+已实现能力：
+
+- 新增 `TaskMemory` 构建器。
+- 每个直接执行的 WorkOrder 结束后，会根据 DecisionContract、WorkOrder、VerificationReport 和最终回复生成经验记忆。
+- 经验记忆通过 `TurnClosure -> MemoryWriteAgent -> memory_lifecycle` 进入统一记忆系统。
+
+写回类型：
+
+| 类型 | memory_type | 触发条件 | 用途 |
+| ---- | ----------- | -------- | ---- |
+| 任务摘要 | `historical_task_summary` | 每个真实任务结束 | 支持继续任务和历史回放 |
+| 工具习惯 | `tool_habit` / `capability_usage` | 工具执行并验证成功 | 下次类似任务优先选择已验证路径 |
+| 失败经验 | `failure_hint` | WorkOrder 或验证失败 | RecoveryPlanner 避免重复失败 |
+
+当前落点：
+
+```text
+l3_node/cognitive_kernel/task_memory.py
+l3_node/cognitive_kernel/direct_mainline.py
+l3_node/cognitive_kernel/runtime.py
+l3_node/cognitive_kernel/memory_recall_agent.py
+l3_node/cognitive_kernel/memory_confidence.py
+```
+
+对应自生长意义：
+
+- 成功不是只返回“完成了”，而是沉淀为工具经验。
+- 失败不是只返回“失败了”，而是沉淀为下次恢复路径的反证。
+- 历史任务摘要可以反哺“继续刚才”“上次做到哪一步”这类长期任务。
+
+### 10.6 当前验证状态
+
+已通过核心测试：
+
+```powershell
+python -m pytest -o addopts= tests\unit\test_cognitive_kernel_architecture.py tests\unit\test_cognitive_kernel_runtime.py
+```
+
+结果：
+
+```text
+66 passed, 4 warnings
+```
+
+覆盖内容：
+
+- Capability manifest 进入语义候选。
+- lock -> Lark 等多候选排序。
+- manifest metadata 驱动任务 DAG。
+- TaskMemory 成功/失败经验生成。
+- lifecycle memory 中召回 `historical_task_summary`、`tool_habit`、`failure_hint`。
+
+### 10.7 仍需继续升级的部分
+
+下一步应继续补齐：
+
+1. **Memory Growth UI**
+   - 在控制台展示任务经验、工具成功率、失败模式、用户纠错、最近任务摘要。
+
+2. **Daily / Weekly Review 与 TaskMemory 打通**
+   - 当前任务经验已经进入 lifecycle memory。
+   - 下一步要让 DailyReviewAgent 扫描这些经验，自动生成 concepts patch 和 playbook patch。
+
+3. **RecoveryPlanner 更深使用失败经验**
+   - 失败经验已经可写入和召回。
+   - 下一步要让 RecoveryPlanner 每次选择 B/C/D 路径时显式引用历史失败原因。
+
+4. **Capability Manifest 质量门槛**
+   - 发布 Skill/MCP 时应校验 intent metadata、decomposition metadata、recovery playbook metadata。
+   - 不合格能力不应进入 L1 或本地安装中心。
+
+5. **输出回流**
+   - Lark 消息、报告、PMO 战报、调试总结等输出还要稳定写入 `memory_growth/outputs/`。
+   - 优秀输出应进入 examples 或 playbook section。
+
+本轮完成后，Jachin 的自生长知识系统已经从“记录事件”进一步推进到“任务经验可写回、可召回、可参与下一轮决策”。下一阶段重点是把这些经验从 lifecycle memory 继续消化为 Concepts 和 Playbooks。

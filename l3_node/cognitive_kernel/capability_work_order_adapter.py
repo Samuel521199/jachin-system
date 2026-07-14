@@ -120,13 +120,15 @@ async def try_execute_capability_work_order(
         work_order_input=work_order_input,
         executor=_executor,
     )
-    final_text = _final_reply(tool_id=tool_id, ok=bool(result.verification.ok), observation=result.observation)
+    reply_observation = _observation_with_verification_reason(result.observation, result.verification)
+    final_text = _final_reply(tool_id=tool_id, ok=bool(result.verification.ok), observation=reply_observation)
     closure = close_turn(
         turn_id=result.contract.turn_id,
         final_text=final_text,
         executed_work_orders=[result.work_order.work_order_id],
         verification_reports=[result.verification],
         aborted=not bool(result.verification.ok),
+        memory_context_refs=result.contract.memory_context_refs,
     )
     _log_capability_adapter(
         stage="executed",
@@ -420,6 +422,14 @@ async def _call_tool_runner(
     if inspect.isawaitable(result):
         result = await result
     return str(result or "")
+
+
+def _observation_with_verification_reason(observation: str, verification: Any) -> str:
+    text = str(observation or "")
+    reason = str(getattr(verification, "failure_reason", "") or "").strip()
+    if not reason or reason in text:
+        return text
+    return f"{text}\nverification_failure={reason}" if text.strip() else f"verification_failure={reason}"
 
 
 def _final_reply(*, tool_id: str, ok: bool, observation: str) -> str:

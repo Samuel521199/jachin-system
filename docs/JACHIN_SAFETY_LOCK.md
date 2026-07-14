@@ -89,9 +89,9 @@ python -m l3_node.jachin_safety_lock_admin maintenance
 - 单条正文上限 16k 字符；主文件仍可设运维级软上限（归档策略见运维）。
 - 子账号若使用 `allowed_skills` 白名单，需在技能包中 **显式包含** 相应 `core:safety_lock_*` 工具。
 
-## 学习逻辑与架构图（详细）
+## 治理与执行说明
 
-见 **[JACHIN_SAFETY_LOCK_LEARNING.md](./JACHIN_SAFETY_LOCK_LEARNING.md)**。
+安全锁只保留受控事实约束。知识沉淀、复盘、冲突治理与长期记忆生命周期由 Memory Growth 主线承担。
 四项风险与实现对照：**[JACHIN_SAFETY_LOCK_REMEDIATION.md](./JACHIN_SAFETY_LOCK_REMEDIATION.md)**。
 
 ## 相关代码

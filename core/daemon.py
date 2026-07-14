@@ -1,7 +1,7 @@
 """
 Jachin Nexus Layer 2 - 核心守护进程
 
-边缘智能体中枢神经：规律心跳、拉取蓝图、降维执行、梦境调度。
+边缘智能体中枢神经：规律心跳、拉取蓝图、降维执行。
 v8.0 Layer 3 Capability Negotiation：WebSocket 握手 manifest，按 caps 过滤广播。
 入口: python -m core.daemon
 """
@@ -240,92 +240,7 @@ async def connect_layer1_websocket(
         await asyncio.sleep(MESH_POLL_INTERVAL)
 
 
-# -----------------------------------------------------------------------------
-# 梦境引擎调度：凌晨 3 点 + 空闲 30min 触发 Dream Weaver
-# -----------------------------------------------------------------------------
-
-DREAM_HOUR = 3  # 凌晨 3 点
-IDLE_THRESHOLD_SEC = 30 * 60  # 空闲 30 分钟触发梦境重塑
-IDLE_CHECK_INTERVAL = 10 * 60  # 每 10 分钟检查一次空闲
-_LAST_WEAVE_TIME: float = 0.0  # 上次 Dream Weaver 执行时间，避免频繁触发
-
-
-def _seconds_until_3am() -> float:
-    """计算距离下次凌晨 3 点的秒数"""
-    now = datetime.datetime.now()
-    next_3am = now.replace(hour=DREAM_HOUR, minute=0, second=0, microsecond=0)
-    if now >= next_3am:
-        next_3am += datetime.timedelta(days=1)
-    return (next_3am - now).total_seconds()
-
-
-async def _run_dream_weaver_if_idle() -> bool:
-    """若距离上次交互超过 30 分钟，执行 Dream Weaver。返回是否执行"""
-    import time
-    from core.event_bus import get_last_interaction_time
-    from core.dream_weaver import run_weave_dreams
-
-    global _LAST_WEAVE_TIME
-    now = time.time()
-    if now - _LAST_WEAVE_TIME < 3600:  # 至少间隔 1 小时
-        return False
-    if now - get_last_interaction_time() < IDLE_THRESHOLD_SEC:
-        return False
-    try:
-        _LAST_WEAVE_TIME = now
-        await run_weave_dreams()
-        return True
-    except Exception as e:
-        console.print(f"[red][Dream Weaver] 空闲触发异常: {e}[/red]")
-        return False
-
-
-async def dream_scheduler_loop() -> None:
-    """v8.0 梦境调度：凌晨 3 点梦境回放 + Dream Weaver；空闲 30min 触发 Dream Weaver"""
-    import time
-
-    while True:
-        wait_until_3am = _seconds_until_3am()
-        sleep_sec = min(IDLE_CHECK_INTERVAL, max(60, wait_until_3am - 60))
-        console.print(f"[dim][Dream] 下次梦境: {datetime.timedelta(seconds=int(wait_until_3am))} 后[/dim]")
-        await asyncio.sleep(sleep_sec)
-
-        # 空闲检测：每轮检查，若空闲 > 30min 则 Dream Weaver
-        if await _run_dream_weaver_if_idle():
-            console.print("[dim][Dream Weaver] 系统空闲，已完成潜意识重塑[/dim]")
-
-        # 智能化 P0：碎片阈值触发，不等 3am/空闲
-        try:
-            from core.memory_store import get_unconsolidated_memories
-            from core.dream_weaver import get_dream_thresholds, run_weave_dreams
-            _, frag_threshold = get_dream_thresholds()
-            frags = get_unconsolidated_memories(limit=frag_threshold + 10)
-            if len(frags) >= frag_threshold:
-                console.print(f"[dim][Dream Weaver] 碎片达 {len(frags)} 条，阈值触发重塑[/dim]")
-                await run_weave_dreams()
-        except Exception as e:
-            logger.debug("[Dream] fragment_threshold 触发跳过: %s", e)
-
-        # 凌晨 3 点窗口（误差 2 分钟内）：梦境引擎 + Dream Weaver
-        wait_until_3am = _seconds_until_3am()
-        if wait_until_3am <= 120:
-            try:
-                from core.dreamer import run_dream_sequence
-                from core.dream_weaver import run_weave_dreams
-
-                console.print("[magenta][Dream] 🌙 梦境引擎启动，正在提纯今日记忆...[/magenta]")
-                count = await run_dream_sequence(limit=500)
-                console.print(f"[magenta][Dream] ✅ 梦境完成，写入 {count} 条核心记忆[/magenta]")
-
-                weave_count = await run_weave_dreams()
-                if weave_count > 0:
-                    console.print(f"[magenta][Dream Weaver] ✨ LanceDB 记忆重塑完成，{weave_count} 条核心认知[/magenta]")
-            except Exception as e:
-                console.print(f"[red][Dream] ❌ 梦境异常: {e}[/red]")
-
-
-# -----------------------------------------------------------------------------
-# Agent Loop 驱动：蓝图作为岗位说明书，CognitiveKernel 自主执行
+# -----------------------------------------------------------------------------`r`n# Agent Loop 驱动：蓝图作为岗位说明书，CognitiveKernel 自主执行
 # -----------------------------------------------------------------------------
 
 
@@ -456,14 +371,13 @@ def start_daemon() -> None:
         # Layer 3 视觉投射：启动本地 WS Server
         await start_sensory_server()
 
-        # Jachin Mesh (WebSocket 占位) + 梦境调度 并行运行
+        # Jachin Mesh (WebSocket 占位) 运行
         await asyncio.gather(
             connect_layer1_websocket(
                 access_token=access_token,
                 layer1_url=layer1_url,
                 instance_id=instance_id,
             ),
-            dream_scheduler_loop(),
         )
 
     try:

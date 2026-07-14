@@ -1,7 +1,7 @@
 """
 Jachin 安全锁：与 MEMORY.md / 本地向量记忆分离的「已验证事实」。
 
-设计要点（见 docs/JACHIN_SAFETY_LOCK.md 与 JACHIN_SAFETY_LOCK_LEARNING.md）：
+设计要点（见 docs/JACHIN_SAFETY_LOCK.md）：
 - **按需域注入**：默认不按全量 MD 灌入 context；仅当话术命中 db/shell  heuristic 时加载域文件。
 - **待审批追加**：默认 learn 开启时，Agent 的 append 只写入 pending，**不**把管理员密钥暴露给模型；
   审批仅通过 CLI（环境变量中的管理员 token）完成。

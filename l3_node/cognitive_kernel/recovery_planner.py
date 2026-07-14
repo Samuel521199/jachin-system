@@ -1,4 +1,4 @@
-﻿"""Bounded recovery planning for WorkOrder execution.
+"""Bounded recovery planning for WorkOrder execution.
 
 Recovery paths are selected from capability metadata instead of hard-coded
 App/File rules.  The planner chooses exactly one next attempt after each
@@ -8,10 +8,12 @@ failure, using the latest VerificationReport plus all prior attempt records.
 from __future__ import annotations
 
 import copy
+import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from .capability_recovery_registry import CapabilityRecoveryRegistry
+from .capability_recovery_registry import CapabilityRecoveryRegistry, RecoveryCandidate
 from .contracts import DecisionContract, RecoveryPlan, RiskLevel, VerificationReport, WorkOrder
 from .runtime import build_recovery_plan
 
@@ -132,6 +134,13 @@ class RecoveryPlanner:
             attempt_records=attempt_records,
         )
         if candidate is None:
+            candidate = _memory_growth_recovery_candidate(
+                contract=contract,
+                failed_work_order=failed_work_order,
+                verification=verification,
+                attempt_records=attempt_records,
+            )
+        if candidate is None:
             return None
         work_order = self._work_order_for_candidate(
             original=failed_work_order,
@@ -167,6 +176,7 @@ class RecoveryPlanner:
             "failure_counts": failure_counts,
             "attempts": [x.to_dict() for x in attempt_records],
             "recommended_next_steps": _recommend_next_steps(contract, last_verification, attempt_records),
+            "memory_context_refs": list(getattr(contract, "memory_context_refs", []) or []),
         }
 
     def candidate_paths(
@@ -177,12 +187,21 @@ class RecoveryPlanner:
         verification: VerificationReport,
         attempt_records: list[RecoveryAttemptRecord] | None = None,
     ) -> list[dict[str, Any]]:
-        return self.registry.candidate_snapshot(
+        paths = self.registry.candidate_snapshot(
             contract=contract,
             failed_work_order=failed_work_order,
             verification=verification,
             attempt_records=attempt_records or [],
         )
+        growth_candidate = _memory_growth_recovery_candidate(
+            contract=contract,
+            failed_work_order=failed_work_order,
+            verification=verification,
+            attempt_records=attempt_records or [],
+        )
+        if growth_candidate is not None:
+            paths.append(growth_candidate.to_dict())
+        return paths
 
     def _may_auto_recover(
         self,
@@ -200,14 +219,21 @@ class RecoveryPlanner:
         reason = (verification.failure_reason or "").lower()
         if any(x in reason for x in ("not allowed", "permission", "requires_confirmation", "confirm")):
             return False
-        return bool(
+        if bool(
             self.registry.candidate_snapshot(
                 contract=contract,
                 failed_work_order=work_order,
                 verification=verification,
                 attempt_records=[],
             )
-        )
+        ):
+            return True
+        return _memory_growth_recovery_candidate(
+            contract=contract,
+            failed_work_order=work_order,
+            verification=verification,
+            attempt_records=[],
+        ) is not None
 
     def _work_order_for_candidate(
         self,
@@ -254,3 +280,106 @@ def _recommend_next_steps(
         steps.append("查看 Evidence 时间线中的每次尝试，优先处理最后一次失败原因。")
     steps.append(f"本轮已尝试 {len(attempt_records)} 次，未继续盲目执行以避免副作用。")
     return steps
+
+
+def _memory_growth_recovery_candidate(
+    *,
+    contract: DecisionContract,
+    failed_work_order: WorkOrder,
+    verification: VerificationReport,
+    attempt_records: list[RecoveryAttemptRecord],
+) -> RecoveryCandidate | None:
+    refs = [
+        ref
+        for ref in list(getattr(contract, "memory_context_refs", []) or [])
+        if isinstance(ref, dict)
+        and (
+            "playbook" in str(ref.get("memory_id") or "").lower()
+            or ref.get("bucket") in {"tool_habits", "failure_hints"}
+        )
+    ]
+    if not refs:
+        return None
+    tool = str(failed_work_order.inputs.get("tool") or "")
+    if not tool:
+        return None
+    reason = (verification.failure_reason or "").lower()
+    preview = " ".join(str(ref.get("preview") or "") for ref in refs).lower()
+    strategy_weight, strategy_mode, requires_more_evidence = _memory_growth_ref_strategy(refs)
+    if strategy_mode == "manual_review" or requires_more_evidence:
+        return None
+    used = {str(item.strategy or "") for item in attempt_records}
+    history = " | ".join(
+        f"{item.attempt_no}:{item.strategy}:{item.failure_reason or item.ok}" for item in attempt_records[-3:]
+    )
+    combined = f"{reason} {preview}"
+    raw_input = str(failed_work_order.inputs.get("work_order_input") or "")
+
+    if "memory_growth_longer_timeout" not in used and any(x in combined for x in ("timeout", "slow", "longer timeout")):
+        strategy = "memory_growth_longer_timeout"
+        work_order_input = _patch_json_input(raw_input, {"timeout": 12.0, "recovery_strategy": strategy})
+    elif "memory_growth_retry_same_path" not in used and any(x in combined for x in ("retry", "focus", "window", "foreground")):
+        strategy = "memory_growth_retry_same_path"
+        work_order_input = _patch_json_input(raw_input, {"recovery_strategy": strategy})
+    else:
+        return None
+
+    return RecoveryCandidate(
+        capability_id="memory_growth.playbooks",
+        target_id="memory_growth_recovery",
+        strategy=strategy,
+        tool=tool,
+        work_order_input=work_order_input,
+        rationale=(
+            "Selected from Memory Growth playbook evidence after considering "
+            f"failure_reason={verification.failure_reason or 'unknown'} history={history or 'none'}"
+        ),
+        priority=max(20, min(100, int(80 * strategy_weight))),
+        metadata={
+            "source": "memory_growth",
+            "memory_context_refs": refs[:5],
+            "failure_reason": verification.failure_reason,
+            "attempt_history": [item.to_dict() for item in attempt_records],
+            "governance_strategy_weight": strategy_weight,
+            "governance_execution_mode": strategy_mode,
+            "governance_requires_more_evidence": requires_more_evidence,
+        },
+    )
+
+
+def _memory_growth_ref_strategy(refs: list[dict[str, Any]]) -> tuple[float, str, bool]:
+    weights: list[float] = []
+    modes: list[str] = []
+    requires = False
+    for ref in refs:
+        hay = f"{ref.get('preview') or ''} {ref.get('relevance_reason') or ''}".lower()
+        raw_weight = _extract_strategy_value(hay, "strategy_weight")
+        if raw_weight:
+            try:
+                weights.append(float(raw_weight))
+            except Exception:
+                pass
+        mode = _extract_strategy_value(hay, "governance_execution_mode") or _extract_strategy_value(hay, "execution_mode")
+        if mode:
+            modes.append(mode)
+        if "requires_more_evidence=true" in hay:
+            requires = True
+    weight = max(weights) if weights else 1.0
+    mode = "manual_review" if "manual_review" in modes else "batch_ok" if "batch_ok" in modes else "normal"
+    return max(0.25, min(1.8, weight)), mode, requires
+
+
+def _extract_strategy_value(text: str, key: str) -> str:
+    match = re.search(rf"{re.escape(key.lower())}=([^;\s]+)", text)
+    return match.group(1).strip().lower() if match else ""
+
+
+def _patch_json_input(raw: str, patch: dict[str, Any]) -> str:
+    try:
+        data = json.loads(raw) if raw else {}
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data.update(patch)
+    return json.dumps(data, ensure_ascii=False)

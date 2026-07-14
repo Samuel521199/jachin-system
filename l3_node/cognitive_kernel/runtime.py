@@ -192,8 +192,12 @@ def _looks_failed(observation: str) -> tuple[bool, str]:
         "failed",
         "timeout",
         "not allowed",
+        "unknown tool",
+        "unknown_tool",
+        "tool not found",
         "permission denied",
         "connection refused",
+        "未知工具",
         "无法",
         "失败",
         "错误",
@@ -206,6 +210,109 @@ def _looks_failed(observation: str) -> tuple[bool, str]:
     return False, ""
 
 
+def _role_execution_evidence(extra_evidence: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    for item in extra_evidence or []:
+        if isinstance(item, dict) and item.get("type") == "role_execution":
+            return item
+    return None
+
+
+def _work_order_tool(work_order: WorkOrder) -> str:
+    return str((work_order.inputs or {}).get("tool") or "").strip().lower()
+
+
+def _requires_strict_side_effect_verification(work_order: WorkOrder) -> bool:
+    tool = _work_order_tool(work_order)
+    task = str(work_order.task or "").lower()
+    role = str(work_order.role_agent or "").lower()
+    return (
+        role in {"messageexecutoragent", "appcontrolexecutoragent"}
+        or task in {"message_delivery", "app_control"}
+        or any(token in tool for token in ("send", "post", "publish", "open_app", "window_close", "window_switch"))
+    )
+
+
+def _is_message_delivery_work_order(work_order: WorkOrder) -> bool:
+    tool = _work_order_tool(work_order)
+    task = str(work_order.task or "").lower()
+    role = str(work_order.role_agent or "").lower()
+    return role == "messageexecutoragent" or task == "message_delivery" or any(token in tool for token in ("lark", "smtp", "send_text", "send_message"))
+
+
+def _strict_verification_failure(
+    work_order: WorkOrder,
+    observation: str,
+    extra_evidence: list[dict[str, Any]] | None,
+) -> tuple[bool, str]:
+    if not _requires_strict_side_effect_verification(work_order):
+        return False, ""
+    role_evidence = _role_execution_evidence(extra_evidence)
+    if not role_evidence:
+        return True, "missing_role_execution_evidence"
+    if role_evidence.get("adapter_ok") is not True:
+        return True, "role_execution_failed_or_not_run"
+    adapter_evidence = role_evidence.get("adapter_evidence") if isinstance(role_evidence.get("adapter_evidence"), dict) else {}
+    if _is_message_delivery_work_order(work_order):
+        if adapter_evidence.get("duplicate_skipped") is True:
+            return True, "message_duplicate_skipped_without_new_send"
+        if adapter_evidence.get("post_send_verified") is not True:
+            return True, "message_post_send_verification_missing"
+        if not _message_delivery_evidence_present(observation):
+            return True, "message_delivery_evidence_missing"
+    return False, ""
+
+
+def _message_delivery_evidence_present(observation: str) -> bool:
+    text = str(observation or "").strip()
+    if not text:
+        return False
+    try:
+        obj = json.loads(text)
+    except Exception:
+        obj = None
+    if isinstance(obj, (dict, list)):
+        return _message_delivery_evidence_in_json(obj)
+    low = text.lower()
+    return any(
+        marker in low
+        for marker in (
+            "message_id",
+            "send_ok",
+            "sent_and_verified_with_visual",
+            "message_visible",
+            "post_send_verified",
+            "ocr",
+            "screenshot",
+        )
+    )
+
+
+def _message_delivery_evidence_in_json(value: Any) -> bool:
+    if isinstance(value, dict):
+        if value.get("duplicate_skipped") is True:
+            return False
+        if str(value.get("message_id") or "").strip():
+            return True
+        if value.get("send_ok") is True or value.get("sent") is True:
+            return True
+        if value.get("message_visible") is True and (value.get("recipient_visible") is True or value.get("screenshot") or value.get("screenshots")):
+            return True
+        detail = str(value.get("detail") or "").lower()
+        if detail in {"sent_and_verified_with_visual", "message_sent", "send_ok", "sent"}:
+            return True
+        status = str(value.get("status") or "").lower()
+        if status in {"sent", "message_sent", "send_ok"}:
+            return True
+        for key in ("evidence", "deliveries", "delivery", "result", "send_result", "visual", "screenshots"):
+            nested = value.get(key)
+            if _message_delivery_evidence_in_json(nested):
+                return True
+        return any(_message_delivery_evidence_in_json(v) for v in value.values() if isinstance(v, (dict, list)))
+    if isinstance(value, list):
+        return any(_message_delivery_evidence_in_json(item) for item in value)
+    return False
+
+
 def verify_work_order(
     *,
     turn_id: str,
@@ -215,6 +322,8 @@ def verify_work_order(
     extra_evidence: list[dict[str, Any]] | None = None,
 ) -> VerificationReport:
     failed, reason = _looks_failed(observation)
+    if not failed:
+        failed, reason = _strict_verification_failure(work_order, observation, extra_evidence)
     ok = not failed
     report = VerificationReport(
         verification_id=_new_id("verify"),
@@ -282,6 +391,8 @@ def close_turn(
     executed_work_orders: list[str] | None = None,
     verification_reports: list[VerificationReport] | None = None,
     aborted: bool = False,
+    memory_context_refs: list[dict[str, Any]] | None = None,
+    extra_memory_write_requests: list[MemoryWriteRequest] | None = None,
 ) -> TurnClosure:
     reports = verification_reports or []
     failed = [r for r in reports if not r.ok]
@@ -323,6 +434,37 @@ def close_turn(
                 merge_policy="append_action_chain",
             )
         )
+    extra_requests = list(extra_memory_write_requests or [])
+    if executed_work_orders and not any(req.memory_type == "historical_task_summary" for req in extra_requests):
+        memory_write_requests.append(
+            MemoryWriteRequest(
+                turn_id=turn_id,
+                source_event="turn_closure",
+                memory_type="historical_task_summary",
+                content=json.dumps(
+                    {
+                        "turn_id": turn_id,
+                        "executed_work_orders": list(executed_work_orders or []),
+                        "verification_status": status,
+                        "final_user_message_intent": str(final_text or "")[:500],
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                evidence=[
+                    {
+                        "type": "turn_closure",
+                        "status": status,
+                        "failed_count": len(failed),
+                        "report_count": len(reports),
+                    }
+                ],
+                confidence=0.72 if not failed else 0.6,
+                ttl="30d",
+                merge_policy="append_action_chain",
+            )
+        )
+    memory_write_requests.extend(extra_requests)
     closure = TurnClosure(
         turn_id=turn_id,
         closure_type=closure_type,
@@ -333,6 +475,13 @@ def close_turn(
         next_turn_hints=[] if not failed else ["inspect recovery_plan events in the Cognitive Kernel ledger"],
     )
     record_turn_closure(closure)
+    _record_memory_growth_raw(closure)
+    _record_memory_growth_artifact_usage(
+        turn_id=turn_id,
+        memory_context_refs=memory_context_refs or [],
+        verification_status=status,
+        failure_reason=failed[0].failure_reason if failed else "",
+    )
     return closure
 
 
@@ -354,7 +503,47 @@ def close_turn_waiting_user(
         next_turn_hints=list(next_turn_hints or ["reply confirm to resume pending DecisionContract"]),
     )
     record_turn_closure(closure)
+    _record_memory_growth_raw(closure)
     return closure
+
+
+def _record_memory_growth_raw(closure: TurnClosure) -> None:
+    """Best-effort Memory Growth raw evidence write.
+
+    Closing a user turn must not fail just because local long-term memory
+    storage is temporarily unavailable.
+    """
+
+    try:
+        from .memory_growth import record_turn_closure_raw
+
+        record_turn_closure_raw(closure)
+    except Exception:
+        pass
+
+
+def _record_memory_growth_artifact_usage(
+    *,
+    turn_id: str,
+    memory_context_refs: list[dict[str, Any]],
+    verification_status: str,
+    failure_reason: str = "",
+) -> None:
+    if not memory_context_refs:
+        return
+    try:
+        from .memory_growth import memory_growth_dir
+        from .memory_growth_strategy import record_artifact_usage
+
+        record_artifact_usage(
+            root=memory_growth_dir(),
+            memory_context_refs=memory_context_refs,
+            turn_id=turn_id,
+            verification_status=verification_status,
+            failure_reason=failure_reason,
+        )
+    except Exception:
+        pass
 
 
 def blocked_confirmation_observation(contract: DecisionContract) -> str:

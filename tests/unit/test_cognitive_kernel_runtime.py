@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import json
 from pathlib import Path
 
@@ -9,13 +9,13 @@ import pytest
 def _isolate_external_memory_providers(monkeypatch):
     import l3_node.cognitive_kernel.memory_recall_agent as memory_recall_agent
 
-    async def _no_passive_nexus(_limit: int):
+    async def _no_structured_profile(_limit: int):
         return [], []
 
     def _no_experience(**_kwargs):
         return [], []
 
-    monkeypatch.setattr(memory_recall_agent, "_passive_nexus_memory_evidence", _no_passive_nexus)
+    monkeypatch.setattr(memory_recall_agent, "_structured_profile_memory_evidence", _no_structured_profile)
     monkeypatch.setattr(memory_recall_agent, "_experience_memory_evidence", _no_experience)
 
 
@@ -215,28 +215,28 @@ def test_memory_recall_section_6_query_plan_and_long_term_channels(tmp_path, mon
     asyncio.run(_run())
 
 
-def test_memory_recall_unifies_passive_prompt_memory_sources(tmp_path, monkeypatch):
+def test_memory_recall_unifies_structured_profile_memory_sources(tmp_path, monkeypatch):
     monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
 
     import l3_node.cognitive_kernel.memory_recall_agent as memory_recall_agent
     from l3_node.cognitive_kernel.contracts import AgentInputEnvelope, InputSource, MemoryEvidence, StateSnapshot
 
-    async def fake_passive_nexus(_limit: int):
+    async def fake_structured_profile(_limit: int):
         return [
             MemoryEvidence(
-                memory_id="passive-l0",
+                memory_id="structured-profile-l0",
                 memory_type="user_preference",
                 content="preference: preferred browser Chrome",
-                source="unit-passive-l0",
+                source="unit-structured-profile-l0",
                 confidence=0.9,
                 confirmed_by_user=True,
                 ttl="long_term",
             ),
             MemoryEvidence(
-                memory_id="passive-l1",
+                memory_id="structured-profile-l1",
                 memory_type="historical_task_summary",
                 content="historical task summary: browser automation usually uses Chrome",
-                source="unit-passive-l1",
+                source="unit-structured-profile-l1",
                 confidence=0.8,
                 ttl="long_term",
             ),
@@ -254,7 +254,7 @@ def test_memory_recall_unifies_passive_prompt_memory_sources(tmp_path, monkeypat
             )
         ], []
 
-    monkeypatch.setattr(memory_recall_agent, "_passive_nexus_memory_evidence", fake_passive_nexus)
+    monkeypatch.setattr(memory_recall_agent, "_structured_profile_memory_evidence", fake_structured_profile)
     monkeypatch.setattr(memory_recall_agent, "_experience_memory_evidence", fake_experience)
 
     async def _run():
@@ -274,21 +274,359 @@ def test_memory_recall_unifies_passive_prompt_memory_sources(tmp_path, monkeypat
             prior_messages=[],
             max_results_per_channel=4,
         )
-        assert "passive_nexus_profile_memory" in bundle.recall_request["retrieval_channels"]
+        assert "structured_profile_memory" in bundle.recall_request["retrieval_channels"]
         assert "experience_rag_memory" in bundle.recall_request["retrieval_channels"]
-        assert any(item.memory_id == "passive-l0" for item in bundle.user_preferences)
-        assert any(item.memory_id == "passive-l1" for item in bundle.historical_task_summaries)
+        assert any(item.memory_id == "structured-profile-l0" for item in bundle.user_preferences)
+        assert any(item.memory_id == "structured-profile-l1" for item in bundle.historical_task_summaries)
         assert any(item.memory_id == "experience-tool" for item in bundle.tool_habits)
 
     asyncio.run(_run())
 
 
-def test_passive_memory_prompt_snapshots_are_disabled():
-    from l3_node.local_memory import get_local_memory_for_prompt
-    from l3_node.memory_facade import snapshot_for_prompt
+def test_memory_recall_loads_memory_growth_concepts_and_playbooks(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
 
-    assert get_local_memory_for_prompt() == ""
-    assert snapshot_for_prompt() == ""
+    import l3_node.cognitive_kernel.memory_recall_agent as memory_recall_agent
+    from l3_node.cognitive_kernel.contracts import AgentInputEnvelope, InputSource, StateSnapshot
+    from l3_node.cognitive_kernel.memory_growth import ensure_memory_growth_scaffold, memory_growth_dir
+
+    ensure_memory_growth_scaffold()
+    root = memory_growth_dir()
+    concept_path = root / "concepts" / "project_fact" / "browser-app-control.md"
+    concept_path.parent.mkdir(parents=True, exist_ok=True)
+    concept_path.write_text(
+        """---
+id: "project_fact:browser-app-control"
+type: "project_fact"
+summary: "Browser AppControl should verify foreground focus after opening Chrome."
+source_refs: [{"type":"raw_event","event_id":"raw-browser"}]
+confidence: 0.88
+last_verified: "2026-07-10T00:00:00Z"
+governance_strategy_action: "confirm_pending"
+---
+
+# Browser AppControl
+
+## Summary
+
+Browser AppControl should verify foreground focus after opening Chrome.
+
+## Stable Facts
+
+- Browser AppControl uses foreground focus verification.
+""",
+        encoding="utf-8",
+    )
+    playbook_path = root / "playbooks" / "browser-open-focus.md"
+    playbook_path.write_text(
+        """---
+id: "playbook:browser-open-focus"
+type: "playbook"
+summary: "Open browser and verify focus"
+source_refs: [{"type":"raw_event","event_id":"raw-playbook"}]
+confidence: 0.82
+last_verified: "2026-07-10T00:00:00Z"
+governance_strategy_action: "generate_failure_playbook"
+memory_use_count: 5
+memory_success_count: 4
+memory_failure_count: 1
+memory_success_rate: 0.8
+---
+
+# Open browser and verify focus
+
+## Trigger Conditions
+
+- Browser open_app request
+
+## Recommended Flow
+
+1. open_app {"app":"browser"}
+2. verify foreground window contains Chrome
+
+## Verification Criteria
+
+- foreground window title is not Jachin
+
+## Failure Paths
+
+1. retry window switch
+2. use longer timeout
+""",
+        encoding="utf-8",
+    )
+    (root / "indexes").mkdir(parents=True, exist_ok=True)
+    (root / "indexes" / "concepts.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "concepts": [
+                    {
+                        "path": "concepts/project_fact/browser-app-control.md",
+                        "type": "project_fact",
+                        "slug": "browser-app-control",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / "indexes" / "playbooks.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "playbooks": [
+                    {
+                        "path": "playbooks/browser-open-focus.md",
+                        "slug": "browser-open-focus",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / "indexes" / "governance_effectiveness.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "strategy_policy": {
+                    "schema_version": 1,
+                    "global_mode": "normal",
+                    "action_policy": {
+                        "confirm_pending": {
+                            "weight": 1.24,
+                            "execution_mode": "batch_ok",
+                            "requires_more_evidence": False,
+                            "reason": "unit_confirm_effective",
+                        },
+                        "generate_failure_playbook": {
+                            "weight": 1.36,
+                            "execution_mode": "batch_ok",
+                            "requires_more_evidence": False,
+                            "reason": "unit_playbook_effective",
+                        },
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    async def fake_structured_profile(_limit: int):
+        return [], []
+
+    def fake_experience(**_kwargs):
+        return [], []
+
+    monkeypatch.setattr(memory_recall_agent, "_structured_profile_memory_evidence", fake_structured_profile)
+    monkeypatch.setattr(memory_recall_agent, "_experience_memory_evidence", fake_experience)
+
+    async def _run():
+        bundle = await memory_recall_agent.recall_relevant_memory(
+            envelope=AgentInputEnvelope(
+                turn_id="ck-memory-growth-recall",
+                source=InputSource.TEXT,
+                raw_text="open browser and make sure Chrome is focused",
+                normalized_text="open browser and make sure Chrome is focused",
+            ),
+            state_snapshot=StateSnapshot(
+                snapshot_id="state-memory-growth-recall",
+                generated_at_ms=1,
+                freshness_ms=1,
+                active_window={"app_name": "Jachin"},
+            ),
+            prior_messages=[],
+            max_results_per_channel=5,
+        )
+        assert "memory_growth_concept_memory" in bundle.recall_request["retrieval_channels"]
+        assert "memory_growth_playbook_memory" in bundle.recall_request["retrieval_channels"]
+        assert any("Browser AppControl" in item.content for item in bundle.project_facts)
+        assert any("Open browser and verify focus" in item.content for item in bundle.failure_hints)
+        assert any("strategy_weight=1.24" in item.content for item in bundle.project_facts)
+        assert any("strategy_weight=1.36" in item.content for item in bundle.failure_hints)
+        assert any("artifact_use_count=5" in item.content for item in bundle.failure_hints)
+        assert any(row.get("governance_strategy_weight") for row in bundle.ranking_evidence)
+        assert any(row.get("artifact_use_count") == 5 for row in bundle.ranking_evidence)
+        assert "memory_growth=" in bundle.retrieval_summary
+
+    asyncio.run(_run())
+
+
+def test_arbiter_carries_memory_growth_refs_into_contract_and_work_order(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.arbiter import arbitrate_review_summary, build_work_order_from_decision
+    from l3_node.cognitive_kernel.contracts import ReviewSummary, RiskLevel, RoleAgentReview
+
+    memory_ref = {
+        "bucket": "tool_habits",
+        "memory_id": "memory_growth:playbook:browser-open-focus",
+        "memory_type": "tool_habit",
+        "source": "Memory Growth Playbooks",
+        "confidence": 0.82,
+        "preview": "playbook path=...; summary=Open browser and verify focus",
+    }
+    summary = ReviewSummary(
+        review_session_id="review-memory-growth-arbiter",
+        turn_id="ck-memory-growth-arbiter",
+        reviews=[
+            RoleAgentReview(
+                review_id="review-memory-growth",
+                review_session_id="review-memory-growth-arbiter",
+                turn_id="ck-memory-growth-arbiter",
+                role_id="MemoryRecallAgent",
+                evidence=[{"type": "memory_bundle", "memory_growth_refs": [memory_ref]}],
+                confidence=0.9,
+            )
+        ],
+        top_intent="open_app",
+        task_type="app_control",
+        target={"name": "Browser", "source": "input_text"},
+        selected_roles=["AppControlExecutorAgent"],
+        candidate_tools=["mcp:windows_open_app"],
+        risk_level=RiskLevel.LOW,
+        confidence=0.84,
+        rationale=["unit summary"],
+    )
+
+    contract = arbitrate_review_summary(summary)
+    assert contract.memory_context_refs == [memory_ref]
+    assert any("Memory Growth playbook" in line for line in contract.rationale)
+    work = build_work_order_from_decision(contract, summary)
+    assert work is not None
+    assert work.inputs["memory_context_refs"] == [memory_ref]
+
+
+def test_recovery_planner_uses_memory_growth_playbook_when_manifest_has_no_candidate(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.contracts import DecisionContract, RiskLevel, ToolPolicy, VerificationReport, WorkOrder
+    from l3_node.cognitive_kernel.recovery_planner import RecoveryAttemptRecord, RecoveryPlanner
+
+    contract = DecisionContract(
+        decision_id="decision-memory-growth-recovery",
+        turn_id="ck-memory-growth-recovery",
+        task_type="app_control",
+        goal="open browser",
+        selected_roles=["AppControlExecutorAgent"],
+        risk_level=RiskLevel.LOW,
+        tool_policy=ToolPolicy(allowed_tools=["mcp:windows_window_switch"], risk_level=RiskLevel.LOW),
+        execution_allowed=True,
+        memory_context_refs=[
+            {
+                "bucket": "tool_habits",
+                "memory_id": "memory_growth:playbook:browser-open-focus",
+                "source": "Memory Growth Playbooks",
+                "preview": "Failure Paths: retry window switch, use longer timeout when focus timeout happens.",
+            }
+        ],
+    )
+    work = WorkOrder(
+        work_order_id="work-memory-growth-recovery",
+        decision_id=contract.decision_id,
+        role_agent="AppControlExecutorAgent",
+        task="switch Browser",
+        inputs={"tool": "mcp:windows_window_switch", "work_order_input": '{"window_title":"Chrome"}'},
+        tool_policy=contract.tool_policy,
+    )
+    verification = VerificationReport(
+        verification_id="verify-memory-growth-recovery",
+        work_order_id=work.work_order_id,
+        ok=False,
+        failure_reason="timeout waiting for foreground window",
+    )
+    planner = RecoveryPlanner(max_attempts=3, registry=type("EmptyRegistry", (), {
+        "max_attempts_for": lambda self, **kwargs: kwargs.get("default", 3),
+        "select_next": lambda self, **kwargs: None,
+        "candidate_snapshot": lambda self, **kwargs: [],
+    })())
+
+    first = planner.next_attempt(
+        contract=contract,
+        failed_work_order=work,
+        verification=verification,
+        attempt_records=[],
+    )
+    assert first is not None
+    assert first.strategy == "memory_growth_longer_timeout"
+    assert first.candidate_path["capability_id"] == "memory_growth.playbooks"
+    assert "timeout" in first.rationale
+
+    second = planner.next_attempt(
+        contract=contract,
+        failed_work_order=work,
+        verification=verification,
+        attempt_records=[
+            RecoveryAttemptRecord(
+                attempt_no=1,
+                work_order_id=first.work_order.work_order_id,
+                role_agent=first.work_order.role_agent,
+                tool=first.work_order.inputs["tool"],
+                strategy=first.strategy,
+                rationale=first.rationale,
+                ok=False,
+                verification_id=verification.verification_id,
+                failure_reason=verification.failure_reason,
+            )
+        ],
+    )
+    assert second is not None
+    assert second.strategy == "memory_growth_retry_same_path"
+
+
+def test_recovery_planner_skips_manual_review_memory_growth_playbook(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.contracts import DecisionContract, RiskLevel, ToolPolicy, VerificationReport, WorkOrder
+    from l3_node.cognitive_kernel.recovery_planner import RecoveryPlanner
+
+    contract = DecisionContract(
+        decision_id="decision-memory-growth-manual-review",
+        turn_id="ck-memory-growth-manual-review",
+        task_type="app_control",
+        goal="open browser",
+        selected_roles=["AppControlExecutorAgent"],
+        risk_level=RiskLevel.LOW,
+        tool_policy=ToolPolicy(allowed_tools=["mcp:windows_window_switch"], risk_level=RiskLevel.LOW),
+        execution_allowed=True,
+        memory_context_refs=[
+            {
+                "bucket": "failure_hints",
+                "memory_id": "memory_growth:playbook:browser-open-focus",
+                "source": "Memory Growth Playbooks",
+                "preview": (
+                    "Failure Paths: retry window switch, timeout. "
+                    "strategy_weight=0.45; governance_execution_mode=manual_review; requires_more_evidence=true"
+                ),
+            }
+        ],
+    )
+    work = WorkOrder(
+        work_order_id="work-memory-growth-manual-review",
+        decision_id=contract.decision_id,
+        role_agent="AppControlExecutorAgent",
+        task="switch Browser",
+        inputs={"tool": "mcp:windows_window_switch", "work_order_input": '{"window_title":"Chrome"}'},
+        tool_policy=contract.tool_policy,
+    )
+    verification = VerificationReport(
+        verification_id="verify-memory-growth-manual-review",
+        work_order_id=work.work_order_id,
+        ok=False,
+        failure_reason="timeout waiting for foreground window",
+    )
+    planner = RecoveryPlanner(max_attempts=3, registry=type("EmptyRegistry", (), {
+        "max_attempts_for": lambda self, **kwargs: kwargs.get("default", 3),
+        "select_next": lambda self, **kwargs: None,
+        "candidate_snapshot": lambda self, **kwargs: [],
+    })())
+
+    assert planner.next_attempt(
+        contract=contract,
+        failed_work_order=work,
+        verification=verification,
+        attempt_records=[],
+    ) is None
 
 
 def test_cognitive_prompt_uses_section_6_memory_package():
@@ -360,6 +698,135 @@ def test_cognitive_prompt_uses_section_6_memory_package():
     assert "long_term_context" in block
     assert "query_2_candidate_intent" in block
     assert "last_opened_app=Calculator" in block
+
+
+def test_task_experience_memory_requests_capture_success_and_failure():
+    from l3_node.cognitive_kernel.contracts import DecisionContract, RiskLevel, ToolPolicy, VerificationReport, WorkOrder
+    from l3_node.cognitive_kernel.task_memory import build_task_experience_memory_requests
+
+    contract = DecisionContract(
+        decision_id="decision-task-memory",
+        turn_id="turn-task-memory",
+        task_type="app_control",
+        goal="open browser",
+        selected_workflow="reviewed_app_control_workflow",
+        selected_roles=["AppControlExecutorAgent"],
+        risk_level=RiskLevel.LOW,
+        tool_policy=ToolPolicy(allowed_tools=["mcp:windows_open_app"], risk_level=RiskLevel.LOW),
+        execution_allowed=True,
+    )
+    work = WorkOrder(
+        work_order_id="work-task-memory",
+        decision_id=contract.decision_id,
+        role_agent="AppControlExecutorAgent",
+        task="open Browser",
+        inputs={"tool": "mcp:windows_open_app"},
+        tool_policy=contract.tool_policy,
+    )
+    ok_report = VerificationReport(
+        verification_id="verify-task-memory-ok",
+        work_order_id=work.work_order_id,
+        ok=True,
+        confidence=0.9,
+    )
+    ok_requests = build_task_experience_memory_requests(
+        contract=contract,
+        work_orders=[work],
+        verification_reports=[ok_report],
+        final_text="已打开 Browser。",
+    )
+
+    assert [item.memory_type for item in ok_requests] == ["historical_task_summary", "tool_habit"]
+    assert ok_requests[1].ttl == "permanent"
+    assert "mcp:windows_open_app" in ok_requests[1].content
+
+    failed_report = VerificationReport(
+        verification_id="verify-task-memory-failed",
+        work_order_id=work.work_order_id,
+        ok=False,
+        confidence=0.4,
+        failure_reason="app_focus_failed",
+    )
+    failed_requests = build_task_experience_memory_requests(
+        contract=contract,
+        work_orders=[work],
+        verification_reports=[failed_report],
+        final_text="Browser 的任务没有通过验证。",
+    )
+
+    assert [item.memory_type for item in failed_requests] == ["historical_task_summary", "failure_hint"]
+    assert failed_requests[1].ttl == "14d"
+    assert "app_focus_failed" in failed_requests[1].content
+
+
+def test_task_experience_lifecycle_recall_buckets(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.contracts import (
+        AgentInputEnvelope,
+        InputSource,
+        MemoryWriteRequest,
+        StateSnapshot,
+    )
+    from l3_node.cognitive_kernel.memory_lifecycle import write_lifecycle_memory
+    from l3_node.cognitive_kernel.memory_recall_agent import recall_relevant_memory
+
+    write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="turn-task-memory-recall",
+            source_event="unit",
+            memory_type="historical_task_summary",
+            content='{"type":"task_experience","task_type":"app_control","tool":"mcp:windows_open_app","verification_status":"passed"}',
+            confidence=0.84,
+            ttl="30d",
+            evidence=[{"ok": True, "task_type": "app_control"}],
+        )
+    )
+    write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="turn-task-memory-recall",
+            source_event="unit",
+            memory_type="tool_habit",
+            content='{"type":"capability_usage","task_type":"app_control","tool":"mcp:windows_open_app"}',
+            confidence=0.84,
+            ttl="permanent",
+            evidence=[{"ok": True, "task_type": "app_control"}],
+        )
+    )
+    write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="turn-task-memory-recall",
+            source_event="unit",
+            memory_type="failure_hint",
+            content='{"type":"task_failure_hint","task_type":"app_control","failure_reasons":["app_focus_failed"]}',
+            confidence=0.66,
+            ttl="14d",
+            evidence=[{"ok": False, "task_type": "app_control"}],
+        )
+    )
+
+    async def _run():
+        envelope = AgentInputEnvelope(
+            turn_id="turn-task-memory-recall",
+            source=InputSource.TEXT,
+            raw_text="open browser",
+            normalized_text="open browser",
+        )
+        bundle = await recall_relevant_memory(
+            envelope=envelope,
+            state_snapshot=StateSnapshot(
+                snapshot_id="state-task-memory-recall",
+                generated_at_ms=1,
+                freshness_ms=1,
+            ),
+            prior_messages=[],
+            max_results_per_channel=5,
+        )
+        assert any("task_experience" in item.content for item in bundle.historical_task_summaries)
+        assert any("capability_usage" in item.content for item in bundle.tool_habits)
+        assert any("app_focus_failed" in item.content for item in bundle.failure_hints)
+
+    asyncio.run(_run())
 
 
 def test_role_registry_and_work_order_dispatcher(tmp_path, monkeypatch):
@@ -545,6 +1012,58 @@ def test_message_executor_retry_and_evidence(tmp_path, monkeypatch):
     asyncio.run(_run())
 
 
+def test_message_executor_rejects_bare_ok_without_delivery_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.dispatcher import dispatch_tool_work_order
+
+    async def _run():
+        calls = {"n": 0}
+
+        async def fake_sender(_work_order):
+            calls["n"] += 1
+            return '{"ok":true}'
+
+        result = await dispatch_tool_work_order(
+            turn_id="ck-message-false-ok",
+            goal="send message",
+            tool="mcp:lark_send_text",
+            work_order_input='{"recipients":["Neil"],"text":"hello"}',
+            executor=fake_sender,
+        )
+        assert calls["n"] >= 1
+        assert result.verification.ok is False
+        assert result.verification.failure_reason == "message_post_send_verification_missing"
+
+    asyncio.run(_run())
+
+
+def test_message_executor_reports_unknown_tool_transport_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.dispatcher import dispatch_tool_work_order
+
+    async def _run():
+        async def missing_tool(_work_order):
+            return "[未知工具: mcp:windows_lark_send_message]"
+
+        result = await dispatch_tool_work_order(
+            turn_id="ck-message-unknown-tool",
+            goal="send lark message",
+            tool="mcp:windows_lark_send_message",
+            work_order_input=json.dumps(
+                {"recipients_json": json.dumps(["Neil"], ensure_ascii=False), "message": "hello"},
+                ensure_ascii=False,
+            ),
+            executor=missing_tool,
+        )
+        assert result.verification.ok is False
+        assert result.verification.failure_reason == "未知工具"
+        assert "message_post_send_verification_missing" not in result.verification.failure_reason
+
+    asyncio.run(_run())
+
+
 def test_memory_write_executor_direct_channel(tmp_path, monkeypatch):
     monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
 
@@ -621,9 +1140,13 @@ def test_turn_closure_memory_requests_execute_via_memory_agent(tmp_path, monkeyp
             verification_reports=[report],
         )
         results = await execute_turn_closure_memory_writes(closure)
-        assert len(results) == 1
-        assert results[0].work_order.role_agent == "MemoryWriteAgent"
-        assert results[0].verification.ok is True
+        assert len(results) == 2
+        assert {request.memory_type for request in closure.memory_write_requests} == {
+            "short_term_action",
+            "historical_task_summary",
+        }
+        assert all(result.work_order.role_agent == "MemoryWriteAgent" for result in results)
+        assert all(result.verification.ok is True for result in results)
 
     asyncio.run(_run())
     assert writes
@@ -642,6 +1165,7 @@ def test_memory_lifecycle_dedupe_recall_and_expiry(tmp_path, monkeypatch):
 
     from l3_node.cognitive_kernel.contracts import MemoryWriteRequest
     from l3_node.cognitive_kernel.memory_lifecycle import (
+        record_lifecycle_memory_feedback,
         recall_lifecycle_memories,
         write_lifecycle_memory,
     )
@@ -658,6 +1182,7 @@ def test_memory_lifecycle_dedupe_recall_and_expiry(tmp_path, monkeypatch):
     second = write_lifecycle_memory(req)
     assert first.memory_id == second.memory_id
     assert second.hit_count == 2
+    assert second.review_required is False
 
     hits = recall_lifecycle_memories("role-agent evidence", memory_types=["user_preference"], limit=3)
     assert hits
@@ -682,6 +1207,34 @@ def test_memory_lifecycle_dedupe_recall_and_expiry(tmp_path, monkeypatch):
     store.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n", encoding="utf-8")
     hits = recall_lifecycle_memories("Temporary task state", memory_types=["short_term_action"], limit=3)
     assert not hits
+
+    correction = MemoryWriteRequest(
+        turn_id="ck-memory-life-3",
+        source_event="entity_correction_confirmed",
+        memory_type="correction",
+        content='{"surface_norm":"lock","target_app":"Lark","type":"app_entity_correction"}',
+        confidence=0.86,
+        ttl="permanent",
+        evidence=[{"ok": True}],
+    )
+    write_lifecycle_memory(correction)
+    record_lifecycle_memory_feedback(
+        memory_type="correction",
+        content=correction.content,
+        ok=False,
+        turn_id="ck-memory-life-4",
+        failure_reason="app_focus_failed",
+    )
+    reviewed = record_lifecycle_memory_feedback(
+        memory_type="correction",
+        content=correction.content,
+        ok=False,
+        turn_id="ck-memory-life-5",
+        failure_reason="app_focus_failed",
+    )
+    assert reviewed is not None
+    assert reviewed.review_required is True
+    assert reviewed.review_reason == "app_focus_failed"
 
 
 def test_state_fabric_service_samples_persists_and_reports_status(tmp_path, monkeypatch):
@@ -776,6 +1329,17 @@ def test_pending_confirmation_cancel_and_expiry(tmp_path, monkeypatch):
     assert load_pending_confirmation(session_id="pending-cancel", channel="unit") is not None
     assert cancel_pending_confirmation(session_id="pending-cancel", channel="unit") is not None
     assert load_pending_confirmation(session_id="pending-cancel", channel="unit") is None
+
+    save_pending_confirmation(
+        contract=plan.decision_contract,
+        work_order=plan.work_orders[0],
+        session_id="pending-original-session",
+        channel="unit",
+    )
+    fallback_pending = load_pending_confirmation(session_id="pending-new-session", channel="unit")
+    assert fallback_pending is not None
+    assert fallback_pending.session_key == "pending-original-session"
+    assert cancel_pending_confirmation(session_id="pending-new-session", channel="unit") is not None
 
     path = save_pending_confirmation(
         contract=plan.decision_contract,

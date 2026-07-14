@@ -3,7 +3,7 @@
 
 - 事件写入：~/.jachin/logs/intelligence_events.jsonl（与 emit_intelligence_event 一致）
 - 消费：`intelligence_e`（`core/intelligence_e_consumer.py`）可按类型累加侧车
-- 客户端：POST /api/v2/intelligence/implicit-signal（见 v2_memory 路由）
+- 客户端：POST /api/v2/intelligence/implicit-signal（Memory Growth 消费治理信号）
 
 单一说明文档：docs/IMPLICIT_SIGNALS.md
 """

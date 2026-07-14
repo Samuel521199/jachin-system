@@ -48,8 +48,13 @@ a migration history. The active runtime model is:
   Scans active tasks and emits stale/ready evidence.
 - `l3_node/cognitive_kernel/memory_lifecycle.py`
   Classifies, dedupes, merges, expires, recalls, and writes lifecycle memory.
+- `l3_node/cognitive_kernel/task_memory.py`
+  Converts finished `DecisionContract`/`WorkOrder`/`VerificationReport` state
+  into task experience memory: historical summaries, tool habits, and failure
+  hints.
 - `l3_node/cognitive_kernel/direct_mainline.py`
-  Executes low-risk Arbiter-issued WorkOrders directly.
+  Executes low-risk Arbiter-issued WorkOrders directly and feeds verified task
+  experience back into `TurnClosure` memory writes.
 - `l3_node/cognitive_kernel/capability_work_order_adapter.py`
   Adapts dynamic Skill/MCP metadata and capability hook suggestions into WorkOrders.
 - `l3_node/cognitive_kernel/capability_hook_bridge.py`

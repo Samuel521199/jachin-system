@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Sidebar - 侧舷航行桥 (The Bridge)
  * 全息悬浮板 + 导航左侧光柱激活态 + 底部 SystemHeartbeat
  */
@@ -25,6 +25,7 @@ import {
   PackagePlus,
   DownloadCloud,
   BookOpen,
+  Sprout,
 } from "lucide-react";
 import { cn } from "../utils/cn";
 import { SystemHeartbeat } from "./components/SystemHeartbeat";
@@ -61,6 +62,12 @@ const isDevConsoleRuntime = import.meta.env.DEV;
 const navItems = [
   { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard, title: "首页：系统状态、快捷操作与最近活动" },
   { path: "/brain", label: "Neural Nexus", icon: BrainCircuit, title: "模型与记忆管理，后端连接状态" },
+  {
+    path: "/memory-growth",
+    label: "自生长知识",
+    icon: Sprout,
+    title: "AI 自生长知识系统：证据消化、Wiki 沉淀、图谱同步与方法论回流",
+  },
   {
     path: "/safety-lock",
     labelKey: "safetyLock" as const,
@@ -178,7 +185,7 @@ type NavItem = (typeof navItems)[number];
 
 function navSection(path: string, lang: "zh" | "en"): string {
   const zh = lang === "zh";
-  if (path === "/dashboard" || path === "/brain" || path === "/safety-lock" || path === "/calendar") {
+  if (path === "/dashboard" || path === "/brain" || path === "/memory-growth" || path === "/safety-lock" || path === "/calendar") {
     return zh ? "核心中枢" : "CORE";
   }
   if (path === "/skills" || path === "/capability-publish" || path === "/capability-install" || path === "/english-vocab") {

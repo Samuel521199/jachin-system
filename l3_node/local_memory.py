@@ -19,11 +19,7 @@ logger = logging.getLogger(__name__)
 _JACHIN_ROOT = Path.home() / ".jachin"
 _MEMORY_DIR = _JACHIN_ROOT / "memory"
 _LOCAL_DB = _MEMORY_DIR / "l3_local.json"
-_MAX_ENTRIES = 200  # 最多保留条数
-# compaction 写入的会话摘要，常含「当时 workspace 里有哪些文件」等**易过期状态**；
-# 注入 system 会导致新会话「记忆污染」、模型跳过 list_directory —— 仅保留在检索库里，不被动注入。
-_TAGS_EXCLUDE_FROM_PASSIVE_PROMPT: frozenset[str] = frozenset({"task_checkpoint"})
-_PROMPT_CYCLE = 0
+_MAX_ENTRIES = 200  # legacy JSON diagnostic cap; active recall uses MemoryRecallAgent.
 _MEMORY_SHARD_ID: ContextVar[str | None] = ContextVar("l3_memory_shard_id", default=None)
 
 
@@ -51,49 +47,8 @@ def _db_path() -> Path:
 
 
 def load_raw_entries() -> list[dict]:
-    """供 memory_facade / local_memory_search 读取当前 shard。"""
+    """供 local_memory_search 读取当前 shard 的历史诊断条目。"""
     return _load_raw()
-
-
-def next_prompt_cycle() -> int:
-    """单调递增的 prompt 轮次，用于被动记忆衰减（未注入超过 N 轮则不再塞进 prompt）。"""
-    global _PROMPT_CYCLE
-    _PROMPT_CYCLE += 1
-    return _PROMPT_CYCLE
-
-
-def _memory_passive_max_idle() -> int:
-    try:
-        from l3_node.nexus_config import get_nexus_config
-
-        cfg = get_nexus_config() or {}
-        m = cfg.get("memory") or {}
-        return max(1, int(m.get("passive_max_idle_runs", 12)))
-    except Exception:
-        return 12
-
-
-def bump_memory_inject_cycle_for_content_hit(
-    text_snippet: str,
-    *,
-    prompt_cycle: int,
-    max_scan_chars: int = 400,
-) -> None:
-    """prefetch / 工具读到与某条记忆内容重叠的文本时，刷新该条的注入轮次，避免误衰减。"""
-    snip = (text_snippet or "").strip()[:max_scan_chars]
-    if not snip or len(snip) < 8:
-        return
-    entries = _load_raw()
-    changed = False
-    for e in entries:
-        c = (e.get("content") or "").strip()
-        if len(c) < 8:
-            continue
-        if snip in c or c[:80] in snip:
-            e["last_prompt_inject_cycle"] = int(prompt_cycle)
-            changed = True
-    if changed:
-        _save_raw(entries)
 
 
 def _ensure_dir() -> None:
@@ -175,20 +130,6 @@ def touch_entries_from_search_hits(hits: list[dict]) -> None:
         return
     return
 
-
-def get_local_memory_for_prompt(
-    limit: int = 15,
-    *,
-    prompt_cycle: int | None = None,
-    max_idle_prompt_cycles: int | None = None,
-) -> str:
-    """
-    兼容旧 API：被动记忆 prompt 快照已停用。
-
-    所有主循环记忆读取必须通过 MemoryRecallAgent 进入 RelevantMemoryBundle。
-    limit / prompt_cycle 等参数保留签名兼容，但不再触发 Memory Nexus 读取。
-    """
-    return ""
 
 
 def merge_from_l2(items: list[dict]) -> None:

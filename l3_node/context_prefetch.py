@@ -317,12 +317,4 @@ def build_prefetch_attachment(
     attach = f"{_ATTACH_MARKER}\n以下工作区 Markdown 与用户意图关键词可能相关（已去重路径，勿重复整文件读取）：\n\n{body}"
     meta["_prefetch_session_bytes"] = sess_bytes + len(attach.encode("utf-8", errors="replace"))
     logger.debug("[ContextPrefetch] 附加 %d 块 bytes_total=%s", len(chunks), meta["_prefetch_session_bytes"])
-    try:
-        _pc = meta.get("_prompt_cycle")
-        if _pc is not None and body:
-            from l3_node.local_memory import bump_memory_inject_cycle_for_content_hit
-
-            bump_memory_inject_cycle_for_content_hit(body[:800], prompt_cycle=int(_pc))
-    except Exception:
-        pass
     return attach

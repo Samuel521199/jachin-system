@@ -18,6 +18,7 @@ from typing import Any
 
 from .contracts import MemoryEvidence, MemoryWriteRequest
 from .ledger import append_event
+from .memory_confidence import apply_feedback, classify_memory_layer, extract_memory_scope, initial_confidence, recall_score
 from .paths import kernel_home
 
 
@@ -49,6 +50,15 @@ class LifecycleMemoryRecord:
     created_at_ms: int = 0
     updated_at_ms: int = 0
     hit_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    last_verified_at_ms: int = 0
+    review_required: bool = False
+    review_reason: str = ""
+    layer: str = ""
+    domain: str = "global"
+    owner: str = "user"
+    skill_id: str = ""
     content_hash: str = ""
     tags: list[str] = field(default_factory=list)
     evidence: list[dict[str, Any]] = field(default_factory=list)
@@ -67,6 +77,15 @@ class LifecycleMemoryRecord:
             "created_at_ms": self.created_at_ms,
             "updated_at_ms": self.updated_at_ms,
             "hit_count": self.hit_count,
+            "success_count": self.success_count,
+            "failure_count": self.failure_count,
+            "last_verified_at_ms": self.last_verified_at_ms,
+            "review_required": self.review_required,
+            "review_reason": self.review_reason,
+            "layer": self.layer,
+            "domain": self.domain,
+            "owner": self.owner,
+            "skill_id": self.skill_id,
             "content_hash": self.content_hash,
             "tags": list(self.tags),
             "evidence": list(self.evidence),
@@ -139,13 +158,25 @@ def write_lifecycle_memory(request: MemoryWriteRequest) -> LifecycleMemoryRecord
     content_hash = _content_hash(memory_type, request.content)
     records = _load_records(include_expired=True)
     existing = next((r for r in records if r.content_hash == content_hash and r.status == "active"), None)
+    scope = extract_memory_scope(request.evidence)
+    layer = classify_memory_layer(memory_type, request.ttl)
+    confidence = initial_confidence(
+        requested=float(request.confidence or 0.0),
+        memory_type=memory_type,
+        evidence=request.evidence,
+        requires_user_confirmation=bool(request.requires_user_confirmation),
+    )
     if existing and request.merge_policy in {"dedupe_and_merge", "append_action_chain"}:
         existing.updated_at_ms = now
         existing.hit_count += 1
-        existing.confidence = max(existing.confidence, float(request.confidence or 0.0))
+        existing.confidence = max(existing.confidence, confidence)
         existing.evidence.extend(request.evidence or [])
         existing.ttl = request.ttl or existing.ttl
         existing.expires_at_ms = ttl_to_expiry_ms(existing.ttl, memory_type)
+        existing.layer = existing.layer or layer
+        existing.domain = existing.domain or scope["domain"]
+        existing.owner = existing.owner or scope["owner"]
+        existing.skill_id = existing.skill_id or scope["skill_id"]
         record = existing
         action = "merged"
     else:
@@ -154,12 +185,21 @@ def write_lifecycle_memory(request: MemoryWriteRequest) -> LifecycleMemoryRecord
             memory_type=memory_type,
             content=request.content,
             source_event=request.source_event,
-            confidence=float(request.confidence or 0.0),
+            confidence=confidence,
             ttl=request.ttl or "default",
             expires_at_ms=ttl_to_expiry_ms(request.ttl, memory_type),
             created_at_ms=now,
             updated_at_ms=now,
             hit_count=1,
+            success_count=_evidence_success_count(request.evidence),
+            failure_count=_evidence_failure_count(request.evidence),
+            last_verified_at_ms=now if _evidence_success_count(request.evidence) else 0,
+            review_required=bool(request.requires_user_confirmation),
+            review_reason="requires_user_confirmation" if request.requires_user_confirmation else "",
+            layer=layer,
+            domain=scope["domain"],
+            owner=scope["owner"],
+            skill_id=scope["skill_id"],
             content_hash=content_hash,
             tags=[memory_type, request.source_event],
             evidence=list(request.evidence or []),
@@ -220,6 +260,68 @@ def recall_lifecycle_memories(query: str = "", *, memory_types: list[str] | None
     return out
 
 
+def record_lifecycle_memory_feedback(
+    *,
+    memory_type: str,
+    content: str,
+    ok: bool,
+    turn_id: str = "",
+    failure_reason: str = "",
+) -> LifecycleMemoryRecord | None:
+    content_hash = _content_hash(memory_type, content)
+    records = _load_records(include_expired=True)
+    record = next((r for r in records if r.content_hash == content_hash and r.status == "active"), None)
+    if record is None:
+        return None
+    now = _now_ms()
+    record.updated_at_ms = now
+    record.hit_count += 1
+    if ok:
+        record.success_count += 1
+        update = apply_feedback(
+            confidence=record.confidence,
+            success_count=record.success_count,
+            failure_count=record.failure_count,
+            ok=True,
+            now_ms=now,
+            failure_reason=failure_reason,
+        )
+        record.last_verified_at_ms = update.last_verified_at_ms
+        record.confidence = update.confidence
+        record.review_required = update.review_required
+        record.review_reason = update.review_reason
+    else:
+        record.failure_count += 1
+        update = apply_feedback(
+            confidence=record.confidence,
+            success_count=record.success_count,
+            failure_count=record.failure_count,
+            ok=False,
+            now_ms=now,
+            failure_reason=failure_reason,
+        )
+        record.confidence = update.confidence
+        record.review_required = update.review_required
+        record.review_reason = update.review_reason
+    _rewrite_records(records)
+    append_event(
+        "memory_lifecycle_feedback",
+        turn_id or "memory-lifecycle",
+        {
+            "memory_id": record.memory_id,
+            "memory_type": record.memory_type,
+            "content_hash": record.content_hash,
+            "ok": bool(ok),
+            "success_count": record.success_count,
+            "failure_count": record.failure_count,
+            "confidence": record.confidence,
+            "review_required": record.review_required,
+            "review_reason": record.review_reason,
+        },
+    )
+    return record
+
+
 def expire_lifecycle_memories() -> int:
     now = _now_ms()
     records = _load_records(include_expired=True)
@@ -237,13 +339,23 @@ def expire_lifecycle_memories() -> int:
 
 def _score_record(record: LifecycleMemoryRecord, query_terms: list[str]) -> float:
     if not query_terms:
-        return 1.0
-    hay = f"{record.memory_type} {record.content} {' '.join(record.tags)}".lower()
-    hits = sum(1 for term in query_terms if term in hay)
-    if hits <= 0:
-        return 0.0
+        hits = 1
+    else:
+        hay = f"{record.memory_type} {record.content} {' '.join(record.tags)} {record.domain} {record.skill_id}".lower()
+        hits = sum(1 for term in query_terms if term in hay)
+        if hits <= 0:
+            return 0.0
     recency = min(1.0, max(0.0, record.updated_at_ms / max(1, _now_ms())))
-    return hits * 10 + record.confidence + recency + min(record.hit_count, 5) * 0.1
+    return recall_score(
+        text_hits=hits,
+        confidence=record.confidence,
+        hit_count=record.hit_count,
+        success_count=record.success_count,
+        failure_count=record.failure_count,
+        review_required=record.review_required,
+        layer=record.layer,
+        recency_hint=recency,
+    )
 
 
 def _load_records(*, include_expired: bool = False) -> list[LifecycleMemoryRecord]:
@@ -256,12 +368,26 @@ def _load_records(*, include_expired: bool = False) -> list[LifecycleMemoryRecor
             continue
         try:
             obj = json.loads(line)
+            obj = _record_defaults(obj)
             record = LifecycleMemoryRecord(**obj)
             if include_expired or record.status == "active":
                 out.append(record)
         except Exception:
             continue
     return out
+
+
+def _record_defaults(obj: dict[str, Any]) -> dict[str, Any]:
+    obj.setdefault("success_count", 0)
+    obj.setdefault("failure_count", 0)
+    obj.setdefault("last_verified_at_ms", 0)
+    obj.setdefault("review_required", False)
+    obj.setdefault("review_reason", "")
+    obj.setdefault("layer", classify_memory_layer(str(obj.get("memory_type") or ""), str(obj.get("ttl") or "")))
+    obj.setdefault("domain", "global")
+    obj.setdefault("owner", "user")
+    obj.setdefault("skill_id", "")
+    return obj
 
 
 def _rewrite_records(records: list[LifecycleMemoryRecord]) -> None:
@@ -276,6 +402,14 @@ def _rewrite_records(records: list[LifecycleMemoryRecord]) -> None:
     for record in records:
         index["types"][record.memory_type] = int(index["types"].get(record.memory_type, 0)) + 1
     _index_path().write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _evidence_success_count(evidence: list[dict[str, Any]]) -> int:
+    return sum(1 for item in evidence or [] if isinstance(item, dict) and item.get("ok") is True)
+
+
+def _evidence_failure_count(evidence: list[dict[str, Any]]) -> int:
+    return sum(1 for item in evidence or [] if isinstance(item, dict) and item.get("ok") is False)
 
 
 def _content_hash(memory_type: str, content: str) -> str:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .arbiter import arbitrate_review_summary, build_work_order_from_decision
+from .arbiter import arbitrate_review_summary, build_work_orders_from_decision
 from .contracts import ClosureType, DecisionContract, ReviewSummary, TurnClosure, WorkOrder
 from .ledger import append_event, record_turn_closure
 from .pipeline import CognitiveTurnContext
@@ -43,8 +43,7 @@ def plan_cognitive_turn(ctx: CognitiveTurnContext, *, emit_non_execution_closure
         memory_bundle=ctx.memory_bundle,
     )
     contract = arbitrate_review_summary(review_summary, goal=ctx.envelope.normalized_text or ctx.envelope.raw_text)
-    work_order = build_work_order_from_decision(contract, review_summary)
-    work_orders = [work_order] if work_order else []
+    work_orders = build_work_orders_from_decision(contract, review_summary)
     task_dag = _maybe_create_task_dag(ctx, contract, work_orders)
     closure = _maybe_close_without_execution(contract, review_summary) if emit_non_execution_closure else None
     result = KernelPlanningResult(

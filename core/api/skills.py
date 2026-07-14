@@ -7,7 +7,6 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, status,
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
 
-# v5.0: core.memory.schema (PostgreSQL) 已废弃
 from core.system.plugin_manager import PluginManager, get_plugin_manager
 from core.runtime.skill_runner import SkillRunner
 from core.runtime.skill_loader import SkillLoader

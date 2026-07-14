@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
 """
-语音问答链路延迟基准脚本（STT -> L3 -> TTS）。
+Voice companion latency benchmark: STT -> L3 cognitive main loop -> TTS.
 
-目标：
-1) 连续压测并实时输出每轮耗时
-2) 落盘 CSV/JSONL，便于后续定位瓶颈
-3) 统计 p50/p90，快速评估提速效果
-
-默认链路（陪伴态对齐）：
-  路由     : clients/desktop/src/voice/voiceIntentRouter.ts（via tsx CLI，与 chat.tsx 同源）
-  JVS STT  : POST /v1/stt/transcribe     (18982)
-  L3 回答  : POST /api/v3/agent/run      (18991)
-  JVS TTS  : POST /v1/tts/synthesize     (18982)
+The desktop voice intent router has been retired. This script sends the
+recognized text and STT evidence directly to L3, matching the current desktop
+voice path.
 """
 from __future__ import annotations
 
@@ -39,11 +32,6 @@ PROJECT_ROOT = _SCRIPT_DIR.parent
 if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
-from voice_intent_router import (
-    build_companion_implicit_signals,
-    dispatch_voice_intent,
-)
-
 
 if sys.platform == "win32":
     try:
@@ -64,9 +52,9 @@ DEFAULT_COMPANION_CUE_MANIFEST = (
 
 SENSEVOICE_TAG_RE = re.compile(r"<\|.*?\|>")
 
-RESULT_HINT_RE = re.compile(r"(已|已经|完成|成功|失败|结果|最终|搞定|好了|完成了|已为你|我已|无法|没法|失败了|报错|可以了|请重试)")
-PROCESS_HINT_RE = re.compile(r"(首先|接下来|然后|步骤|第[一二三四五六七八九十]|先|再|最后|正在|我会|我将|分析|思路|计划|流程|执行中|处理中|如下)")
-LIST_PREFIX_RE = re.compile(r"^(\d+[\.\)]|[-*•]|第[一二三四五六七八九十]+步|步骤[:：]?)")
+RESULT_HINT_RE = re.compile(r"(宸瞸宸茬粡|瀹屾垚|鎴愬姛|澶辫触|缁撴灉|鏈€缁坾鎼炲畾|濂戒簡|瀹屾垚浜唡宸蹭负浣爘鎴戝凡|鏃犳硶|娌℃硶|澶辫触浜唡鎶ラ敊|鍙互浜唡璇烽噸璇?")
+PROCESS_HINT_RE = re.compile(r"(棣栧厛|鎺ヤ笅鏉鐒跺悗|姝ラ|绗琜涓€浜屼笁鍥涗簲鍏竷鍏節鍗乚|鍏坾鍐峾鏈€鍚巪姝ｅ湪|鎴戜細|鎴戝皢|鍒嗘瀽|鎬濊矾|璁″垝|娴佺▼|鎵ц涓瓅澶勭悊涓瓅濡備笅)")
+LIST_PREFIX_RE = re.compile(r"^(\d+[\.\)]|[-*鈥|绗琜涓€浜屼笁鍥涗簲鍏竷鍏節鍗乚+姝姝ラ[:锛歖?)")
 
 
 def _now_ms() -> int:
@@ -424,7 +412,7 @@ def _wav_duration_ms(wav_bytes: bytes) -> int:
 
 def _normalize_companion_cue_text(text: str) -> str:
     s = re.sub(r"[\s\u3000]+", "", text or "")
-    s = re.sub(r"[。！？!?，,、；;：:\"“”‘’'（）()\[\]【】]+$", "", s)
+    s = re.sub(r"[銆傦紒锛??锛?銆侊紱;锛?\"鈥溾€濃€樷€?锛堬級()\[\]銆愩€慮+$", "", s)
     return s.strip()
 
 
@@ -464,7 +452,7 @@ def _first_sentence(text: str) -> str:
     t = (text or "").strip()
     if not t:
         return ""
-    seps = "。！？!?；;\n"
+    seps = "銆傦紒锛??锛?\n"
     idx = min([t.find(s) for s in seps if s in t] or [-1])
     if idx >= 0:
         return t[: idx + 1].strip()
@@ -485,25 +473,14 @@ def _sanitize_stt_text(text: str) -> str:
     return t
 
 
-def _load_route_context(path: Path | None) -> dict[str, Any]:
-    """VoiceDispatcherContext JSON（activeTasks / awaitingConfirmation 等）。"""
-    if path is None:
-        return {"activeTasks": []}
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError(f"route context must be object: {path}")
-    if "activeTasks" not in data:
-        data["activeTasks"] = []
-    return data
-
 
 def _pick_result_clause(s: str) -> str | None:
-    clauses = [x.strip() for x in re.split(r"[，。；！？]", s or "") if x.strip()]
+    clauses = [x.strip() for x in re.split(r"[锛屻€傦紱锛侊紵]", s or "") if x.strip()]
     if not clauses:
         return None
     for c in reversed(clauses):
         if RESULT_HINT_RE.search(c):
-            return f"{c}。"
+            return f"{c}."
     return None
 
 
@@ -519,7 +496,7 @@ def _prepare_sentence_for_tts(raw: str) -> str | None:
     letters = len(re.findall(r"[\w\u4e00-\u9fff]", s, flags=re.UNICODE))
     if letters < 2:
         return None
-    noisy = len(re.findall(r"[^\w\u4e00-\u9fff\s，。！？、；：]", s, flags=re.UNICODE))
+    noisy = len(re.findall(r"[^\w\u4e00-\u9fff\s锛屻€傦紒锛熴€侊紱锛歖", s, flags=re.UNICODE))
     if len(s) > 0 and (noisy / len(s)) > 0.45:
         return None
     has_result = bool(RESULT_HINT_RE.search(s))
@@ -541,7 +518,7 @@ def _split_for_companion_tts(text: str) -> list[str]:
         return []
     out: list[str] = []
     buf: list[str] = []
-    enders = set("。！？!?；;")
+    enders = set("銆傦紒锛??锛?")
     for ch in t:
         buf.append(ch)
         if ch in enders:
@@ -562,8 +539,7 @@ def _pick_tts_inputs(answer: str, mode: str, max_sentences: int) -> list[str]:
     if mode == "legacy":
         one = _first_sentence(answer) or answer[:80]
         return [one] if one else []
-    # companion mode: 使用接近前端 speakableText 的过滤，默认只播报结果类句子。
-    rows = _split_for_companion_tts(answer)
+    # companion mode: 浣跨敤鎺ヨ繎鍓嶇 speakableText 鐨勮繃婊わ紝榛樿鍙挱鎶ョ粨鏋滅被鍙ュ瓙銆?    rows = _split_for_companion_tts(answer)
     kept: list[str] = []
     for r in rows:
         s = _prepare_sentence_for_tts(r)
@@ -583,7 +559,7 @@ def _record_wav_bytes(duration_sec: float, sample_rate: int = 16000) -> bytes:
         import soundfile as sf
     except ImportError as e:
         raise RuntimeError(
-            "录音模式需要安装 sounddevice + soundfile，请执行: pip install sounddevice soundfile"
+            "褰曢煶妯″紡闇€瑕佸畨瑁?sounddevice + soundfile锛岃鎵ц: pip install sounddevice soundfile"
         ) from e
     frames = int(max(0.5, duration_sec) * sample_rate)
     audio = sd.rec(frames, samplerate=sample_rate, channels=1, dtype="int16")
@@ -646,11 +622,6 @@ class RunMetric:
     tts_transport: str
     tts_fallback_reason: str
     routed_text: str
-    voice_dispatch_tier: str
-    voice_intent_class: str
-    voice_fast_lane: bool
-    voice_interrupt_verdict: str
-    voice_route_notes: str
     l3_transport: str
     l3_fallback_reason: str
 
@@ -676,9 +647,6 @@ def run_once(
     tts_stream: bool,
     tts_mode: str,
     max_speak_sentences: int,
-    fast_lane_max_speak_sentences: int,
-    companion_real_route: bool,
-    route_context: dict[str, Any],
     progress: Callable[[str], None] | None = None,
 ) -> RunMetric:
     started = _perf_ms()
@@ -702,11 +670,6 @@ def run_once(
     tts_transport = ""
     tts_fallback_reason = ""
     routed_text = ""
-    voice_dispatch_tier = ""
-    voice_intent_class = ""
-    voice_fast_lane = False
-    voice_interrupt_verdict = ""
-    voice_route_notes = ""
     l3_transport_used = ""
     l3_fallback_reason = ""
     try:
@@ -714,50 +677,34 @@ def run_once(
             recognized = text_input.strip()
         else:
             if not wav_bytes:
-                raise RuntimeError("无输入音频，且未提供 --text")
+                raise RuntimeError("鏃犺緭鍏ラ煶棰戯紝涓旀湭鎻愪緵 --text")
             if progress:
-                progress("STT 请求中...")
+                progress("STT 璇锋眰涓?..")
             st = _perf_ms()
             stt_json = _http_post_multipart_stt(f"{jvs_base}/v1/stt/transcribe", wav_bytes, timeout=t_stt)
             stt_ms = _perf_ms() - st
             recognized = _sanitize_stt_text(stt_json.get("text") or "")
         if not recognized:
-            raise RuntimeError("STT 未识别到文本")
+            raise RuntimeError("STT 鏈瘑鍒埌鏂囨湰")
 
         if progress:
-            progress("L3 推理中...")
+            progress("L3 鎺ㄧ悊涓?..")
         st = _perf_ms()
-        if companion_real_route:
-            decision = dispatch_voice_intent(recognized, route_context)
-            routed_text = (decision.get("normalized_text") or recognized).strip() or recognized
-            implicit_signals = build_companion_implicit_signals(
-                raw_stt_text=recognized,
-                decision=decision,
-                source="voice_latency_bench",
-                active_tasks=route_context.get("activeTasks"),
-            )
-        else:
-            routed_text = recognized
-            implicit_signals = {
-                "desktop_companion": True,
-                "source": "desktop_voice_companion",
-                "voice_raw_stt_text": recognized,
-                "voice_routed_text": routed_text,
-            }
-            decision = {}
+        routed_text = recognized
+        implicit_signals = {
+            "desktop_companion": True,
+            "source": "desktop_voice_companion",
+            "voice_raw_stt_text": recognized,
+            "voice_asr_raw_text": recognized,
+            "voice_corrected_text": recognized,
+            "voice_final_text": recognized,
+        }
         implicit_signals["desktop_companion"] = True
         implicit_signals["source"] = "desktop_voice_companion"
         implicit_signals["benchmark_source"] = "voice_latency_bench"
         implicit_signals["voice_benchmark"] = True
         implicit_signals["voice_channel"] = "desktop_companion"
         implicit_signals["local_voice_session"] = not bool(lark_chat_id)
-        voice_dispatch_tier = str(decision.get("tier") or "")
-        voice_intent_class = str(decision.get("intent_class") or "")
-        hints = decision.get("router_hints") or {}
-        voice_fast_lane = bool(hints.get("fast_lane"))
-        voice_interrupt_verdict = str(decision.get("interrupt_verdict") or "")
-        notes = decision.get("route_notes") or []
-        voice_route_notes = "|".join(notes) if isinstance(notes, list) else str(notes)
         l3_payload = {
             "intent": routed_text,
             "chat_id": lark_chat_id or chat_id,
@@ -821,15 +768,13 @@ def run_once(
             raise RuntimeError("L3 returned empty answer")
 
         effective_max_sentences = max(1, int(max_speak_sentences))
-        if voice_fast_lane:
-            effective_max_sentences = max(1, int(fast_lane_max_speak_sentences))
         tts_inputs = _pick_tts_inputs(answer, mode=tts_mode, max_sentences=effective_max_sentences)
         if not tts_inputs:
-            raise RuntimeError("TTS 无可用输入句子")
+            raise RuntimeError("TTS has no speakable input")
         tts_input = " | ".join(tts_inputs)
         for idx, one in enumerate(tts_inputs, start=1):
             if progress:
-                progress(f"TTS 合成中... ({idx}/{len(tts_inputs)})")
+                progress(f"TTS 鍚堟垚涓?.. ({idx}/{len(tts_inputs)})")
             st = _perf_ms()
             cue_wav_path = _find_companion_cue_wav(one)
             if cue_wav_path is not None:
@@ -901,11 +846,6 @@ def run_once(
             tts_transport=tts_transport,
             tts_fallback_reason=tts_fallback_reason,
             routed_text=routed_text,
-            voice_dispatch_tier=voice_dispatch_tier,
-            voice_intent_class=voice_intent_class,
-            voice_fast_lane=voice_fast_lane,
-            voice_interrupt_verdict=voice_interrupt_verdict,
-            voice_route_notes=voice_route_notes,
             l3_transport=l3_transport_used,
             l3_fallback_reason=l3_fallback_reason[:300],
         )
@@ -936,11 +876,6 @@ def run_once(
             tts_transport=tts_transport,
             tts_fallback_reason=tts_fallback_reason,
             routed_text=routed_text,
-            voice_dispatch_tier=voice_dispatch_tier,
-            voice_intent_class=voice_intent_class,
-            voice_fast_lane=voice_fast_lane,
-            voice_interrupt_verdict=voice_interrupt_verdict,
-            voice_route_notes=voice_route_notes,
             l3_transport=l3_transport_used,
             l3_fallback_reason=l3_fallback_reason[:300],
         )
@@ -964,7 +899,7 @@ def write_rows(csv_path: Path, jsonl_path: Path, rows: list[RunMetric]) -> None:
 def print_live_summary(rows: list[RunMetric]) -> None:
     ok_rows = [r for r in rows if r.ok]
     if not ok_rows:
-        print("  当前无成功样本。")
+        print("  no successful samples yet")
         return
     stt = [r.stt_ms for r in ok_rows if r.stt_ms > 0]
     l3 = [r.l3_ms for r in ok_rows if r.l3_ms > 0]
@@ -980,35 +915,29 @@ def print_live_summary(rows: list[RunMetric]) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="语音链路延迟基准（STT->L3->TTS）")
-    p.add_argument("--jvs-base", default=DEFAULT_JVS, help="JVS 地址，默认 http://127.0.0.1:18982")
-    p.add_argument("--l3-base", default=DEFAULT_L3, help="L3 HTTP 地址，默认 http://127.0.0.1:18991")
-    p.add_argument("--runs", type=int, default=20, help="压测轮数")
-    p.add_argument("--interval-sec", type=float, default=0.5, help="每轮间隔秒")
-    p.add_argument("--voice", default=DEFAULT_VOICE, help="TTS 音色 ID（陪伴态默认 zm_053 / Kokoro）")
+    p = argparse.ArgumentParser(description="Voice latency benchmark: STT -> L3 -> TTS")
+    p.add_argument("--jvs-base", default=DEFAULT_JVS, help="JVS base URL")
+    p.add_argument("--l3-base", default=DEFAULT_L3, help="L3 HTTP base URL")
+    p.add_argument("--runs", type=int, default=20, help="Number of benchmark runs")
+    p.add_argument("--interval-sec", type=float, default=0.5, help="Delay between runs")
+    p.add_argument("--voice", default=DEFAULT_VOICE, help="TTS voice id")
     p.add_argument(
         "--tts-mode",
         choices=("companion", "legacy"),
         default="companion",
-        help="TTS 输入模式：companion=按陪伴态句级（最多 N 句），legacy=仅首句",
+        help="TTS text selection mode",
     )
     p.add_argument(
         "--max-speak-sentences",
         type=int,
         default=3,
-        help="companion 模式下最多送 TTS 的句子数（默认 3）",
+        help="Maximum sentences to send to TTS",
     )
-    p.add_argument(
-        "--fast-lane-max-speak-sentences",
-        type=int,
-        default=1,
-        help="Max TTS sentences for voice fast lane turns",
-    )
-    p.add_argument("--audio-file", type=Path, help="固定 WAV 文件作为输入（推荐可重复）")
-    p.add_argument("--record-sec", type=float, default=3.0, help="每轮现场录音秒数（未提供 --audio-file/--text 时生效）")
-    p.add_argument("--reuse-audio", action="store_true", help="录音模式下，仅第1轮录音，后续复用")
-    p.add_argument("--text", help="跳过 STT，直接用文本作为输入（仅压 L3+TTS）")
-    p.add_argument("--play", action="store_true", help="每轮 TTS 合成后本地播放")
+    p.add_argument("--audio-file", type=Path, help="Use a fixed WAV file as input")
+    p.add_argument("--record-sec", type=float, default=3.0, help="Recording seconds when no audio/text is provided")
+    p.add_argument("--reuse-audio", action="store_true", help="Record once and reuse the audio for subsequent runs")
+    p.add_argument("--text", help="Skip STT and use text directly as L3 input")
+    p.add_argument("--play", action="store_true", help="Play synthesized TTS audio after each run")
     p.add_argument("--timeout-stt", type=float, default=90.0)
     p.add_argument("--timeout-l3", type=float, default=180.0)
     p.add_argument("--l3-ws", default=DEFAULT_L3_WS, help="L3 sensory WebSocket URL")
@@ -1016,15 +945,15 @@ def parse_args() -> argparse.Namespace:
         "--l3-transport",
         choices=("auto", "ws", "http"),
         default="ws",
-        help="L3 transport: ws matches desktop companion; auto uses WebSocket first then HTTP fallback",
+        help="L3 transport: ws matches desktop companion; auto falls back to HTTP",
     )
     p.add_argument("--timeout-tts", type=float, default=120.0)
-    p.add_argument("--no-tts-stream", action="store_true", help="Disable JVS streaming TTS and force legacy full WAV synthesis")
+    p.add_argument("--no-tts-stream", action="store_true", help="Disable JVS streaming TTS")
     p.add_argument("--chat-prefix", default="voice-latency-bench")
     p.add_argument(
         "--lark-chat-id",
         default="",
-        help="Optional real Lark chat_id (oc_...). Omit to benchmark local desktop voice companion mode.",
+        help="Optional real Lark chat_id (oc_...). Omit for local desktop companion mode.",
     )
     p.add_argument(
         "--chat-session-mode",
@@ -1035,22 +964,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-ws-reuse", action="store_true", help="Do not keep a persistent L3 WebSocket connection")
     p.add_argument("--no-ws-preflight", action="store_true", help="Do not send prepare_context before STT/turn")
     p.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
-    p.add_argument(
-        "--companion-real-route",
-        action="store_true",
-        default=True,
-        help="调用 voiceIntentRouter.ts（与 chat.tsx 同源）并注入完整 implicit_signals（默认开启）",
-    )
-    p.add_argument(
-        "--no-companion-real-route",
-        action="store_true",
-        help="关闭陪伴态路由，仅传 STT 原文与最小 companion 信号",
-    )
-    p.add_argument(
-        "--route-context-json",
-        type=Path,
-        help="VoiceDispatcherContext JSON（含 activeTasks 等），模拟长任务运行中插嘴",
-    )
     return p.parse_args()
 
 
@@ -1066,18 +979,11 @@ def main() -> int:
         f"[INFO] JVS={args.jvs_base}  L3_HTTP={args.l3_base}  L3_WS={args.l3_ws}  "
         f"transport={args.l3_transport}  voice={args.voice}  tts_mode={args.tts_mode}  "
         f"max_speak_sentences={args.max_speak_sentences}  "
-        f"fast_lane_max_speak_sentences={args.fast_lane_max_speak_sentences}  "
         f"tts_stream={not args.no_tts_stream}  "
         f"chat_session_mode={args.chat_session_mode}  ws_reuse={not args.no_ws_reuse}  "
         f"ws_preflight={not args.no_ws_preflight}  "
         f"local_voice_session={not bool((args.lark_chat_id or '').strip())}"
     )
-    if args.no_companion_real_route:
-        args.companion_real_route = False
-    route_context = _load_route_context(args.route_context_json)
-    print(f"[INFO] companion_real_route={bool(args.companion_real_route)} router=voiceIntentRouter.ts")
-    if route_context.get("activeTasks"):
-        print(f"[INFO] route_context activeTasks={len(route_context['activeTasks'])}")
 
     fixed_wav: bytes | None = None
     if args.audio_file:
@@ -1142,11 +1048,6 @@ def main() -> int:
                                 tts_transport="",
                                 tts_fallback_reason="",
                                 routed_text="",
-                                voice_dispatch_tier="",
-                                voice_intent_class="",
-                                voice_fast_lane=False,
-                                voice_interrupt_verdict="",
-                                voice_route_notes="",
                                 l3_transport="",
                                 l3_fallback_reason="",
                             )
@@ -1179,9 +1080,6 @@ def main() -> int:
                 tts_stream=not args.no_tts_stream,
                 tts_mode=args.tts_mode,
                 max_speak_sentences=max(1, int(args.max_speak_sentences)),
-                fast_lane_max_speak_sentences=max(1, int(args.fast_lane_max_speak_sentences)),
-                companion_real_route=bool(args.companion_real_route),
-                route_context=route_context,
                 progress=lambda msg, idx=i, total=args.runs: print(f"[{idx}/{total}] {msg}"),
             )
             rows.append(metric)
@@ -1194,12 +1092,8 @@ def main() -> int:
                     f"TFA={metric.tts_first_audio_ms:.0f}ms  AUDIO={metric.tts_audio_ms}ms  "
                     f"CALLS={metric.tts_calls} STREAM_CHUNKS={metric.tts_stream_chunks}  "
                     f"VIA={metric.l3_transport or '-'} FC={metric.l3_first_chunk_ms:.0f}ms  "
-                    f"ANS={metric.l3_answer_ms:.0f}ms  "
-                    f"TIER={metric.voice_dispatch_tier or '-'} FAST={int(metric.voice_fast_lane)} "
-                    f"INT={metric.voice_interrupt_verdict or '-'}"
+                    f"ANS={metric.l3_answer_ms:.0f}ms"
                 )
-                if metric.voice_route_notes:
-                    print(f"         route_notes={metric.voice_route_notes[:120]}")
                 if metric.l3_latency_trace:
                     print(f"         l3_trace={metric.l3_latency_trace[:160]}")
                 if metric.l3_fallback_reason:
@@ -1228,7 +1122,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-
-

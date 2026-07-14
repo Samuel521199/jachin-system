@@ -1,4 +1,4 @@
-﻿"""Complex task DAG model for the Memory-first Cognitive Kernel."""
+"""Complex task DAG model for the Memory-first Cognitive Kernel."""
 
 from __future__ import annotations
 
@@ -30,9 +30,13 @@ class TaskDagNode:
     title: str
     role_agent: str = ""
     tool: str = ""
+    capability: str = ""
+    inputs: dict[str, Any] = field(default_factory=dict)
     work_order_input: str = ""
     depends_on: list[str] = field(default_factory=list)
+    risk_level: str = "low"
     verification_criteria: list[str] = field(default_factory=list)
+    recovery_policy: dict[str, Any] = field(default_factory=dict)
     rollback_hint: str = ""
     status: TaskNodeStatus = "pending"
     work_order_id: str = ""
@@ -44,9 +48,13 @@ class TaskDagNode:
             "title": self.title,
             "role_agent": self.role_agent,
             "tool": self.tool,
+            "capability": self.capability,
+            "inputs": dict(self.inputs),
             "work_order_input": self.work_order_input,
             "depends_on": list(self.depends_on),
+            "risk_level": self.risk_level,
             "verification_criteria": list(self.verification_criteria),
+            "recovery_policy": dict(self.recovery_policy),
             "rollback_hint": self.rollback_hint,
             "status": self.status,
             "work_order_id": self.work_order_id,
@@ -98,9 +106,13 @@ def create_task_dag_from_work_orders(
             title=work_order.task or f"Execute {tool}",
             role_agent=work_order.role_agent,
             tool=tool,
+            capability=str(work_order.inputs.get("capability") or tool),
+            inputs=dict(work_order.inputs or {}),
             work_order_input=str(work_order.inputs.get("work_order_input") or ""),
             depends_on=[prior] if prior else [],
+            risk_level=getattr(work_order.tool_policy.risk_level, "value", str(work_order.tool_policy.risk_level or "low")),
             verification_criteria=list(work_order.verification_criteria or []),
+            recovery_policy=dict(work_order.inputs.get("recovery_policy") or {}),
             status="ready" if not prior else "pending",
             work_order_id=work_order.work_order_id,
         )
@@ -225,7 +237,7 @@ def _append_index(dag: TaskDag) -> None:
 
 
 def _dag_from_dict(obj: dict[str, Any]) -> TaskDag:
-    nodes = [TaskDagNode(**node) for node in obj.get("nodes", []) if isinstance(node, dict)]
+    nodes = [TaskDagNode(**_node_defaults(node)) for node in obj.get("nodes", []) if isinstance(node, dict)]
     return TaskDag(
         dag_id=str(obj.get("dag_id") or ""),
         turn_id=str(obj.get("turn_id") or ""),
@@ -237,3 +249,11 @@ def _dag_from_dict(obj: dict[str, Any]) -> TaskDag:
         background_task_id=str(obj.get("background_task_id") or ""),
         metadata=obj.get("metadata") if isinstance(obj.get("metadata"), dict) else {},
     )
+
+
+def _node_defaults(node: dict[str, Any]) -> dict[str, Any]:
+    node.setdefault("capability", node.get("tool") or "")
+    node.setdefault("inputs", {})
+    node.setdefault("risk_level", "low")
+    node.setdefault("recovery_policy", {})
+    return node

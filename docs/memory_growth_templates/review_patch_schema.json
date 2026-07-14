@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Jachin Memory Growth Daily Review Patch",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "review_id",
+    "date",
+    "source",
+    "summary",
+    "task_summaries",
+    "concept_candidates",
+    "playbook_candidates",
+    "output_candidates",
+    "warnings"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "review_id": { "type": "string" },
+    "date": { "type": "string" },
+    "generated_at_ms": { "type": "integer" },
+    "source": { "type": "string" },
+    "summary": {
+      "type": "object",
+      "required": [
+        "raw_event_count",
+        "task_count",
+        "passed_count",
+        "failed_count",
+        "waiting_user_count",
+        "invalid_raw_count"
+      ],
+      "properties": {
+        "raw_event_count": { "type": "integer" },
+        "task_count": { "type": "integer" },
+        "passed_count": { "type": "integer" },
+        "failed_count": { "type": "integer" },
+        "waiting_user_count": { "type": "integer" },
+        "invalid_raw_count": { "type": "integer" }
+      }
+    },
+    "task_summaries": { "type": "array", "items": { "type": "object" } },
+    "concept_candidates": { "type": "array", "items": { "type": "object" } },
+    "playbook_candidates": { "type": "array", "items": { "type": "object" } },
+    "output_candidates": { "type": "array", "items": { "type": "object" } },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  }
+}

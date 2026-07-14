@@ -302,21 +302,6 @@ async def delete_calendar_item(item_id: str):
     return {"ok": True}
 
 
-# --- 记忆（core_memory / compaction；宿主跨会话见 L3 Memory Nexus）---
-@router.get("/memory/export-markdown")
-async def export_memory_markdown():
-    """
-    将 core_memory 导出为 Markdown 文件（~/.jachin/memory/MEMORY.md）。
-    便于人类查看和版本控制，与 OpenClaw MEMORY.md 风格一致。
-    """
-    try:
-        from core.biological_memory import export_core_memory_to_markdown
-        path = export_core_memory_to_markdown()
-        return {"ok": True, "path": path, "message": "核心记忆已导出"}
-    except Exception as e:
-        return {"ok": False, "path": "", "message": str(e)}
-
-
 # --- 模型列表与切换 ---
 @router.get("/models", response_model=ModelsResponse)
 async def list_models():
@@ -448,14 +433,11 @@ def reset_context_used() -> None:
 
 @router.post("/llm/context/reset")
 async def reset_llm_context():
-    """重置上下文 Token 计数（新会话时调用）。智能化 P0：重置前执行记忆刷新。"""
-    try:
-        from core.compaction_hook import run_pre_reset_memory_flush
-        flushed = await run_pre_reset_memory_flush()
-        if flushed:
-            logger.info("[Console] pre_reset memory_flush: %d 条", flushed)
-    except Exception as e:
-        logger.debug("[Console] pre_reset flush 跳过: %s", e)
+    """Reset estimated LLM context usage.
+
+    Memory Growth owns durable review and promotion. Context reset no longer
+    triggers legacy compaction/flush side effects.
+    """
     reset_context_used()
     return {"ok": True}
 

@@ -112,12 +112,12 @@ def _extract_recipients(text: str, *, allow_trailing_to: bool = False) -> list[s
             tail = matches[-1].group(1)
             tail = re.split(r"(?:，然后|, then|然后|之后|再|并且|并)", tail, maxsplit=1)[0]
             return _split_recipients(tail)
-    direct = re.search(r"(?:\u7ed9|\u5411)\s*([A-Za-z\u4e00-\u9fff][A-Za-z\u4e00-\u9fff\s.-]{1,40})\s*(?:\u53d1\u9001|\u53d1)(?:\u4e00\u6761|\u4e2a|\u4e00\u4e0b)?(?:\u6d88\u606f|\u4fe1\u606f|message)?", text, re.I)
+    direct = re.search(r"(?:\u7ed9|\u5411|像)\s*([A-Za-z\u4e00-\u9fff][A-Za-z\u4e00-\u9fff\s.-]{1,40})\s*(?:\u53d1\u9001|\u53d1)(?:\u4e00\u6761|\u4e2a|\u4e00\u4e0b)?(?:\u6d88\u606f|\u4fe1\u606f|message)?", text, re.I)
     if direct:
         return _split_recipients(direct.group(1))
 
     pre_patterns = (
-        r"(?:给|向)\s*(.+?)\s*(?:发送|发|说|告诉)\s+",
+        r"(?:给|向|像)\s*(.+?)\s*(?:发送|发|说|告诉)\s+",
         r"缁.?\s*(.+?)\s*(?:鍙戦€|鍙|璇|鍛婅瘔)",
     )
     for pat in pre_patterns:
@@ -170,15 +170,15 @@ def _extract_feature_query(text: str, project_name: str, project_path: str) -> s
 
 
 def _extract_lark_message(text: str, recipients: list[str]) -> str:
-    bare_send = re.search(r"(?:\u7ed9|\u5411)\s*[A-Za-z\u4e00-\u9fff][A-Za-z\u4e00-\u9fff\s.-]{0,40}\s*(?:\u53d1\u9001|\u53d1)(?:\u4e00\u6761|\u4e2a|\u4e00\u4e0b)?(?:\u6d88\u606f|\u4fe1\u606f|message)?\s*$", text, re.I)
+    bare_send = re.search(r"(?:\u7ed9|\u5411|像)\s*[A-Za-z\u4e00-\u9fff][A-Za-z\u4e00-\u9fff\s.-]{0,40}\s*(?:\u53d1\u9001|\u53d1)(?:\u4e00\u6761|\u4e2a|\u4e00\u4e0b)?(?:\u6d88\u606f|\u4fe1\u606f|message)?\s*$", text, re.I)
     if bare_send:
         return ""
-    marker = re.search(r"(?:\u5185\u5bb9\u662f|\u6d88\u606f\u662f|\u6b63\u6587\u662f|\u8bf4\u7684\u662f|message\s+is|content\s+is)\s*(.+)$", text, re.I)
+    marker = re.search(r"(?:内容为|\u5185\u5bb9\u662f|消息为|\u6d88\u606f\u662f|正文为|\u6b63\u6587\u662f|\u8bf4\u7684\u662f|message\s+is|content\s+is)\s*(.+)$", text, re.I)
     if marker:
         return marker.group(1).strip(" \t\r\n,.:;!?\u3002\uff0c\uff01\uff1f\uff1a\uff1b\"'\u201c\u201d\u2018\u2019")
 
     patterns = (
-        r"(?:给|向)\s*.+?\s*(?:发送|发|说|告诉)\s*(.+)$",
+        r"(?:给|向|像)\s*.+?\s*(?:发送|发|说|告诉)\s*(.+)$",
         r"缁.?\s*.+?\s*(?:鍙戦€|鍙|璇|鍛婅瘔)\s*(.+)$",
     )
     for pat in patterns:
