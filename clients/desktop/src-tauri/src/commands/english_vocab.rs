@@ -531,25 +531,25 @@ fn english_vocab_lookup_sync(
         }),
     );
     let result = lookup_with_dashscope(remote_input).or_else(|remote_err| {
-            if require_final_example {
-                english_example_chain_trace(
-                    "remote_final_example_failed",
-                    json!({
-                        "word": word,
-                        "book_id": book_id,
-                        "error": remote_err,
-                        "elapsed_ms": lookup_started.elapsed().as_millis(),
-                    }),
-                );
-                return Err("final example model fallback failed".to_string());
-            }
-            Ok::<EnglishVocabLookupResult, String>(
-                local_result
-                    .clone()
-                    .filter(|result| !lookup_result_needs_large_model_fallback(result))
-                    .unwrap_or_else(|| fallback_lookup_result(&normalized_input)),
-            )
-        })?;
+        if require_final_example {
+            english_example_chain_trace(
+                "remote_final_example_failed",
+                json!({
+                    "word": word,
+                    "book_id": book_id,
+                    "error": remote_err,
+                    "elapsed_ms": lookup_started.elapsed().as_millis(),
+                }),
+            );
+            return Err("final example model fallback failed".to_string());
+        }
+        Ok::<EnglishVocabLookupResult, String>(
+            local_result
+                .clone()
+                .filter(|result| !lookup_result_needs_large_model_fallback(result))
+                .unwrap_or_else(|| fallback_lookup_result(&normalized_input)),
+        )
+    })?;
     cache_insert_lookup_result(
         &mut cache,
         &book_id,
@@ -1073,8 +1073,7 @@ fn english_vocab_remote_lookup_enabled() -> bool {
 
 fn english_vocab_rust_remote_fallback_enabled() -> bool {
     let env = merged_env_values();
-    let Some(value) = first_non_empty(&env, &["JACHIN_ENGLISH_VOCAB_RUST_REMOTE_FALLBACK"])
-    else {
+    let Some(value) = first_non_empty(&env, &["JACHIN_ENGLISH_VOCAB_RUST_REMOTE_FALLBACK"]) else {
         return false;
     };
     matches!(

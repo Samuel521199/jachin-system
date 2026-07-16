@@ -12,6 +12,7 @@ import inspect
 import json
 import logging
 import os
+import re
 from typing import Any, Callable, Optional
 
 from .closure_memory import execute_turn_closure_memory_writes
@@ -154,7 +155,9 @@ async def try_execute_cognitive_direct_plan(
         )
         return None
     results = []
+    upstream_observations: list[dict[str, Any]] = []
     for work_order in plan.work_orders:
+        _inject_upstream_into_work_order(work_order, upstream_observations)
         tool_id = str(
             work_order.inputs.get("tool")
             or (work_order.tool_policy.allowed_tools[0] if work_order.tool_policy.allowed_tools else "")
@@ -196,6 +199,15 @@ async def try_execute_cognitive_direct_plan(
             run_tool_func=run_tool_func,
         )
         results.append((work_order, tool_id, result))
+        upstream_observations.append(
+            {
+                "work_order_id": work_order.work_order_id,
+                "tool": tool_id,
+                "role_agent": work_order.role_agent,
+                "ok": bool(result.verification.ok),
+                "observation": str(result.observation or ""),
+            }
+        )
         record_entity_correction_usage_from_work_order(
             work_order=work_order,
             turn_id=contract.turn_id,
@@ -472,6 +484,8 @@ async def _call_tool_runner(
 
 def _planned_direct_tool_available(tool_id: str, tools: list[dict[str, Any]]) -> bool:
     wanted = (tool_id or "").strip().lower()
+    if wanted in {"mcp:tavily_search", "mcp:fetch", "core:web_research_summarize"}:
+        return True
     return bool(wanted) and any(str(t.get("id") or "").strip().lower() == wanted for t in tools if isinstance(t, dict))
 
 
@@ -509,6 +523,13 @@ def _planned_direct_tool_allowed(plan: KernelPlanningResult, tool_id: str) -> bo
             "mcp:windows_file_open",
             "mcp:windows_file_reveal_in_explorer",
         }
+    if contract.task_type == "web_research_delivery":
+        return contract.risk_level.value in {"low", "medium", "high"} and tool_id in {
+            "mcp:tavily_search",
+            "mcp:fetch",
+            "core:web_research_summarize",
+            "mcp:windows_lark_send_message",
+        }
     return False
 
 
@@ -535,7 +556,72 @@ def _confirmed_direct_tool_allowed(contract: DecisionContract, tool_id: str) -> 
             "util:lark_send_text",
             "mcp:lark_send_text",
         }
+    if contract.task_type == "web_research_delivery":
+        return contract.risk_level.value in {"low", "medium", "high"} and tool_id in {
+            "mcp:tavily_search",
+            "mcp:fetch",
+            "core:web_research_summarize",
+            "mcp:windows_lark_send_message",
+        }
     return False
+
+
+def _inject_upstream_into_work_order(work_order: WorkOrder, upstream_observations: list[dict[str, Any]]) -> None:
+    if not upstream_observations:
+        return
+    raw = str(work_order.inputs.get("work_order_input") or "").strip()
+    try:
+        payload = json.loads(raw) if raw else {}
+    except Exception:
+        payload = {"raw_input": raw}
+    if not isinstance(payload, dict):
+        payload = {"raw_input": raw}
+    payload["upstream_observations"] = list(upstream_observations)
+    tool = str(work_order.inputs.get("tool") or "").strip()
+    if tool == "mcp:fetch" and not payload.get("url") and not payload.get("urls"):
+        urls = _extract_urls_from_upstream(upstream_observations)
+        if urls:
+            payload["urls"] = urls[:3]
+    if tool == "mcp:windows_lark_send_message":
+        summary_message = _extract_message_from_upstream(upstream_observations)
+        if summary_message:
+            payload["message"] = summary_message
+    work_order.inputs["work_order_input"] = json.dumps(payload, ensure_ascii=False)
+
+
+def _extract_message_from_upstream(upstream_observations: list[dict[str, Any]]) -> str:
+    for item in reversed(upstream_observations or []):
+        text = str(item.get("observation") or "")
+        try:
+            obj = json.loads(text)
+        except Exception:
+            obj = None
+        if isinstance(obj, dict):
+            msg = str(obj.get("message") or obj.get("summary") or "").strip()
+            if msg:
+                return msg
+    return ""
+
+
+def _extract_urls_from_upstream(upstream_observations: list[dict[str, Any]]) -> list[str]:
+    urls: list[str] = []
+    for item in upstream_observations or []:
+        text = str(item.get("observation") or "")
+        try:
+            obj = json.loads(text)
+        except Exception:
+            obj = None
+        if isinstance(obj, dict):
+            for result in obj.get("results") or obj.get("items") or []:
+                if isinstance(result, dict):
+                    url = str(result.get("url") or result.get("link") or "").strip()
+                    if url and url not in urls:
+                        urls.append(url)
+        for url in re.findall(r"https?://[^\s\"'<>]+", text):
+            clean = url.rstrip(").,;，。")
+            if clean and clean not in urls:
+                urls.append(clean)
+    return urls
 
 
 def _direct_reply_from_contract(contract: DecisionContract, work_order: WorkOrder, ok: bool, observation: str) -> str:
@@ -599,6 +685,11 @@ def _planned_direct_reply(plan: KernelPlanningResult, ok: bool, observation: str
             recipients = target_obj.get("recipients") if isinstance(target_obj.get("recipients"), list) else []
             names = "\u3001".join(str(x) for x in recipients if str(x).strip()) or "\u76ee\u6807\u4f1a\u8bdd"
             return f"\u5df2\u53d1\u9001\u6d88\u606f\u7ed9 {names}\u3002"
+        if task_type == "web_research_delivery":
+            recipients = target_obj.get("recipients") if isinstance(target_obj.get("recipients"), list) else []
+            names = "\u3001".join(str(x) for x in recipients if str(x).strip()) or "\u76ee\u6807\u4f1a\u8bdd"
+            query = str(target_obj.get("query") or target_obj.get("name") or "\u6700\u65b0\u4fe1\u606f").strip()
+            return f"\u5df2\u81ea\u52a8\u8054\u7f51\u68c0\u7d22\u201c{query}\u201d\uff0c\u5e76\u5c06\u6458\u8981\u53d1\u9001\u7ed9 {names}\u3002"
         if task_type == "calculator_calculate":
             return _calculator_result_reply(target_obj, observation)
         if task_type == "file_operation":

@@ -209,7 +209,7 @@ def _seed_expired_decoy(targets: list[dict]) -> None:
     time.sleep(0.01)
 
 
-def run(output_root: Path, *, noise_count: int, seed: int, top_k: int) -> dict:
+def run(output_root: Path, *, noise_count: int, seed: int, top_k: int, include_governance: bool = True) -> dict:
     run_dir = output_root / _stamp()
     kernel_home = run_dir / "kernel_home"
     os.environ["JACHIN_COGNITIVE_KERNEL_HOME"] = str(kernel_home)
@@ -220,6 +220,7 @@ def run(output_root: Path, *, noise_count: int, seed: int, top_k: int) -> dict:
         govern_lifecycle_memories,
         memory_quality_snapshot,
         recall_lifecycle_memories,
+        warm_lifecycle_memory_index,
     )
 
     rng = random.Random(seed)
@@ -230,6 +231,7 @@ def run(output_root: Path, *, noise_count: int, seed: int, top_k: int) -> dict:
     _seed_expired_decoy(targets)
     expired_count = expire_lifecycle_memories()
     seed_elapsed_ms = int((time.perf_counter() - started_seed) * 1000)
+    index_warmup = warm_lifecycle_memory_index()
 
     cases = []
     recall_times = []
@@ -269,8 +271,14 @@ def run(output_root: Path, *, noise_count: int, seed: int, top_k: int) -> dict:
                 }
             )
 
-    governance = govern_lifecycle_memories(stale_after_days=1)
-    snapshot = memory_quality_snapshot()
+    governance = {}
+    snapshot = {}
+    governance_elapsed_ms = 0
+    if include_governance:
+        started_governance = time.perf_counter()
+        governance = govern_lifecycle_memories(stale_after_days=1)
+        snapshot = memory_quality_snapshot()
+        governance_elapsed_ms = int((time.perf_counter() - started_governance) * 1000)
     total_cases = len(cases)
     metrics = {
         "noise_count": noise_count,
@@ -284,7 +292,12 @@ def run(output_root: Path, *, noise_count: int, seed: int, top_k: int) -> dict:
         "avg_recall_ms": round(mean(recall_times), 2) if recall_times else 0,
         "max_recall_ms": max(recall_times) if recall_times else 0,
         "seed_elapsed_ms": seed_elapsed_ms,
+        "governance_elapsed_ms": governance_elapsed_ms,
+        "index_warmup_elapsed_ms": int(index_warmup.get("elapsed_ms") or 0),
+        "index_term_count": int(index_warmup.get("term_count") or 0),
+        "index_posting_count": int(index_warmup.get("posting_count") or 0),
         "expired_count": expired_count,
+        "include_governance": include_governance,
     }
     checks = {
         "top1_rate_at_least_0_80": metrics["top1_rate"] >= 0.80,
@@ -335,6 +348,11 @@ def _render_report(evidence: dict, evidence_path: Path) -> str:
 - Avg recall: {metrics["avg_recall_ms"]} ms
 - Max recall: {metrics["max_recall_ms"]} ms
 - Seed elapsed: {metrics["seed_elapsed_ms"]} ms
+- Index warmup elapsed: {metrics["index_warmup_elapsed_ms"]} ms
+- Index terms: {metrics["index_term_count"]}
+- Index postings: {metrics["index_posting_count"]}
+- Governance included: {metrics["include_governance"]}
+- Governance elapsed: {metrics["governance_elapsed_ms"]} ms
 
 ## Checks
 {checks}
@@ -350,8 +368,15 @@ def main() -> int:
     parser.add_argument("--noise-count", type=int, default=5000)
     parser.add_argument("--seed", type=int, default=20260715)
     parser.add_argument("--top-k", type=int, default=10)
+    parser.add_argument("--skip-governance", action="store_true", help="Focus on recall scale/performance without full governance scan.")
     args = parser.parse_args()
-    result = run(Path(args.output_root), noise_count=args.noise_count, seed=args.seed, top_k=args.top_k)
+    result = run(
+        Path(args.output_root),
+        noise_count=args.noise_count,
+        seed=args.seed,
+        top_k=args.top_k,
+        include_governance=not args.skip_governance,
+    )
     print(json.dumps({k: result[k] for k in ("passed", "metrics", "checks", "evidence_path", "report_path")}, ensure_ascii=False, indent=2))
     return 0 if result["passed"] else 1
 

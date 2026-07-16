@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .capability_recovery_registry import CapabilityRecoveryRegistry, RecoveryCandidate
+from .capability_governance_policy import governance_policy_from_work_order
 from .contracts import DecisionContract, RecoveryPlan, RiskLevel, VerificationReport, WorkOrder
 from .runtime import build_recovery_plan
 
@@ -98,6 +99,7 @@ class RecoveryPlanner:
             tool=str(failed_work_order.inputs.get("tool") or ""),
             default=self.max_attempts,
         )
+        self.max_attempts = _inline_max_attempts(failed_work_order, self.max_attempts)
         plan.max_attempts = self.max_attempts
         plan.attempt_no = attempt_no
         plan.alternative_paths = [
@@ -127,12 +129,20 @@ class RecoveryPlanner:
         if not self._may_auto_recover(contract, failed_work_order, verification):
             return None
 
-        candidate = self.registry.select_next(
+        inline_registry = _inline_recovery_registry_for(failed_work_order)
+        candidate = inline_registry.select_next(
             contract=contract,
             failed_work_order=failed_work_order,
             verification=verification,
             attempt_records=attempt_records,
-        )
+        ) if inline_registry else None
+        if candidate is None:
+            candidate = self.registry.select_next(
+                contract=contract,
+                failed_work_order=failed_work_order,
+                verification=verification,
+                attempt_records=attempt_records,
+            )
         if candidate is None:
             candidate = _memory_growth_recovery_candidate(
                 contract=contract,
@@ -193,6 +203,17 @@ class RecoveryPlanner:
             verification=verification,
             attempt_records=attempt_records or [],
         )
+        inline_registry = _inline_recovery_registry_for(failed_work_order)
+        if inline_registry:
+            paths = [
+                *inline_registry.candidate_snapshot(
+                    contract=contract,
+                    failed_work_order=failed_work_order,
+                    verification=verification,
+                    attempt_records=attempt_records or [],
+                ),
+                *paths,
+            ]
         growth_candidate = _memory_growth_recovery_candidate(
             contract=contract,
             failed_work_order=failed_work_order,
@@ -211,6 +232,9 @@ class RecoveryPlanner:
     ) -> bool:
         if verification.ok:
             return False
+        governance_policy = governance_policy_from_work_order(work_order)
+        if governance_policy.execution_mode == "manual_review" or governance_policy.requires_confirmation:
+            return False
         if contract.risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}:
             return False
         if work_order.role_agent == "MessageExecutorAgent":
@@ -226,6 +250,14 @@ class RecoveryPlanner:
                 verification=verification,
                 attempt_records=[],
             )
+        ):
+            return True
+        inline_registry = _inline_recovery_registry_for(work_order)
+        if inline_registry and inline_registry.candidate_snapshot(
+            contract=contract,
+            failed_work_order=work_order,
+            verification=verification,
+            attempt_records=[],
         ):
             return True
         return _memory_growth_recovery_candidate(
@@ -258,6 +290,9 @@ class RecoveryPlanner:
             "capability_id": candidate.get("capability_id") or "",
             "target_id": candidate.get("target_id") or "",
         }
+        metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+        if isinstance(metadata.get("governance_policy"), dict):
+            clone.inputs["governance_policy"] = metadata["governance_policy"]
         return clone
 
 
@@ -280,6 +315,100 @@ def _recommend_next_steps(
         steps.append("查看 Evidence 时间线中的每次尝试，优先处理最后一次失败原因。")
     steps.append(f"本轮已尝试 {len(attempt_records)} 次，未继续盲目执行以避免副作用。")
     return steps
+
+
+def _inline_recovery_registry_for(work_order: WorkOrder) -> CapabilityRecoveryRegistry | None:
+    manifest = _inline_recovery_manifest(work_order)
+    if not manifest:
+        return None
+    registry = CapabilityRecoveryRegistry(manifests=[manifest])
+    return registry if registry.candidate_snapshot(
+        contract=_dummy_contract_for_inline(work_order),
+        failed_work_order=work_order,
+        verification=_dummy_verification_for_inline(work_order),
+        attempt_records=[],
+    ) or manifest.get("recovery_playbook") else registry
+
+
+def _inline_recovery_manifest(work_order: WorkOrder) -> dict[str, Any]:
+    profile = work_order.inputs.get("capability_profile")
+    if not isinstance(profile, dict):
+        profile = {}
+    recovery_policy = work_order.inputs.get("recovery_policy")
+    if not isinstance(recovery_policy, dict):
+        recovery_policy = {}
+    raw_paths = profile.get("recovery_paths") or recovery_policy.get("capability_recovery_paths") or []
+    if not isinstance(raw_paths, list) or not raw_paths:
+        return {}
+    tool = str(work_order.inputs.get("tool") or "$same")
+    targets: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_paths):
+        if not isinstance(raw, dict):
+            continue
+        if isinstance(raw.get("steps"), list):
+            target = copy.deepcopy(raw)
+            target.setdefault("id", f"inline_target_{index + 1}")
+            target.setdefault("role_agent", work_order.role_agent)
+            target.setdefault("tools", [tool])
+            targets.append(target)
+            continue
+        strategy = str(raw.get("strategy") or "").strip()
+        if not strategy:
+            continue
+        step = {
+            "strategy": strategy,
+            "tool": str(raw.get("tool") or "$same"),
+            "rationale": str(raw.get("rationale") or "inline capability recovery path"),
+            "priority": int(raw.get("priority") or 100),
+        }
+        for key in ("when", "action_patch", "action_template"):
+            if isinstance(raw.get(key), dict):
+                step[key] = raw[key]
+        targets.append(
+            {
+                "id": str(raw.get("id") or f"inline_target_{index + 1}"),
+                "role_agent": str(raw.get("role_agent") or work_order.role_agent),
+                "tools": raw.get("tools") if isinstance(raw.get("tools"), list) else [tool],
+                "max_attempts": raw.get("max_attempts", recovery_policy.get("max_attempts", 5)),
+                "steps": [step],
+            }
+        )
+    if not targets:
+        return {}
+    return {
+        "id": str(profile.get("capability_id") or recovery_policy.get("capability_profile_id") or "inline_capability_profile"),
+        "recovery_playbook": {"targets": targets},
+    }
+
+
+def _inline_max_attempts(work_order: WorkOrder, default: int) -> int:
+    manifest = _inline_recovery_manifest(work_order)
+    attempts = [default]
+    for target in ((manifest.get("recovery_playbook") or {}).get("targets") or []):
+        if isinstance(target, dict) and target.get("max_attempts") is not None:
+            try:
+                attempts.append(int(target.get("max_attempts")))
+            except Exception:
+                pass
+    return max(1, min(8, max(attempts)))
+
+
+def _dummy_contract_for_inline(work_order: WorkOrder) -> DecisionContract:
+    return DecisionContract(
+        decision_id=str(work_order.decision_id or "inline"),
+        turn_id="inline",
+        task_type=str(work_order.task or ""),
+        goal=str(work_order.task or ""),
+    )
+
+
+def _dummy_verification_for_inline(work_order: WorkOrder) -> VerificationReport:
+    return VerificationReport(
+        verification_id="inline",
+        work_order_id=work_order.work_order_id,
+        ok=False,
+        failure_reason="inline_candidate_probe",
+    )
 
 
 def _memory_growth_recovery_candidate(

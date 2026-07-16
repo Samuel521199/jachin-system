@@ -79,7 +79,8 @@ fn prewarm_session_id() -> String {
 pub fn prewarm(base_url: &str) -> Result<String, String> {
     let mut guard = prewarmed_slot().lock().map_err(|e| e.to_string())?;
     if let Some(existing) = guard.as_ref() {
-        if existing.base_url == base_url && existing.created_at.elapsed() < Duration::from_secs(45) {
+        if existing.base_url == base_url && existing.created_at.elapsed() < Duration::from_secs(45)
+        {
             crate::l3_spawn::write_voice_chat_trace(
                 "ptt",
                 "stream_prewarm_reuse",
@@ -91,12 +92,7 @@ pub fn prewarm(base_url: &str) -> Result<String, String> {
     }
     let session_id = prewarm_session_id();
     let client = SttStreamClient::connect(base_url, &session_id)?;
-    crate::l3_spawn::write_voice_chat_trace(
-        "ptt",
-        "stream_prewarm_ready",
-        &session_id,
-        base_url,
-    );
+    crate::l3_spawn::write_voice_chat_trace("ptt", "stream_prewarm_ready", &session_id, base_url);
     *guard = Some(PrewarmedSttStream {
         base_url: base_url.to_string(),
         session_id: session_id.clone(),
@@ -123,7 +119,11 @@ pub fn take_prewarmed(base_url: &str, max_age: Duration) -> Option<SttStreamClie
         "ptt",
         "stream_prewarm_stale",
         &existing.session_id,
-        &format!("age_ms={} base_match={}", age.as_millis(), existing.base_url == base_url),
+        &format!(
+            "age_ms={} base_match={}",
+            age.as_millis(),
+            existing.base_url == base_url
+        ),
     );
     None
 }

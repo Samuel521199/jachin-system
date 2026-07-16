@@ -37,6 +37,9 @@ interface CapabilityPackageInfo {
   l1_review_status?: string | null;
   l1_package_url?: string | null;
   problems: string[];
+  warnings?: string[];
+  quality_score?: number | null;
+  production_ready?: boolean;
 }
 
 interface CapabilityPublishScan {
@@ -587,6 +590,7 @@ export function CapabilityPublish() {
               {rows.map((pkg) => {
                 const isBusy = publishing === pkg.id;
                 const blocked = pkg.problems.length > 0;
+                const lowQuality = pkg.production_ready === false || (typeof pkg.quality_score === "number" && pkg.quality_score < 0.72);
                 return (
                   <article key={`${pkg.id}:${pkg.path}`} className="jarvis-tile relative overflow-hidden rounded-[8px] border border-cyan-200/[0.075] bg-cyan-300/[0.018] p-4">
                     <div className="relative z-10 flex items-start justify-between gap-4">
@@ -606,10 +610,14 @@ export function CapabilityPublish() {
                       <span className={cn("flex-shrink-0 rounded-full border px-2.5 py-1 text-[11px]", statusClass(pkg.status))}>{statusLabel(pkg.status)}</span>
                     </div>
 
-                    <div className="relative z-10 mt-4 grid gap-2 sm:grid-cols-4">
+                    <div className="relative z-10 mt-4 grid gap-2 sm:grid-cols-5">
                       <InfoPill label="类型" value={pkg.kind} />
                       <InfoPill label="分层" value={pkg.tier} />
                       <InfoPill label="当前" value={pkg.version} />
+                      <InfoPill label="质量" value={typeof pkg.quality_score === "number" ? `${Math.round(pkg.quality_score * 100)}%` : "-"} />
+                      <InfoPill label="生产级" value={lowQuality ? "需治理" : "ready"} tone={lowQuality ? "danger" : "success"} />
+                    </div>
+                    <div className="relative z-10 mt-2">
                       <InfoPill label="L1" value={pkg.l1_published ? pkg.l1_version || "online" : "local"} />
                     </div>
 
@@ -637,7 +645,7 @@ export function CapabilityPublish() {
                           className="inline-flex h-10 items-center justify-center gap-2 rounded-[8px] border border-cyan-200/[0.14] bg-cyan-300/[0.07] px-4 text-sm font-medium text-cyan-50 hover:bg-cyan-300/[0.11] disabled:cursor-not-allowed disabled:opacity-45"
                         >
                           {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-                          {isBusinessSkill(pkg) ? "发布业务包" : "发布"}
+                          {lowQuality ? "带警告发布" : isBusinessSkill(pkg) ? "发布业务包" : "发布"}
                         </button>
                       </div>
                     </div>
@@ -662,6 +670,16 @@ export function CapabilityPublish() {
                         {pkg.problems.join("；")}
                       </div>
                     )}
+                    {!blocked && (pkg.warnings?.length ?? 0) > 0 && (
+                      <div className={cn(
+                        "relative z-10 mt-3 rounded-[8px] border px-3 py-2 text-xs",
+                        lowQuality
+                          ? "border-rose-300/25 bg-rose-300/[0.055] text-rose-100"
+                          : "border-yellow-300/20 bg-yellow-300/[0.045] text-yellow-100"
+                      )}>
+                        {lowQuality ? "未达生产级：" : "治理提示："}{pkg.warnings?.join("；")}
+                      </div>
+                    )}
                   </article>
                 );
               })}
@@ -673,11 +691,21 @@ export function CapabilityPublish() {
   );
 }
 
-function InfoPill({ label, value }: { label: string; value?: string | null }) {
+function InfoPill({ label, value, tone = "default" }: { label: string; value?: string | null; tone?: "default" | "success" | "danger" }) {
   return (
-    <div className="rounded-[8px] border border-cyan-200/[0.065] bg-slate-950/24 px-3 py-2">
+    <div className={cn(
+      "rounded-[8px] border px-3 py-2",
+      tone === "success"
+        ? "border-emerald-300/20 bg-emerald-300/[0.045]"
+        : tone === "danger"
+          ? "border-rose-300/25 bg-rose-300/[0.055]"
+          : "border-cyan-200/[0.065] bg-slate-950/24"
+    )}>
       <div className="font-mono text-[9px] uppercase tracking-[0.12em] text-slate-500">{label}</div>
-      <div className="mt-1 truncate font-mono text-xs text-slate-200" title={value ?? "-"}>
+      <div className={cn(
+        "mt-1 truncate font-mono text-xs",
+        tone === "success" ? "text-emerald-100" : tone === "danger" ? "text-rose-100" : "text-slate-200"
+      )} title={value ?? "-"}>
         {value || "-"}
       </div>
     </div>

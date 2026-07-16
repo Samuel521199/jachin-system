@@ -1,4 +1,4 @@
-﻿//! ModelManager - 检查本地 Kokoro ONNX 模型目录
+//! ModelManager - 检查本地 Kokoro ONNX 模型目录
 //!
 //! 路径解析采用 "Silent Intelligence"：零配置，自动检测最佳存储位置。
 //! 优先级：Portable（可执行文件旁）> Standard（OS 数据目录）> 环境变量（开发调试）
@@ -82,7 +82,10 @@ pub fn resolve_model_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".data/tts"));
 
     if let Err(e) = fs::create_dir_all(&standard) {
-        eprintln!("[TTS] Failed to create model dir {:?}: {} (will retry on first use)", standard, e);
+        eprintln!(
+            "[TTS] Failed to create model dir {:?}: {} (will retry on first use)",
+            standard, e
+        );
     }
     standard
 }
@@ -117,7 +120,8 @@ impl ModelManager {
 
     /// 检查 Kokoro 模型目录是否存在
     pub fn has_model(&self) -> bool {
-        self.tts_dir().join(KOKORO_MODEL_REL_PATH).exists() && self.tts_dir().join("voices").is_dir()
+        self.tts_dir().join(KOKORO_MODEL_REL_PATH).exists()
+            && self.tts_dir().join("voices").is_dir()
     }
 
     /// 获取模型目录；若不存在则返回明确错误（Kokoro 模型由部署阶段准备，不再运行时下载）
@@ -150,7 +154,6 @@ impl ModelManager {
 
     /// 模型是否已下载
     pub fn is_downloaded(&self) -> bool {
-        DOWNLOADED.load(Ordering::Relaxed)
-            || self.has_model()
+        DOWNLOADED.load(Ordering::Relaxed) || self.has_model()
     }
 }

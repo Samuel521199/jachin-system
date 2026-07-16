@@ -129,6 +129,8 @@ def _looks_like_calculator_calculate(text: str) -> bool:
     if not _extract_calculator_expression(text):
         return False
     low = _lower(text)
+    if _has_any(low, _CN_CALCULATOR_TERMS):
+        return True
     return any(
         token in low
         for token in (
@@ -148,6 +150,62 @@ def _looks_like_calculator_calculate(text: str) -> bool:
     )
 
 
+_CN_CALCULATOR_TERMS = ("\u8ba1\u7b97\u5668", "\u8ba1\u7b97", "\u7b97", "\u7b49\u4e8e", "\u591a\u5c11")
+_CN_FILE_TERMS = (
+    "\u6587\u4ef6",
+    "\u76ee\u5f55",
+    "\u8bfb\u53d6",
+    "\u6253\u5f00\u6587\u4ef6",
+    "\u6240\u5728\u4f4d\u7f6e",
+    "\u8d44\u6e90\u7ba1\u7406\u5668",
+    "\u590d\u5236",
+    "\u79fb\u52a8",
+    "\u91cd\u547d\u540d",
+    "\u5220\u9664",
+)
+_CN_CLOSE_TERMS = ("\u5173\u95ed", "\u5173\u6389", "\u9000\u51fa")
+_CN_MESSAGE_TERMS = ("\u53d1\u7ed9", "\u53d1\u9001", "\u53d1\u6d88\u606f", "\u544a\u8bc9", "\u901a\u77e5", "\u5411")
+_CN_OPEN_TERMS = ("\u6253\u5f00", "\u542f\u52a8", "\u8fd0\u884c")
+_CN_SWITCH_TERMS = ("\u5207\u5230", "\u5207\u6362\u5230", "\u56de\u5230")
+_CN_WEB_RESEARCH_TERMS = (
+    "\u4e0a\u7f51",
+    "\u7f51\u4e0a",
+    "\u641c\u7d22",
+    "\u641c\u4e00\u4e0b",
+    "\u627e\u627e",
+    "\u67e5\u4e00\u4e0b",
+    "\u6700\u65b0",
+    "\u65b0\u6d88\u606f",
+    "\u65b0\u95fb",
+    "\u8d44\u8baf",
+)
+_CN_SUMMARY_TERMS = ("\u603b\u7ed3", "\u6574\u7406", "\u6458\u8981", "\u91cd\u70b9")
+
+
+def _has_any(text: str, terms: tuple[str, ...]) -> bool:
+    return any(term and term in text for term in terms)
+
+
+def _looks_like_delivery(text: str) -> bool:
+    low = _lower(text)
+    if _has_any(low, _CN_MESSAGE_TERMS) or any(term in low for term in ("send to", "message", "lark", "feishu")):
+        return True
+    compact = re.sub(r"\s+", "", text)
+    return bool(re.search(r"(发|发送|推送|同步|转发)(给|到|至)?[A-Za-z0-9_\-\u4e00-\u9fff]{2,}", compact))
+
+
+def _looks_like_web_research_delivery(text: str) -> bool:
+    low = _lower(text)
+    has_search = _has_any(low, _CN_WEB_RESEARCH_TERMS) or any(
+        term in low for term in ("search", "web", "internet", "latest", "news")
+    )
+    has_summary = _has_any(low, _CN_SUMMARY_TERMS) or any(term in low for term in ("summary", "summarize", "brief"))
+    has_delivery = _looks_like_delivery(text)
+    # If the user asks to search/latest-news and deliver it, the system should
+    # infer that a sendable summary is required even when "summarize" is omitted.
+    return has_search and has_delivery
+
+
 def _iter_app_aliases_by_specificity() -> list[tuple[str, tuple[str, ...]]]:
     pairs = []
     for app_name, aliases in _APP_ALIASES.items():
@@ -163,11 +221,23 @@ def _detect_intent(text: str) -> str:
         return "conversation"
     if _looks_like_calculator_calculate(text):
         return "calculator_calculate"
+    if _looks_like_web_research_delivery(text):
+        return "web_research_delivery"
+    if _has_any(low, _CN_FILE_TERMS):
+        return "file_operation"
+    if _has_any(low, _CN_CLOSE_TERMS):
+        return "close_app"
+    if _looks_like_delivery(text):
+        return "message_send"
+    if _has_any(low, _CN_SWITCH_TERMS):
+        return "switch_app"
+    if _has_any(low, _CN_OPEN_TERMS):
+        return "open_app"
     if any(k in low for k in ("file", "folder", "read ", "open file", "reveal", "show in explorer", "delete file", "rename", "copy", "move")):
         return "file_operation"
     if any(k in low for k in ("关闭", "关掉", "关了", "退出", "close", "quit")):
         return "close_app"
-    if any(k in low for k in ("发给", "发送", "发消息", "send to", "message")):
+    if any(k in low for k in ("发给", "发送", "发消息", "send to", "message")) or _looks_like_delivery(text):
         return "message_send"
     if any(k in low for k in ("打开", "启动", "运行", "open ", "launch", "start ")):
         return "open_app"
@@ -324,6 +394,7 @@ def _extract_message_recipients(text: str) -> list[str]:
         # Only treat it as a recipient marker when it appears in an explicit send context.
         r"(?:给|向|像)\s*([A-Za-z0-9_\-\u4e00-\u9fff、,，和与\s]+?)\s*(?:发送|发)(?:一条|一个|一下)?(?:消息|信息|message)?",
         r"(?:发给|发送给|给)\s*([A-Za-z0-9_\-\u4e00-\u9fff、,，和与\s]+?)\s*(?:[:：]|说|发送|发|$)",
+        r"(?:总结|整理|摘要|提炼|概括)?\s*(?:发|发送|推送|同步|转发)(?:给|到|至)?\s*([A-Za-z][A-Za-z0-9_\-]{1,}|[\u4e00-\u9fff]{2,8})\s*$",
         r"(?:send\s+to|message)\s+([A-Za-z0-9_\-\s,]+?)(?:[:：]|$)",
     ]
     for pattern in patterns:
@@ -364,6 +435,26 @@ def _extract_message_body(text: str, recipients: list[str] | None = None) -> str
     return ""
 
 
+def _extract_web_research_query(text: str, recipients: list[str] | None = None) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    query = raw
+    for recipient in recipients or []:
+        if not recipient:
+            continue
+        query = re.sub(rf"(?:发给|发送给|发到|给)\s*{re.escape(str(recipient))}\s*$", "", query, flags=re.I).strip()
+    query = re.sub(r"(?:，|,|；|;)?\s*(?:总结|整理|摘要|提炼|概括)(?:后|一下)?\s*(?:发给|发送给|发到|给|发|发送|推送|同步|转发).*$", "", query, flags=re.I).strip()
+    query = re.sub(r"(?:，|,|；|;)?\s*(?:然后|再|并且|同时)\s*(?:发给|发送给|发到|给|发|发送|推送|同步|转发).*$", "", query, flags=re.I).strip()
+    query = re.sub(r"(?:发给|发送给|发到|给|发|发送|推送|同步|转发)\s*[A-Za-z0-9_\-\u4e00-\u9fff\s,，、和]+$", "", query, flags=re.I).strip()
+    query = re.sub(r"(?:，|,|；|;)?\s*(?:总结|整理|摘要|提炼|概括)(?:后|一下)?$", "", query, flags=re.I).strip()
+    query = re.sub(r"(?:，|,|；|;)?\s*(?:然后|再|并且|同时)$", "", query, flags=re.I).strip()
+    query = re.sub(r"^(?:上网|联网|去网上|帮我|请你|请|搜索|查一下|检索)\s*", "", query, flags=re.I).strip()
+    query = re.sub(r"(?:搜索|查一下|检索)\s*", "", query, count=1, flags=re.I).strip()
+    query = query.strip(" ，,。.;；:：")
+    return query or raw
+
+
 def _extract_file_path(text: str) -> str:
     text = str(text or "").strip()
     if not text:
@@ -389,6 +480,8 @@ def _extract_file_operation(text: str) -> str:
     low = _lower(text)
     if any(k in low for k in ("write", "save", "create", "new file", "写入", "保存", "创建", "新建")):
         return "write"
+    if any(k in low for k in ("所在位置", "资源管理器", "定位", "显示位置")):
+        return "reveal"
     if any(k in low for k in ("reveal", "show in explorer", "open location", "瀹氫綅", "鎵€鍦ㄤ綅缃", "璧勬簮绠＄悊鍣")):
         return "reveal"
     if any(k in low for k in ("open", "鎵撳紑", "鍚姩")):
@@ -425,6 +518,20 @@ def _extract_target(text: str, intent: str, state_snapshot: StateSnapshot, memor
             "type": "calculator",
             "name": "Calculator",
             "expression": expression,
+            "source": "input_text",
+        }
+    if intent == "web_research_delivery":
+        recipients = _extract_message_recipients(text)
+        query = _extract_web_research_query(text, recipients)
+        freshness = "latest" if any(term in _lower(text) for term in ("最新", "今天", "今日", "news", "latest", "today")) else ""
+        return {
+            "type": "web_research_delivery",
+            "app": "Lark",
+            "query": query,
+            "name": query,
+            "recipients": recipients,
+            "freshness": freshness,
+            "delivery_stub": f"网页研究摘要生成中：{query}" if query else "网页研究摘要生成中",
             "source": "input_text",
         }
     if intent == "message_send":
@@ -498,6 +605,8 @@ def _task_type_for_intent(intent: str) -> str:
         return "app_control"
     if intent == "message_send":
         return "message_delivery"
+    if intent == "web_research_delivery":
+        return "web_research_delivery"
     if intent == "file_operation":
         return "file_operation"
     return "conversation"
@@ -520,6 +629,7 @@ def _tool_for_intent(intent: str, target: dict[str, Any] | None = None) -> str:
         "open_app": "mcp:windows_open_app",
         "close_app": "mcp:windows_window_close",
         "switch_app": "mcp:windows_window_switch",
+        "web_research_delivery": "mcp:web_research_delivery",
         "message_send": "mcp:windows_lark_send_message"
         if (target.get("recipients") and str(target.get("message") or "").strip())
         else "",
@@ -540,6 +650,36 @@ def _merge_target_patch(base: dict[str, Any], patch: dict[str, Any]) -> dict[str
     return merged
 
 
+def _workflow_target_from_override(
+    text: str,
+    task_type: str,
+    base: dict[str, Any],
+    patch: dict[str, Any],
+) -> dict[str, Any]:
+    target = dict(patch or {})
+    target.setdefault("type", task_type)
+    target.setdefault("source", "semantic_workflow_override")
+    target.setdefault("app", "Lark")
+    recipients = base.get("recipients") if isinstance(base.get("recipients"), list) else []
+    if recipients and not target.get("recipients"):
+        target["recipients"] = recipients
+    message = str(base.get("message") or "").strip()
+    if task_type == "codex_ask_lark_send" and message and not target.get("feature_query"):
+        target["feature_query"] = message
+    if not target.get("feature_query"):
+        target["feature_query"] = str(text or "").strip()
+    if task_type == "web_research_delivery":
+        target["type"] = "web_research_delivery"
+        target["app"] = "Lark"
+        if not target.get("query"):
+            target["query"] = _extract_web_research_query(text, recipients)
+        target.setdefault("name", target.get("query") or "")
+        if not target.get("freshness"):
+            target["freshness"] = "latest" if any(term in _lower(text) for term in ("最新", "今天", "今日", "news", "latest", "today")) else ""
+        target.setdefault("delivery_stub", f"网页研究摘要生成中：{target.get('query') or str(text or '').strip()}")
+    return target
+
+
 def _risk_for(intent: str, target: dict[str, Any], state_snapshot: StateSnapshot) -> tuple[RiskLevel, bool, str]:
     if intent == "conversation":
         return RiskLevel.LOW, False, ""
@@ -557,6 +697,8 @@ def _risk_for(intent: str, target: dict[str, Any], state_snapshot: StateSnapshot
         name = target.get("name") or "当前应用"
         return RiskLevel.HIGH, True, f"要关闭 {name} 吗？当前状态提示可能有未保存内容。"
     if intent == "message_send":
+        return RiskLevel.HIGH, False, ""
+    if intent == "web_research_delivery":
         return RiskLevel.HIGH, False, ""
     if intent == "file_operation":
         if str(target.get("operation") or "").lower() in {"mutating", "write"}:
@@ -602,6 +744,7 @@ def run_review_board(
         memory_bundle=memory_bundle,
     )
     semantic_override = choose_semantic_override(
+        text=text,
         base_intent=intent,
         base_task_type=task_type,
         base_tool=tool,
@@ -609,9 +752,13 @@ def run_review_board(
         candidates=semantic_candidates,
     )
     if semantic_override:
+        previous_task_type = task_type
         intent = semantic_override.intent or intent
         task_type = semantic_override.task_type or _task_type_for_intent(intent)
-        target = _merge_target_patch(target, semantic_override.target_patch)
+        if task_type in {"project_briefing_delivery", "codex_ask_lark_send", "web_research_delivery"} and task_type != previous_task_type:
+            target = _workflow_target_from_override(text, task_type, target, semantic_override.target_patch)
+        else:
+            target = _merge_target_patch(target, semantic_override.target_patch)
         tool = semantic_override.tool or _tool_for_intent(intent, target)
     else:
         task_type = _task_type_for_intent(intent) if not task_type else task_type
@@ -622,12 +769,16 @@ def run_review_board(
     missing_message_slots = intent == "message_send" and (
         not target.get("recipients") or not str(target.get("message") or "").strip()
     )
+    missing_web_research_slots = intent == "web_research_delivery" and (
+        not target.get("recipients") or not str(target.get("query") or "").strip()
+    )
     entity_correction_needs_confirmation = bool(target.get("requires_entity_confirmation"))
     needs_clarification = bool(
         risk_needs_clarification
         or voice_needs_clarification
         or missing_target
         or missing_message_slots
+        or missing_web_research_slots
         or entity_correction_needs_confirmation
     )
     clarification_question = risk_question or voice_question
@@ -645,6 +796,14 @@ def run_review_board(
             clarification_question = "你想把这条消息发给谁？"
         else:
             clarification_question = "你想发送什么内容？"
+
+    if missing_web_research_slots and not clarification_question:
+        if not target.get("recipients") and not str(target.get("query") or "").strip():
+            clarification_question = "\u4f60\u60f3\u641c\u7d22\u4ec0\u4e48\u5185\u5bb9\uff0c\u5e76\u53d1\u9001\u7ed9\u8c01\uff1f"
+        elif not target.get("recipients"):
+            clarification_question = "\u7f51\u9875\u7814\u7a76\u6458\u8981\u8981\u53d1\u9001\u7ed9\u8c01\uff1f"
+        else:
+            clarification_question = "\u4f60\u60f3\u4e0a\u7f51\u641c\u7d22\u4ec0\u4e48\u5185\u5bb9\uff1f"
 
     review_session_id = _new_id("review")
     candidate_intents = list(dict.fromkeys([intent, *[c.intent for c in semantic_candidates if c.intent]]))
@@ -736,6 +895,17 @@ def _review_roles_for(
             roles.extend(["AppClosePlannerAgent", "ConfirmationAgent"])
     elif task_type == "message_delivery":
         roles.extend(["CommunicationPlannerAgent", "CommunicationWorker", "ConfirmationAgent"])
+    elif task_type == "web_research_delivery":
+        roles.extend(
+            [
+                "BrowserWorker",
+                "BrowserExecutorAgent",
+                "CommunicationPlannerAgent",
+                "CommunicationWorker",
+                "MessageExecutorAgent",
+                "VerificationAgent",
+            ]
+        )
     elif task_type == "file_operation":
         roles.extend(["FileContextAgent", "FileWorker", "ConfirmationAgent"])
     else:
@@ -922,13 +1092,23 @@ def _review_as_role(
             rationale.append("Not an app-close task.")
             confidence = 0.45
     elif role_id in {"CommunicationPlannerAgent", "CommunicationWorker"}:
-        if task_type == "message_delivery":
+        if task_type in {"message_delivery", "web_research_delivery"}:
             recommended_roles.append("MessageExecutorAgent")
             rationale.append("Communication task can be planned for MessageExecutorAgent after safety and privacy review.")
             evidence.append({"type": "communication_target", **target} if target else {"type": "communication_target"})
-            confidence = 0.82 if target.get("recipients") and target.get("message") else 0.55
+            has_payload = target.get("message") or target.get("query") or target.get("delivery_stub")
+            confidence = 0.82 if target.get("recipients") and has_payload else 0.55
         else:
             rationale.append("Not a communication task.")
+            confidence = 0.45
+    elif role_id in {"BrowserWorker", "BrowserExecutorAgent"}:
+        if task_type == "web_research_delivery":
+            recommended_roles.append("BrowserExecutorAgent")
+            rationale.append("Web research can be searched, fetched, and summarized under manifest-driven BrowserExecutorAgent steps.")
+            evidence.append({"type": "web_research_target", **target} if target else {"type": "web_research_target"})
+            confidence = 0.84 if target.get("query") else 0.55
+        else:
+            rationale.append("Not a browser research task.")
             confidence = 0.45
     elif role_id == "FileWorker":
         if task_type == "file_operation":
@@ -1078,6 +1258,27 @@ def _selected_roles_for(intent: str) -> list[str]:
                 "UserFacingReplyAgent",
             ]
         )
+    if intent == "web_research_delivery":
+        return _dedupe_roles(
+            [
+                "MemoryRecallAgent",
+                "EntityResolverAgent",
+                "BrowserWorker",
+                "BrowserExecutorAgent",
+                "CommunicationPlannerAgent",
+                "CommunicationWorker",
+                "SafetyAgent",
+                "PermissionAgent",
+                "PrivacyAgent",
+                "MessageExecutorAgent",
+                "VerificationAgent",
+                "AuditAgent",
+                "RecoveryAgent",
+                "RetryPlannerAgent",
+                "MemoryWriteAgent",
+                "UserFacingReplyAgent",
+            ]
+        )
     if intent == "file_operation":
         return _dedupe_roles(
             [
@@ -1110,6 +1311,8 @@ def _summary_confidence(intent: str, target: dict[str, Any], needs_clarification
         return 0.52
     if intent == "calculator_calculate" and target.get("expression"):
         return 0.86
+    if intent == "web_research_delivery" and target.get("query") and target.get("recipients"):
+        return 0.84
     if intent in {"open_app", "close_app", "switch_app"} and target:
         return 0.84
     if intent == "conversation":
@@ -1143,6 +1346,8 @@ def _summary_rationale(intent: str, target: dict[str, Any], risk: RiskLevel, nee
     rationale = [f"ReviewBoard top intent: {intent}.", f"Risk: {risk.value}."]
     if target:
         rationale.append(f"Target resolved: {target.get('name')} via {target.get('source')}.")
+    if intent == "web_research_delivery":
+        rationale.append("Web research delivery will use capability metadata to search, fetch, summarize, send, and verify.")
     if needs_clarification:
         rationale.append("Execution blocked until ambiguity or safety concern is clarified.")
     return rationale

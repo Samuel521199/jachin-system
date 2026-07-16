@@ -79,6 +79,8 @@ function resolveDeveloperFromToken(authHeader: string | null): string | null {
 function parseAndValidateZip(zipBuffer: Buffer): {
   pluginJson: PluginJson;
   raw: unknown;
+  contractWarnings: string[];
+  qualityScore: number;
 } {
   let zip: AdmZip;
   try {
@@ -176,11 +178,122 @@ function parseAndValidateZip(zipBuffer: Buffer): {
   };
 
   validateRecoveryPlaybook(p);
+  const contract = validateCapabilityContract(p);
 
   // 076: 若包内含 config/ 则必须含 manifest.yaml
   validateConfigInZip(zip);
 
-  return { pluginJson, raw };
+  return { pluginJson, raw, contractWarnings: contract.warnings, qualityScore: contract.qualityScore };
+}
+
+function validateCapabilityContract(manifest: Record<string, unknown>): { warnings: string[]; qualityScore: number } {
+  validateDecomposition(manifest);
+  validateDependencyList(manifest, "required_mcps");
+  validateDependencyList(manifest, "required_models");
+  const qualityScore = capabilityQualityScore(manifest);
+  const warnings =
+    qualityScore < 0.72
+      ? [`capability_profile_low_quality: score ${qualityScore.toFixed(2)} < 0.72; can publish, but not production-grade`]
+      : [];
+  return { warnings, qualityScore };
+}
+
+function validateDecomposition(manifest: Record<string, unknown>): void {
+  const decomposition = manifestValueOrMetadata(manifest, "decomposition");
+  if (decomposition === undefined) return;
+  const errors: string[] = [];
+  if (!isRecord(decomposition)) {
+    throwInvalidCapabilityContract(["decomposition must be an object"]);
+  }
+  const nodes = decomposition.nodes;
+  if (!Array.isArray(nodes) || nodes.length === 0) {
+    throwInvalidCapabilityContract(["decomposition.nodes must be a non-empty array"]);
+  }
+  const nodeIds = new Set<string>();
+  nodes.forEach((node, index) => {
+    const prefix = `decomposition.nodes[${index}]`;
+    if (!isRecord(node)) {
+      errors.push(`${prefix} must be an object`);
+      return;
+    }
+    const nodeId = nonEmptyString(node.id) ? node.id.trim() : nonEmptyString(node.name) ? node.name.trim() : String(index);
+    nodeIds.add(nodeId);
+    for (const key of ["goal", "role_agent", "tool"] as const) {
+      if (!nonEmptyString(node[key])) {
+        errors.push(`${prefix}.${key} must be a non-empty string`);
+      }
+    }
+    const verification = node.verification_criteria ?? node.verification ?? node.expected_evidence;
+    if (!Array.isArray(verification) || verification.length === 0) {
+      errors.push(`${prefix}.verification_criteria must be a non-empty array`);
+    }
+  });
+  nodes.forEach((node, index) => {
+    if (!isRecord(node)) return;
+    for (const dep of stringItems(node.depends_on)) {
+      if (!nodeIds.has(dep)) {
+        errors.push(`decomposition.nodes[${index}].depends_on references unknown node: ${dep}`);
+      }
+    }
+  });
+  if (errors.length > 0) {
+    throwInvalidCapabilityContract(errors);
+  }
+}
+
+function validateDependencyList(manifest: Record<string, unknown>, key: string): void {
+  const value = manifestValueOrMetadata(manifest, key);
+  if (value === undefined) return;
+  if (!Array.isArray(value)) {
+    throwInvalidCapabilityContract([`${key} must be a string/object array`]);
+  }
+  const errors: string[] = [];
+  value.forEach((item, index) => {
+    const ok =
+      nonEmptyString(item) ||
+      (isRecord(item) && (nonEmptyString(item.id) || nonEmptyString(item.plugin_id) || nonEmptyString(item.model_id)));
+    if (!ok) errors.push(`${key}[${index}] must be a non-empty string or dependency object`);
+  });
+  if (errors.length > 0) throwInvalidCapabilityContract(errors);
+}
+
+function capabilityQualityScore(manifest: Record<string, unknown>): number {
+  const missing = new Set<string>();
+  const inputs = manifestValueOrMetadata(manifest, "inputs");
+  if (!Array.isArray(inputs) || inputs.length === 0) missing.add("inputs");
+  const verification =
+    manifestValueOrMetadata(manifest, "verification") ??
+    manifestValueOrMetadata(manifest, "verification_methods");
+  if (!Array.isArray(verification) || verification.length === 0) missing.add("verification");
+  const examples = manifestValueOrMetadata(manifest, "examples");
+  if (!Array.isArray(examples) || examples.length === 0) missing.add("examples");
+  const risk = String(manifestValueOrMetadata(manifest, "risk") ?? "").trim().toLowerCase();
+  if (!risk) missing.add("risk");
+  if (["external_effect", "high", "critical"].includes(risk) && manifest.recovery_playbook === undefined) {
+    missing.add("recovery_playbook");
+  }
+  const penalty = Math.min(0.85, missing.size * 0.16);
+  return Math.round((1 - penalty) * 1000) / 1000;
+}
+
+function manifestValueOrMetadata(manifest: Record<string, unknown>, key: string): unknown {
+  if (manifest[key] !== undefined) return manifest[key];
+  const metadata = manifest.metadata;
+  return isRecord(metadata) ? metadata[key] : undefined;
+}
+
+function stringItems(value: unknown): string[] {
+  if (nonEmptyString(value)) return [value.trim()];
+  if (!Array.isArray(value)) return [];
+  return value.filter(nonEmptyString).map((item) => item.trim());
+}
+
+function throwInvalidCapabilityContract(errors: string[]): never {
+  throw new PublishError(
+    400,
+    "INVALID_CAPABILITY_CONTRACT",
+    `capability contract 格式错误：${errors.slice(0, 8).join("；")}`
+  );
 }
 
 function validateRecoveryPlaybook(manifest: Record<string, unknown>): void {
@@ -517,6 +630,8 @@ export async function POST(request: NextRequest) {
 
     let pluginJson: PluginJson;
     let manifestJsonRaw: Record<string, unknown>;
+    let contractWarnings: string[] = [];
+    let contractQualityScore = 0;
     let packageUrl: string | null = null;
     let packageSha256: string | null = null;
 
@@ -585,6 +700,8 @@ export async function POST(request: NextRequest) {
         const parsed = parseAndValidateZip(zipBuffer);
         pluginJson = parsed.pluginJson;
         manifestJsonRaw = (parsed.raw as Record<string, unknown>) ?? {};
+        contractWarnings = parsed.contractWarnings;
+        contractQualityScore = parsed.qualityScore;
       } catch (err) {
         if (err instanceof PublishError) {
           return NextResponse.json(
@@ -626,6 +743,8 @@ export async function POST(request: NextRequest) {
         name: pluginJson.name,
         version: pluginJson.version,
         package_url: packageUrl ?? undefined,
+        contract_warnings: contractWarnings,
+        capability_quality_score: contractQualityScore,
       });
     }
 
@@ -701,6 +820,8 @@ export async function POST(request: NextRequest) {
       name: pluginJson.name,
       version: pluginJson.version,
       package_url: packageUrl ?? undefined,
+      contract_warnings: contractWarnings,
+      capability_quality_score: contractQualityScore,
     });
   } catch (err) {
     console.error("[store/publish] Error:", err);

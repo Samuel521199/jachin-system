@@ -47,6 +47,10 @@ interface CapabilityInstallItem {
   l1_status?: string | null;
   status: InstallStatus | string;
   problems: string[];
+  warnings: string[];
+  quality_score?: number | null;
+  production_ready: boolean;
+  governance_status: string;
   dependencies: string[];
 }
 
@@ -86,10 +90,13 @@ interface CapabilityInstallResult {
   kind: string;
   installed_path: string;
   package_sha256: string;
+  warnings?: string[];
+  quality_score?: number | null;
+  production_ready?: boolean;
   message: string;
 }
 
-type FilterKey = "all" | InstallStatus | "mcp" | "skill" | "model";
+type FilterKey = "all" | InstallStatus | "mcp" | "skill" | "model" | "low_quality";
 
 const FILTERS: Array<{ key: FilterKey; label: string }> = [
   { key: "all", label: "全部" },
@@ -101,6 +108,7 @@ const FILTERS: Array<{ key: FilterKey; label: string }> = [
   { key: "source_mismatch", label: "其他 L1" },
   { key: "disabled", label: "已禁用" },
   { key: "local_only", label: "本地包" },
+  { key: "low_quality", label: "需治理" },
   { key: "mcp", label: "MCP" },
   { key: "skill", label: "Skill" },
   { key: "model", label: "Model" },
@@ -137,6 +145,30 @@ function statusClass(status: string): string {
   if (status === "local_only") return "border-violet-400/35 bg-violet-500/10 text-violet-200";
   if (status === "blocked") return "border-red-400/35 bg-red-500/10 text-red-200";
   return "border-cyan-400/35 bg-cyan-500/10 text-cyan-100";
+}
+
+function governanceLabel(item: CapabilityInstallItem): string {
+  if (item.governance_status === "low_quality" || item.production_ready === false) return "需治理";
+  if (item.governance_status === "watch") return "观察";
+  if (item.governance_status === "production_ready") return "生产级";
+  return "未知";
+}
+
+function governanceClass(item: CapabilityInstallItem): string {
+  if (item.governance_status === "low_quality" || item.production_ready === false) {
+    return "border-rose-400/35 bg-rose-500/10 text-rose-100";
+  }
+  if (item.governance_status === "watch") {
+    return "border-amber-400/35 bg-amber-500/10 text-amber-100";
+  }
+  if (item.governance_status === "production_ready") {
+    return "border-emerald-400/35 bg-emerald-500/10 text-emerald-100";
+  }
+  return "border-slate-500/35 bg-slate-500/10 text-slate-300";
+}
+
+function qualityText(item: CapabilityInstallItem): string {
+  return typeof item.quality_score === "number" ? `${Math.round(item.quality_score * 100)}%` : "-";
 }
 
 function shortSha(raw?: string | null): string {
@@ -212,6 +244,7 @@ export function CapabilityInstallCenter() {
         (item.installed_path ?? "").toLowerCase().includes(q);
       if (!matchQuery) return false;
       if (filter === "all") return true;
+      if (filter === "low_quality") return item.governance_status === "low_quality" || item.production_ready === false;
       if (filter === "mcp" || filter === "skill" || filter === "model") return item.kind === filter;
       return item.status === filter;
     });
@@ -253,7 +286,10 @@ export function CapabilityInstallCenter() {
       setNotice({ type: "success", text: `正在安装：${item.name || item.id}` });
       const res = await installOne(item, item.status === "repair_needed");
       const suffix = deps.length > 0 ? `，并已安装 ${deps.length} 个依赖` : "";
-      setNotice({ type: "success", text: `${res.id}@${res.version} 安装完成${suffix}` });
+      const governanceSuffix = res.production_ready === false
+        ? "，但质量未达生产级，请查看治理提示"
+        : "";
+      setNotice({ type: "success", text: `${res.id}@${res.version} 安装完成${suffix}${governanceSuffix}` });
       await load();
       notifyInventoryUpdated({ type: "CAPABILITY_INSTALLED", id: res.id, kind: res.kind, version: res.version });
     } catch (e) {
@@ -514,9 +550,10 @@ export function CapabilityInstallCenter() {
         )}
 
         <section className="overflow-hidden rounded-md border border-cyan-500/15 bg-slate-900/55">
-          <div className="grid grid-cols-[minmax(320px,1.6fr)_95px_130px_130px_150px_160px_220px] border-b border-cyan-500/15 px-4 py-3 text-xs uppercase tracking-wider text-slate-500">
+          <div className="grid grid-cols-[minmax(320px,1.6fr)_95px_110px_130px_130px_150px_160px_220px] border-b border-cyan-500/15 px-4 py-3 text-xs uppercase tracking-wider text-slate-500">
             <div>能力</div>
             <div>类型</div>
+            <div>质量</div>
             <div>L1 版本</div>
             <div>本地版本</div>
             <div>状态</div>
@@ -543,7 +580,7 @@ export function CapabilityInstallCenter() {
                 return (
                   <div
                     key={`${item.id}:${item.source}`}
-                    className="grid grid-cols-[minmax(320px,1.6fr)_95px_130px_130px_150px_160px_220px] gap-0 px-4 py-4 text-sm"
+                    className="grid grid-cols-[minmax(320px,1.6fr)_95px_110px_130px_130px_150px_160px_220px] gap-0 px-4 py-4 text-sm"
                   >
                     <div className="min-w-0 pr-4">
                       <div className="flex min-w-0 items-center gap-2">
@@ -580,6 +617,11 @@ export function CapabilityInstallCenter() {
                           {item.problems.join("；")}
                         </div>
                       )}
+                      {item.warnings?.length > 0 && (
+                        <div className="mt-2 rounded border border-yellow-400/20 bg-yellow-500/5 px-2 py-1 text-xs text-yellow-100">
+                          {item.warnings.slice(0, 4).join("；")}
+                        </div>
+                      )}
                       {item.dependencies?.length > 0 && (
                         <div className="mt-2 rounded border border-cyan-400/15 bg-cyan-500/5 px-2 py-1 text-xs text-cyan-100/80">
                           依赖：{item.dependencies.map(normalizeDependencyId).join("、")}
@@ -590,6 +632,12 @@ export function CapabilityInstallCenter() {
                       <span className="rounded border border-slate-600/60 px-2 py-1 text-xs uppercase text-slate-300">
                         {item.kind}
                       </span>
+                    </div>
+                    <div>
+                      <span className={cn("rounded border px-2 py-1 text-xs", governanceClass(item))}>
+                        {governanceLabel(item)}
+                      </span>
+                      <div className="mt-2 font-mono text-xs text-slate-500">{qualityText(item)}</div>
                     </div>
                     <div className="font-mono text-slate-200">{item.l1_version ?? "-"}</div>
                     <div className="font-mono text-slate-200">{item.local_version ?? "-"}</div>

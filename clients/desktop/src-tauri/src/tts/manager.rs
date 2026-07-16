@@ -130,9 +130,7 @@ impl SpeechEngine {
     async fn try_voice_server_then_cloud(&self, text: &str) -> Result<Vec<u8>, String> {
         match self.call_local_voice_server_tts(text).await {
             Ok(audio) => Ok(audio),
-            Err(e) => {
-                Err(format!("Voice server failed: {}", e))
-            }
+            Err(e) => Err(format!("Voice server failed: {}", e)),
         }
     }
 

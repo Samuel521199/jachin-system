@@ -10,8 +10,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import time
+import html
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -171,11 +175,21 @@ class RoleExecutionAdapter:
         return await tool_transport_executor(work_order)
 
     def describe_evidence(self, work_order: WorkOrder, context: RoleExecutionContext) -> dict[str, object]:
-        return {
+        evidence: dict[str, object] = {
             "strategy": self.adapter_kind,
             "tool": context.tool,
             "risk_level": str(work_order.tool_policy.risk_level.value),
         }
+        governance = work_order.inputs.get("governance_policy")
+        if isinstance(governance, dict):
+            evidence["governance_policy"] = {
+                "capability": governance.get("capability") or governance.get("capability_id") or "",
+                "score": governance.get("score"),
+                "level": governance.get("level") or "",
+                "execution_mode": governance.get("execution_mode") or "",
+                "requires_confirmation": bool(governance.get("requires_confirmation")),
+            }
+        return evidence
 
     def enrich_evidence(
         self,
@@ -343,6 +357,85 @@ class FileExecutor(RoleExecutionAdapter):
         enriched = dict(evidence)
         enriched["file_result"] = _parse_observation_status(observation)
         enriched["direct_native_channel"] = "FileExecutorAgent.native" in str(observation or "")
+        return enriched
+
+
+class BrowserExecutor(RoleExecutionAdapter):
+    role_id = "BrowserExecutorAgent"
+    adapter_kind = "browser_research"
+
+    async def _execute(
+        self,
+        work_order: WorkOrder,
+        tool_transport_executor: ToolTransportExecutor,
+        context: RoleExecutionContext,
+    ) -> str:
+        tool = (context.tool or "").strip()
+        if tool == "mcp:tavily_search":
+            return await _run_sync(lambda: _native_tavily_search(context.work_order_input, context.goal))
+        if tool == "mcp:fetch":
+            return await _run_sync(lambda: _native_fetch_pages(context.work_order_input))
+        if tool != "core:web_research_summarize":
+            return await tool_transport_executor(work_order)
+        payload = _json_obj(context.work_order_input)
+        args = payload if isinstance(payload, dict) else {}
+        query = str(args.get("query") or context.goal or "").strip()
+        recipients = _decode_json_list(args.get("recipients_json"))
+        upstream = args.get("upstream_observations") if isinstance(args.get("upstream_observations"), list) else []
+        message = _web_research_summary_message(query=query, recipients=recipients, upstream_observations=upstream)
+        if not _summary_has_sources(message):
+            return json.dumps(
+                {
+                    "ok": False,
+                    "task": "web_research_summarize",
+                    "channel": "BrowserExecutorAgent.native",
+                    "query": query,
+                    "recipients": recipients,
+                    "message": message,
+                    "error": "missing_search_or_fetch_evidence",
+                },
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {
+                "ok": True,
+                "task": "web_research_summarize",
+                "channel": "BrowserExecutorAgent.native",
+                "query": query,
+                "recipients": recipients,
+                "message": message,
+                "source_node": str(args.get("source_node") or ""),
+                "format": str(args.get("format") or "brief_lark_message"),
+                "evidence": {
+                    "summary_generated": True,
+                    "grounded_in_upstream_results": True,
+                },
+            },
+            ensure_ascii=False,
+        )
+
+    def describe_evidence(self, work_order: WorkOrder, context: RoleExecutionContext) -> dict[str, object]:
+        payload = _json_obj(context.work_order_input)
+        query = str((payload or {}).get("query") if isinstance(payload, dict) else "")
+        return {
+            **super().describe_evidence(work_order, context),
+            "query_preview": query[:240],
+            "expected_evidence": ["search_results", "fetched_pages", "summary_with_sources"],
+        }
+
+    def enrich_evidence(
+        self,
+        evidence: dict[str, object],
+        observation: str,
+        work_order: WorkOrder,
+        context: RoleExecutionContext,
+    ) -> dict[str, object]:
+        enriched = dict(evidence)
+        enriched["browser_result"] = _parse_observation_status(observation)
+        parsed = _json_obj(observation)
+        if isinstance(parsed, dict):
+            enriched["summary_preview"] = str(parsed.get("message") or parsed.get("summary") or "")[:500]
+        enriched["direct_browser_channel"] = "BrowserExecutorAgent.native" in str(observation or "")
         return enriched
 
 
@@ -601,6 +694,7 @@ def default_role_executors() -> list[RoleExecutionAdapter]:
     return [
         AppControlExecutor(),
         FileExecutor(),
+        BrowserExecutor(),
         MessageExecutor(),
         MemoryRecallExecutor(),
         MemoryWriteExecutor(),
@@ -854,6 +948,309 @@ def _message_delivery_evidence_in_json(value: object) -> bool:
     if isinstance(value, list):
         return any(_message_delivery_evidence_in_json(item) for item in value)
     return False
+
+
+def _decode_json_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+        return [item.strip() for item in re.split(r"[,，、;；]+", value) if item.strip()]
+    return []
+
+
+def _native_tavily_search(work_order_input: str, goal: str) -> str:
+    payload = _json_obj(work_order_input)
+    args = payload if isinstance(payload, dict) else {}
+    query = str(args.get("query") or goal or "").strip()
+    if not query:
+        return json.dumps({"ok": False, "task": "tavily_search", "error": "missing_query"}, ensure_ascii=False)
+    api_key = (os.environ.get("TAVILY_API_KEY") or "").strip()
+    if not api_key:
+        return json.dumps(
+            {"ok": False, "task": "tavily_search", "query": query, "error": "missing_TAVILY_API_KEY"},
+            ensure_ascii=False,
+        )
+    body = json.dumps(
+        {
+            "api_key": api_key,
+            "query": query,
+            "search_depth": "basic",
+            "max_results": 5,
+            "include_answer": True,
+            "include_raw_content": False,
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.tavily.com/search",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        return json.dumps(
+            {"ok": False, "task": "tavily_search", "query": query, "error": f"{type(exc).__name__}: {exc}"},
+            ensure_ascii=False,
+        )
+    try:
+        data = json.loads(raw)
+    except Exception:
+        data = {"raw": raw}
+    results = []
+    for item in data.get("results") or []:
+        if not isinstance(item, dict):
+            continue
+        results.append(
+            {
+                "title": str(item.get("title") or "").strip(),
+                "url": str(item.get("url") or "").strip(),
+                "content": str(item.get("content") or "").strip()[:1000],
+                "score": item.get("score"),
+            }
+        )
+    return json.dumps(
+        {
+            "ok": bool(results),
+            "task": "tavily_search",
+            "channel": "BrowserExecutorAgent.native",
+            "query": query,
+            "answer": str(data.get("answer") or "").strip(),
+            "results": results,
+            "error": "" if results else "empty_search_results",
+        },
+        ensure_ascii=False,
+    )
+
+
+def _native_fetch_pages(work_order_input: str) -> str:
+    payload = _json_obj(work_order_input)
+    args = payload if isinstance(payload, dict) else {}
+    urls: list[str] = []
+    if args.get("url"):
+        urls.append(str(args.get("url")))
+    if isinstance(args.get("urls"), list):
+        urls.extend(str(x) for x in args.get("urls") if str(x).strip())
+    if not urls:
+        urls = _urls_from_upstream(args.get("upstream_observations") if isinstance(args.get("upstream_observations"), list) else [])
+    pages = []
+    for url in urls[:3]:
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 JachinBrowserExecutor/1.0",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                raw = resp.read(120_000).decode("utf-8", errors="replace")
+            text = _html_to_text(raw)
+            pages.append({"url": url, "title": _html_title(raw), "text": text[:2500], "ok": bool(text.strip())})
+        except Exception as exc:
+            pages.append({"url": url, "ok": False, "error": f"{type(exc).__name__}: {exc}"})
+    ok_pages = [page for page in pages if page.get("ok")]
+    return json.dumps(
+        {
+            "ok": bool(ok_pages),
+            "task": "fetch",
+            "channel": "BrowserExecutorAgent.native",
+            "pages": pages,
+            "error": "" if ok_pages else "no_readable_pages",
+        },
+        ensure_ascii=False,
+    )
+
+
+def _web_research_summary_message(
+    *,
+    query: str,
+    recipients: list[str],
+    upstream_observations: list[dict[str, object]] | None = None,
+) -> str:
+    query = str(query or "").strip() or "用户请求的最新信息"
+    findings = _collect_research_findings(upstream_observations or [])
+    if not findings:
+        return f"【联网信息简报】\n主题：{query}\n状态：未拿到可引用的搜索/抓取证据，暂不发送未证实内容。"
+    lines = [f"【{query}｜最新信息简报】"]
+    for idx, item in enumerate(findings[:4], 1):
+        title = _clean_research_text(str(item.get("title") or "来源").strip())
+        content = _research_item_summary(item)
+        url = str(item.get("url") or "").strip()
+        if not content:
+            content = "该来源包含相关信息，但正文抽取不足，建议打开链接查看原文。"
+        if url:
+            lines.append(f"{idx}. {title}：{content}\n链接：{url}")
+        else:
+            lines.append(f"{idx}. {title}：{content}")
+    lines.append("以上由 Jachin 自动联网检索、抓取证据并整理。")
+    return "\n".join(lines)
+
+
+def _summary_has_sources(message: str) -> bool:
+    return bool(re.search(r"https?://", str(message or "")))
+
+
+def _collect_research_findings(upstream_observations: list[dict[str, object]]) -> list[dict[str, object]]:
+    page_findings: list[dict[str, object]] = []
+    search_findings: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for item in upstream_observations:
+        text = str(item.get("observation") if isinstance(item, dict) else "")
+        try:
+            obj = json.loads(text)
+        except Exception:
+            obj = None
+        if not isinstance(obj, dict):
+            continue
+        for page in obj.get("pages") or []:
+            if isinstance(page, dict) and page.get("ok"):
+                url = str(page.get("url") or "").strip()
+                if url and url not in seen:
+                    seen.add(url)
+                    page_findings.append(page)
+        for result in obj.get("results") or []:
+            if isinstance(result, dict):
+                url = str(result.get("url") or "").strip()
+                key = url or str(result.get("title") or "")
+                if key and key not in seen:
+                    seen.add(key)
+                    search_findings.append(result)
+    return page_findings + search_findings
+
+
+def _urls_from_upstream(upstream_observations: list[dict[str, object]]) -> list[str]:
+    urls: list[str] = []
+    for item in upstream_observations:
+        text = str(item.get("observation") if isinstance(item, dict) else "")
+        try:
+            obj = json.loads(text)
+        except Exception:
+            obj = None
+        if isinstance(obj, dict):
+            for result in obj.get("results") or []:
+                if isinstance(result, dict):
+                    url = str(result.get("url") or "").strip()
+                    if url and url not in urls:
+                        urls.append(url)
+        for url in re.findall(r"https?://[^\s\"'<>]+", text):
+            clean = url.rstrip(").,;，。")
+            if clean and clean not in urls:
+                urls.append(clean)
+    return urls
+
+
+def _html_title(raw: str) -> str:
+    m = re.search(r"<title[^>]*>(.*?)</title>", raw or "", re.I | re.S)
+    return _compact_ws(_strip_tags(m.group(1))) if m else ""
+
+
+def _html_to_text(raw: str) -> str:
+    text = re.sub(
+        r"(?is)<script.*?</script>|<style.*?</style>|<noscript.*?</noscript>|<svg.*?</svg>",
+        " ",
+        raw or "",
+    )
+    text = _strip_tags(text)
+    return _clean_research_text(text)
+
+
+def _strip_tags(text: str) -> str:
+    return re.sub(r"(?s)<[^>]+>", " ", text or "")
+
+
+def _compact_ws(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def _research_item_summary(item: dict[str, object], *, max_chars: int = 140) -> str:
+    text = str(item.get("text") or item.get("content") or "").strip()
+    text = _clean_research_text(text)
+    text = _drop_noisy_prefix(text)
+    return _complete_sentence_excerpt(text, max_chars=max_chars)
+
+
+def _clean_research_text(text: str) -> str:
+    text = html.unescape(str(text or ""))
+    # Tavily/search snippets can contain URL-encoded SVG/CSS fragments.
+    for _ in range(2):
+        decoded = urllib.parse.unquote(text)
+        if decoded == text:
+            break
+        text = decoded
+    text = re.sub(r"(?is)<script.*?</script>|<style.*?</style>|<svg.*?</svg>", " ", text)
+    text = _strip_tags(text)
+    text = re.sub(r"\.(?:st|cls|style)\d+\s*\{[^}]*\}", " ", text)
+    text = re.sub(r"\b(?:fill|stroke|path|defs|viewBox|xmlns|clipPath)\s*[:=]\s*[^，。；;\s]+", " ", text, flags=re.I)
+    text = re.sub(r"\[[^\]]{0,80}\]\((https?://[^)]+)\)", r"\1", text)
+    text = re.sub(r"https?://\S+", " ", text)
+    text = text.replace("\\*", "").replace("*", "")
+    return _compact_ws(text)
+
+
+def _drop_noisy_prefix(text: str) -> str:
+    parts = re.split(r"(?<=[。！？!?])\s+|(?<=\.)\s+", text)
+    good_parts = []
+    for part in parts:
+        p = part.strip()
+        if not p:
+            continue
+        low = p.lower()
+        if any(noise in low for noise in ("aibase -->", ".st0", "{ fill", "svg", "defs", "xmlns")):
+            continue
+        if len(re.findall(r"[A-Za-z0-9%#{}<>/=:;]", p)) > max(12, len(p) * 0.45) and not re.search(r"[\u4e00-\u9fff]", p):
+            continue
+        good_parts.append(p)
+    return _compact_ws(" ".join(good_parts) if good_parts else text)
+
+
+def _complete_sentence_excerpt(text: str, *, max_chars: int) -> str:
+    text = _compact_ws(text)
+    if not text:
+        return ""
+    sentences = _split_sentences(text)
+    selected: list[str] = []
+    total = 0
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        if len(sentence) > max_chars:
+            sentence = _trim_to_word_boundary(sentence, max_chars=max_chars)
+        if selected and total + len(sentence) + 1 > max_chars:
+            break
+        selected.append(sentence)
+        total += len(sentence) + 1
+        if total >= max_chars * 0.72:
+            break
+    result = _compact_ws(" ".join(selected)) if selected else _trim_to_word_boundary(text, max_chars=max_chars)
+    if result and result[-1] not in "。.!！?？":
+        result += "。"
+    return result
+
+
+def _split_sentences(text: str) -> list[str]:
+    chunks = re.findall(r"[^。！？!?\.]+[。！？!?\.]?", text)
+    return [chunk.strip() for chunk in chunks if chunk.strip()]
+
+
+def _trim_to_word_boundary(text: str, *, max_chars: int) -> str:
+    text = text.strip()
+    if len(text) <= max_chars:
+        return text
+    cut = text[:max_chars].rstrip()
+    boundary = max(cut.rfind("，"), cut.rfind(","), cut.rfind("；"), cut.rfind(";"), cut.rfind(" "))
+    if boundary >= max(24, int(max_chars * 0.45)):
+        cut = cut[:boundary].rstrip()
+    return cut.rstrip("，,；;：:")
 
 
 def _observation_mentions_any(observation: str, needles: list[str]) -> bool:

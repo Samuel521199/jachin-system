@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import time
 import uuid
@@ -63,7 +64,32 @@ _RECORD_CACHE: dict[str, Any] = {
     "mtime_ns": -1,
     "size": -1,
     "records": [],
+    "search_index": None,
+    "rerank_vectors": {},
 }
+
+_COMMON_RECALL_TERMS = {
+    "and",
+    "but",
+    "content",
+    "domain",
+    "memory",
+    "noise",
+    "not",
+    "owner",
+    "recall",
+    "similar",
+    "stress",
+    "target",
+    "the",
+    "this",
+    "token",
+    "wording",
+}
+_MAX_INDEX_POSTINGS_FOR_CANDIDATE = 250_000
+_RERANK_WINDOW = 64
+_RERANK_HASH_DIM = 384
+_RERANK_DOT_WEIGHT = 3.0
 
 
 @dataclass(slots=True)
@@ -256,36 +282,61 @@ def recall_lifecycle_memories(query: str = "", *, memory_types: list[str] | None
     wanted = set(memory_types or [])
     now = _now_ms()
     all_records = _load_records(include_expired=True)
-    records = []
-    changed = False
-    for record in all_records:
+    records = _candidate_records(all_records, query_terms, wanted)
+    active_records = []
+    for record in records:
         if record.status != "active":
             continue
         if record.expires_at_ms and record.expires_at_ms < now:
             record.status = "expired"
-            changed = True
             continue
-        if wanted and record.memory_type not in wanted:
-            continue
-        records.append(record)
-    if changed:
-        _rewrite_records(all_records)
-    scored = sorted(
-        records,
-        key=lambda r: (_score_record(r, query_terms), r.updated_at_ms),
-        reverse=True,
-    )
-    out = [item.to_evidence("memory lifecycle ranked recall") for item in scored[: max(0, limit)] if _score_record(item, query_terms) > 0]
+        active_records.append(record)
+    rule_scored = [
+        (record, score)
+        for record in active_records
+        if (score := _score_record(record, query_terms)) > 0
+    ]
+    rule_scored.sort(key=lambda item: (item[1], item[0].updated_at_ms), reverse=True)
+    reranked = _normalized_dot_rerank(query, rule_scored[: max(limit, _RERANK_WINDOW)])
+    out = [
+        item.to_evidence("memory lifecycle recall: inverted-index -> rule-score -> normalized-dot-rerank")
+        for item, _final_score, _rule_score, _dot_score in reranked[: max(0, limit)]
+    ]
     append_event(
         "memory_lifecycle_recall",
         "memory-recall",
         {
             "query": query[:300],
             "memory_types": list(wanted),
+            "layer_1": "inverted_index_keyword_candidate_recall",
+            "layer_2": "rule_score_coarse_rank",
+            "layer_3": "normalized_dot_product_rerank",
+            "candidate_count": len(records),
+            "active_candidate_count": len(active_records),
+            "rule_scored_count": len(rule_scored),
+            "rerank_window": min(len(rule_scored), max(limit, _RERANK_WINDOW)),
             "hit_count": len(out),
         },
     )
     return out
+
+
+def warm_lifecycle_memory_index() -> dict[str, Any]:
+    started = time.perf_counter()
+    records = _load_records(include_expired=True)
+    index = _search_index(records)
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    term_count = sum(len(term_index) for term_index in index.values())
+    posting_count = sum(len(postings) for term_index in index.values() for postings in term_index.values())
+    summary = {
+        "record_count": len(records),
+        "memory_type_count": len(index),
+        "term_count": term_count,
+        "posting_count": posting_count,
+        "elapsed_ms": elapsed_ms,
+    }
+    append_event("memory_lifecycle_index_warm", "memory-lifecycle", summary)
+    return summary
 
 
 def record_lifecycle_memory_feedback(
@@ -510,11 +561,196 @@ def _score_record(record: LifecycleMemoryRecord, query_terms: list[str]) -> floa
     )
 
 
+def _normalized_dot_rerank(
+    query: str,
+    scored_records: list[tuple[LifecycleMemoryRecord, float]],
+) -> list[tuple[LifecycleMemoryRecord, float, float, float]]:
+    """Rerank the coarse candidates with normalized dot product.
+
+    Layer 1 and 2 deliberately keep recall cheap. This layer only sees a small
+    coarse-ranked window, so we get a semantic-ish tie breaker without turning
+    million-scale recall into a full vector scan.
+    """
+
+    if not scored_records:
+        return []
+    query_vector = _normalized_hash_vector(query)
+    if not query_vector:
+        return [(record, rule_score, rule_score, 0.0) for record, rule_score in scored_records]
+    reranked: list[tuple[LifecycleMemoryRecord, float, float, float]] = []
+    for record, rule_score in scored_records:
+        dot_score = _dot_product(query_vector, _record_rerank_vector(record))
+        final_score = rule_score + _RERANK_DOT_WEIGHT * dot_score
+        reranked.append((record, final_score, rule_score, dot_score))
+    reranked.sort(key=lambda item: (item[1], item[2], item[0].updated_at_ms), reverse=True)
+    return reranked
+
+
+def _record_rerank_vector(record: LifecycleMemoryRecord) -> list[float]:
+    cache: dict[str, list[float]] = _RECORD_CACHE.setdefault("rerank_vectors", {})
+    cache_key = f"{record.content_hash}:{record.updated_at_ms}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+    vector = _normalized_hash_vector(_record_search_text(record))
+    cache[cache_key] = vector
+    return vector
+
+
+def _normalized_hash_vector(text: Any, *, dim: int = _RERANK_HASH_DIM) -> list[float]:
+    terms = _rerank_terms_from_text(text)
+    if not terms:
+        return []
+    vector = [0.0] * dim
+    for term in terms:
+        digest = hashlib.blake2b(term.encode("utf-8", errors="ignore"), digest_size=8).digest()
+        index = int.from_bytes(digest[:4], "little") % dim
+        vector[index] += 1.0
+    return _normalize_vector(vector)
+
+
+def _rerank_terms_from_text(text: Any) -> list[str]:
+    raw = str(text or "").strip().lower()
+    if not raw:
+        return []
+    terms = set(_index_terms_from_text(raw))
+    compact = _compact_search_text(raw)
+    # Character n-grams make Chinese compact queries and technical identifiers
+    # less brittle while keeping the vector local and deterministic.
+    if len(compact) >= 3:
+        max_len = min(len(compact), 256)
+        for size in (3, 4):
+            for start in range(0, max_len - size + 1):
+                piece = compact[start : start + size]
+                if _indexable_term(piece):
+                    terms.add(piece)
+    return sorted(terms)[:512]
+
+
+def _normalize_vector(vector: list[float]) -> list[float]:
+    norm = math.sqrt(sum(value * value for value in vector))
+    if norm <= 0:
+        return []
+    return [value / norm for value in vector]
+
+
+def _dot_product(left: list[float], right: list[float]) -> float:
+    if not left or not right:
+        return 0.0
+    return sum(a * b for a, b in zip(left, right))
+
+
+def _candidate_records(
+    records: list[LifecycleMemoryRecord],
+    query_terms: list[str],
+    wanted: set[str],
+) -> list[LifecycleMemoryRecord]:
+    if not query_terms:
+        return [record for record in records if not wanted or record.memory_type in wanted]
+    index = _search_index(records)
+    type_keys = wanted or set(index.keys())
+    candidate_indices: set[int] = set()
+    skipped_common_postings = 0
+    for memory_type in type_keys:
+        term_index = index.get(memory_type)
+        if not term_index:
+            continue
+        for term in query_terms:
+            postings = term_index.get(term)
+            if not postings:
+                continue
+            if len(postings) > _MAX_INDEX_POSTINGS_FOR_CANDIDATE:
+                skipped_common_postings += 1
+                continue
+            candidate_indices.update(postings)
+    if not candidate_indices:
+        return [record for record in records if not wanted or record.memory_type in wanted]
+    return [records[index] for index in candidate_indices]
+
+
+def _search_index(records: list[LifecycleMemoryRecord]) -> dict[str, dict[str, list[int]]]:
+    cached = _RECORD_CACHE.get("search_index")
+    if cached is not None:
+        return cached
+    index: dict[str, dict[str, list[int]]] = defaultdict(lambda: defaultdict(list))
+    for record_index, record in enumerate(records):
+        if record.status != "active":
+            continue
+        for term in _index_terms_for_record(record):
+            index[record.memory_type][term].append(record_index)
+    materialized = {memory_type: dict(term_index) for memory_type, term_index in index.items()}
+    _RECORD_CACHE["search_index"] = materialized
+    return materialized
+
+
+def _index_terms_for_record(record: LifecycleMemoryRecord) -> set[str]:
+    terms: set[str] = set()
+    for text in (
+        record.memory_type,
+        record.content,
+        " ".join(record.tags or []),
+        record.domain,
+        record.owner,
+        record.skill_id,
+    ):
+        terms.update(_index_terms_from_text(text))
+    for item in record.evidence or []:
+        if not isinstance(item, dict):
+            continue
+        for name in (
+            "governance_key",
+            "entity_key",
+            "target_key",
+            "alias_key",
+            "subject_key",
+            "app_key",
+            "project_key",
+            "target_id",
+            "domain",
+            "type",
+        ):
+            terms.update(_index_terms_from_text(item.get(name)))
+    return terms
+
+
+def _index_terms_from_text(text: Any) -> set[str]:
+    raw = str(text or "").strip().lower()
+    if not raw:
+        return set()
+    normalized = re.sub(r"[^\w\u4e00-\u9fff]+", " ", raw.replace("_", " ").replace("-", " "), flags=re.UNICODE)
+    terms: set[str] = set()
+    for part in normalized.split():
+        part = part.strip().lower()
+        if not _indexable_term(part):
+            continue
+        terms.add(part)
+        if _has_cjk(part) and len(part) >= 4:
+            for size in (2, 3, 4):
+                for start in range(0, max(0, len(part) - size + 1)):
+                    piece = part[start : start + size]
+                    if _indexable_term(piece):
+                        terms.add(piece)
+    compact = _compact_search_text(raw)
+    if _indexable_term(compact):
+        terms.add(compact)
+    return terms
+
+
+def _indexable_term(term: str) -> bool:
+    if not term or len(term) < 2 or len(term) > 64:
+        return False
+    if term in _COMMON_RECALL_TERMS:
+        return False
+    if term.isdigit():
+        return False
+    return True
+
+
 def _query_terms(query: str) -> list[str]:
     text = str(query or "").strip().lower()
     if not text:
         return []
-    normalized = re.sub(r"[^\w\u4e00-\u9fff]+", " ", text, flags=re.UNICODE)
+    normalized = re.sub(r"[^\w\u4e00-\u9fff]+", " ", text.replace("_", " ").replace("-", " "), flags=re.UNICODE)
     compact = _compact_search_text(text)
     terms: list[str] = []
     for part in normalized.split():
@@ -602,6 +838,8 @@ def _refresh_record_cache(path: Path, records: list[LifecycleMemoryRecord], *, m
     _RECORD_CACHE["mtime_ns"] = mtime_ns
     _RECORD_CACHE["size"] = size
     _RECORD_CACHE["records"] = list(records)
+    _RECORD_CACHE["search_index"] = None
+    _RECORD_CACHE["rerank_vectors"] = {}
 
 
 def _invalid_raw_line_count() -> int:

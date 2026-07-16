@@ -7,7 +7,10 @@ from dataclasses import dataclass
 import os
 from typing import Awaitable, Callable
 
-from .contracts import DecisionContract, RecoveryPlan, VerificationReport, WorkOrder
+from .contracts import DecisionContract, MemoryWriteRequest, RecoveryPlan, VerificationReport, WorkOrder
+from .failure_learning_loop import learn_from_failure
+from .capability_governance_policy import governance_policy_from_work_order
+from .memory_lifecycle import write_lifecycle_memory
 from .recovery_planner import RecoveryAttemptRecord, RecoveryPlanner
 from .runtime import (
     blocked_confirmation_observation,
@@ -91,6 +94,7 @@ async def dispatch_tool_work_order(
             verification=verification,
             attempt_no=1,
         )
+        _record_failure_learning(contract=provisional, work_order=work_order, verification=verification, attempt_no=1)
         return DispatchResult(observation, provisional, work_order, verification, recovery)
 
     observation, verification, recovery, attempts, final_failure = await _execute_with_recovery(
@@ -124,6 +128,10 @@ async def dispatch_existing_work_order(
     tool = str(work_order.inputs.get("tool") or (contract.tool_policy.allowed_tools[0] if contract.tool_policy.allowed_tools else ""))
     work_order_input = _work_order_input_from_work_order(work_order)
     allowed, reason = registry.is_allowed(work_order.role_agent, tool, contract.risk_level)
+    governance_policy = governance_policy_from_work_order(work_order)
+    if governance_policy.execution_mode == "manual_review" or governance_policy.requires_confirmation:
+        allowed = False
+        reason = governance_policy.reason or "capability health requires manual review"
     if not contract.execution_allowed:
         reason = contract.clarification_question or "DecisionContract does not allow execution"
         allowed = False
@@ -146,6 +154,7 @@ async def dispatch_existing_work_order(
             verification=verification,
             attempt_no=1,
         )
+        _record_failure_learning(contract=contract, work_order=work_order, verification=verification, attempt_no=1)
         return DispatchResult(observation, contract, work_order, verification, recovery)
 
     observation, verification, recovery, attempts, final_failure = await _execute_with_recovery(
@@ -253,6 +262,8 @@ async def _execute_with_recovery(
             elapsed_ms=elapsed_ms,
         )
     ]
+    if not verification.ok:
+        _record_failure_learning(contract=contract, work_order=work_order, verification=verification, attempt_no=1)
     recovery = None if verification.ok else planner.initial_plan(
         contract=contract,
         failed_work_order=work_order,
@@ -305,6 +316,12 @@ async def _execute_with_recovery(
                     observation=observation,
                     elapsed_ms=0.0,
                 )
+            )
+            _record_failure_learning(
+                contract=contract,
+                work_order=next_plan.work_order,
+                verification=verification,
+                attempt_no=next_plan.attempt_no,
             )
             break
         append_event(
@@ -361,6 +378,12 @@ async def _execute_with_recovery(
         )
         if verification.ok:
             break
+        _record_failure_learning(
+            contract=contract,
+            work_order=next_plan.work_order,
+            verification=verification,
+            attempt_no=next_plan.attempt_no,
+        )
 
     final_failure = None
     if not verification.ok:
@@ -400,6 +423,35 @@ def _attempt_record(
         observation_preview=str(observation or "")[:800],
         elapsed_ms=elapsed_ms,
     )
+
+
+def _record_failure_learning(
+    *,
+    contract: DecisionContract,
+    work_order: WorkOrder,
+    verification: VerificationReport,
+    attempt_no: int,
+) -> None:
+    try:
+        record = learn_from_failure(
+            turn_id=contract.turn_id,
+            decision=contract,
+            work_order=work_order,
+            verification=verification,
+            attempt_count=attempt_no,
+        )
+        write_lifecycle_memory(MemoryWriteRequest(**record.memory_write))
+    except Exception as exc:
+        append_event(
+            "failure_learning_write_failed",
+            contract.turn_id,
+            {
+                "work_order_id": work_order.work_order_id,
+                "verification_id": verification.verification_id,
+                "attempt_no": attempt_no,
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+        )
 
 
 def _recovery_budget() -> int:

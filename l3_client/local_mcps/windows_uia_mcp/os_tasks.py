@@ -1892,11 +1892,24 @@ def _lark_message_visible_match(message: str, visual_text: str) -> dict[str, Any
     # anchors from visible chunks instead of requiring the whole message.
     chunks: list[str] = []
     for raw_line in msg.splitlines():
-        for part in re.split(r"[\uFF0C\u3002\uFF1B;\u3001,.!?\uFF01\uFF1F\s]+", raw_line):
+        for part in re.split(r"[\uFF0C\u3002\uFF1B\uFF1A;\u3001,.:.!?\uFF01\uFF1F\s]+", raw_line):
             part = part.strip()
             key = _compact_match_text(part)
             if len(key) >= 5:
                 chunks.append(part)
+                if len(key) >= 14:
+                    # Long Chinese/English chunks may wrap across Lark composer
+                    # lines and OCR may drop punctuation. Add overlapping compact
+                    # anchors so one line break does not make the whole message
+                    # look invisible.
+                    window = 8 if len(key) < 30 else 10
+                    step = max(4, window - 3)
+                    for start in range(0, max(1, len(key) - window + 1), step):
+                        sub = key[start : start + window]
+                        if len(sub) >= 5:
+                            chunks.append(sub)
+                    if len(key) > window:
+                        chunks.append(key[-window:])
     tail_chunks = chunks[-16:] if len(chunks) > 16 else chunks
     seen: set[str] = set()
     anchors: list[str] = []

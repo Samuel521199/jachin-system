@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -44,6 +44,10 @@ pub struct CapabilityInstallItem {
     pub l1_status: Option<String>,
     pub status: String,
     pub problems: Vec<String>,
+    pub warnings: Vec<String>,
+    pub quality_score: Option<f64>,
+    pub production_ready: bool,
+    pub governance_status: String,
     pub dependencies: Vec<String>,
 }
 
@@ -55,6 +59,9 @@ pub struct CapabilityInstallResult {
     pub kind: String,
     pub installed_path: String,
     pub package_sha256: String,
+    pub warnings: Vec<String>,
+    pub quality_score: Option<f64>,
+    pub production_ready: bool,
     pub message: String,
 }
 
@@ -188,9 +195,20 @@ struct RemoteItem {
     status: Option<String>,
     source: String,
     dependencies: Vec<String>,
+    warnings: Vec<String>,
+    quality_score: Option<f64>,
+    production_ready: Option<bool>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default)]
+struct InstallContractCheck {
+    errors: Vec<String>,
+    warnings: Vec<String>,
+    quality_score: Option<f64>,
+    production_ready: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct PackageMeta {
     id: Option<String>,
     kind: Option<String>,
@@ -227,7 +245,9 @@ pub fn capability_install_scan() -> Result<CapabilityInstallScan, String> {
         let source_rec = registry
             .source_packages
             .get(&source_record_key_for(&cfg, &item.kind, &item.id));
-        items.push(install_item_from_remote(item, rec, source_rec, &cfg));
+        items.push(install_item_from_remote(
+            item, rec, source_rec, &cfg, &remote,
+        ));
         seen.insert(item.id.clone(), true);
     }
     for rec in registry.packages.values() {
@@ -399,6 +419,11 @@ fn install_package_recursive(
                 kind: rec.kind.clone(),
                 installed_path: rec.installed_path.clone(),
                 package_sha256: rec.package_sha256.clone().unwrap_or_default(),
+                warnings: item.warnings.clone(),
+                quality_score: item.quality_score,
+                production_ready: item.production_ready.unwrap_or_else(|| {
+                    item.quality_score.map(|score| score >= 0.72).unwrap_or(true)
+                }),
                 message: "already installed".to_string(),
             });
         }
@@ -457,7 +482,15 @@ fn item_is_ready(item: &RemoteItem) -> bool {
     let source_rec = registry
         .source_packages
         .get(&source_record_key_for(&cfg, &item.kind, &item.id));
-    let probe = install_item_from_remote(item, registry.packages.get(&item.id), source_rec, &cfg);
+    let mut single_remote = HashMap::new();
+    single_remote.insert(item.id.clone(), item.clone());
+    let probe = install_item_from_remote(
+        item,
+        registry.packages.get(&item.id),
+        source_rec,
+        &cfg,
+        &single_remote,
+    );
     probe.enabled && probe.status == "installed"
 }
 
@@ -505,6 +538,22 @@ fn install_single_package(
     fs::create_dir_all(&staging).map_err(|e| format!("create staging failed: {e}"))?;
     extract_zip_archive(&downloaded, &staging)?;
     let meta = read_package_meta(&staging).unwrap_or_default();
+    let contract_manifest =
+        read_capability_manifest(&staging).unwrap_or_else(|| package_meta_value(&meta));
+    let contract_check = validate_install_capability_contract(&contract_manifest);
+    if !contract_check.errors.is_empty() {
+        return Err(format!(
+            "invalid capability contract in {}: {}",
+            input.id,
+            contract_check
+                .errors
+                .iter()
+                .take(8)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
     let id = meta.id.clone().unwrap_or_else(|| input.id.clone());
     let kind = normalize_kind(meta.kind.as_deref().unwrap_or(kind_hint));
     let version = meta
@@ -566,6 +615,9 @@ fn install_single_package(
         kind,
         installed_path: final_dir.display().to_string(),
         package_sha256: actual_sha,
+        warnings: contract_check.warnings,
+        quality_score: contract_check.quality_score,
+        production_ready: contract_check.production_ready,
         message: if input.repair.unwrap_or(false) {
             "repaired from L1 package".to_string()
         } else {
@@ -632,6 +684,11 @@ fn try_activate_cached_source(
         kind: active.kind,
         installed_path: final_dir.display().to_string(),
         package_sha256: active.package_sha256.unwrap_or_default(),
+        warnings: item.warnings.clone(),
+        quality_score: item.quality_score,
+        production_ready: item.production_ready.unwrap_or_else(|| {
+            item.quality_score.map(|score| score >= 0.72).unwrap_or(true)
+        }),
         message: "activated from cached L1 source package".to_string(),
     }))
 }
@@ -700,6 +757,9 @@ pub fn capability_install_set_enabled(
         kind: rec.kind.clone(),
         installed_path: rec.installed_path.clone(),
         package_sha256: rec.package_sha256.clone().unwrap_or_default(),
+        warnings: Vec::new(),
+        quality_score: None,
+        production_ready: true,
         message: if input.enabled { "enabled" } else { "disabled" }.to_string(),
     };
     write_installed_registry(&registry)?;
@@ -772,6 +832,7 @@ fn install_item_from_remote(
     rec: Option<&InstalledRecord>,
     source_rec: Option<&InstalledRecord>,
     cfg: &L1DirectConfig,
+    remote: &HashMap<String, RemoteItem>,
 ) -> CapabilityInstallItem {
     let mut problems = Vec::new();
     let current_source_cached = source_rec
@@ -782,6 +843,27 @@ fn install_item_from_remote(
     if item.package_url.as_deref().unwrap_or("").trim().is_empty() && !current_source_cached {
         problems.push("missing package_url".to_string());
     }
+    for dep_raw in &item.dependencies {
+        let dep_id = normalize_dependency_id(dep_raw);
+        if dep_id.is_empty() || dep_id == item.id {
+            continue;
+        }
+        if !remote.contains_key(&dep_id) {
+            problems.push(format!(
+                "dependency missing from current L1 catalog: {dep_raw}"
+            ));
+        }
+    }
+    let mut warnings = item.warnings.clone();
+    let quality_score = item.quality_score;
+    let production_ready = item
+        .production_ready
+        .unwrap_or_else(|| quality_score.map(|score| score >= 0.72).unwrap_or(true));
+    if !production_ready {
+        warnings.push("capability contract is below production quality threshold".to_string());
+    }
+    let governance_status = capability_governance_status(quality_score, production_ready);
+
     let (local_version, installed_sha256, installed_path, enabled, status) = if let Some(r) = rec {
         let path = PathBuf::from(&r.installed_path);
         let exists = path.is_dir();
@@ -863,12 +945,17 @@ fn install_item_from_remote(
         l1_status: item.status.clone(),
         status,
         problems,
+        warnings: dedupe_strings(warnings),
+        quality_score,
+        production_ready,
+        governance_status,
         dependencies: item.dependencies.clone(),
     }
 }
 
 fn install_item_local_only(rec: &InstalledRecord) -> CapabilityInstallItem {
     let exists = PathBuf::from(&rec.installed_path).is_dir();
+    let contract_check = installed_contract_check(rec);
     CapabilityInstallItem {
         id: rec.id.clone(),
         name: rec.name.clone(),
@@ -896,6 +983,13 @@ fn install_item_local_only(rec: &InstalledRecord) -> CapabilityInstallItem {
             "local_only".to_string()
         },
         problems: Vec::new(),
+        warnings: contract_check.warnings,
+        quality_score: contract_check.quality_score,
+        production_ready: contract_check.production_ready,
+        governance_status: capability_governance_status(
+            contract_check.quality_score,
+            contract_check.production_ready,
+        ),
         dependencies: rec.dependencies.clone(),
     }
 }
@@ -1027,7 +1121,25 @@ fn remote_item_from_value(item: &Value, source: &str) -> Option<RemoteItem> {
             .map(|s| s.to_string()),
         source: source.to_string(),
         dependencies: remote_dependencies_from_value(item),
+        warnings: remote_warnings_from_value(item),
+        quality_score: item.get("quality_score").and_then(Value::as_f64),
+        production_ready: item.get("production_ready").and_then(Value::as_bool),
     })
+}
+
+fn remote_warnings_from_value(item: &Value) -> Vec<String> {
+    for key in ["warnings", "contract_warnings", "quality_warnings"] {
+        if let Some(arr) = item.get(key).and_then(Value::as_array) {
+            return arr
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+        }
+    }
+    Vec::new()
 }
 
 fn remote_dependencies_from_value(item: &Value) -> Vec<String> {
@@ -1345,6 +1457,283 @@ fn read_package_meta(path: &Path) -> Result<PackageMeta, String> {
         .map_err(|e| format!("read package meta failed {}: {e}", p.display()))?;
     serde_json::from_str(raw.trim_start_matches('\u{feff}'))
         .map_err(|e| format!("parse package meta failed: {e}"))
+}
+
+fn read_capability_manifest(path: &Path) -> Option<Value> {
+    let direct = path.join("plugin.json");
+    if direct.is_file() {
+        if let Ok(text) = fs::read_to_string(&direct) {
+            if let Ok(value) = serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}')) {
+                if value.is_object() {
+                    return Some(value);
+                }
+            }
+        }
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return None;
+    };
+    let found: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path().join("plugin.json"))
+        .filter(|plugin| plugin.is_file())
+        .collect();
+    if found.len() != 1 {
+        return None;
+    }
+    let text = fs::read_to_string(&found[0]).ok()?;
+    let value: Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
+    value.is_object().then_some(value)
+}
+
+fn package_meta_value(meta: &PackageMeta) -> Value {
+    json!({
+        "id": meta.id,
+        "kind": meta.kind,
+        "version": meta.version,
+        "required_mcps": meta.required_mcps,
+        "required_models": meta.required_models,
+    })
+}
+
+fn validate_install_capability_contract(manifest: &Value) -> InstallContractCheck {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    if !json_non_empty_string(manifest.get("id").or_else(|| manifest.get("plugin_id"))) {
+        errors.push("id/plugin_id must be a non-empty string".to_string());
+    }
+    if !json_non_empty_string(manifest.get("version")) {
+        errors.push("version must be a non-empty string".to_string());
+    }
+    validate_install_decomposition(manifest, &mut errors);
+    validate_install_recovery_playbook(manifest, &mut errors);
+    let quality_score = install_contract_quality_score(manifest, &errors, &mut warnings);
+    let production_ready = errors.is_empty() && quality_score >= 0.72;
+    InstallContractCheck {
+        errors,
+        warnings: dedupe_strings(warnings),
+        quality_score: Some(quality_score),
+        production_ready,
+    }
+}
+
+fn validate_install_decomposition(manifest: &Value, errors: &mut Vec<String>) {
+    let Some(decomposition) = manifest_value_or_metadata(manifest, "decomposition") else {
+        return;
+    };
+    let Some(nodes) = decomposition.get("nodes").and_then(Value::as_array) else {
+        errors.push("decomposition.nodes must be a non-empty array".to_string());
+        return;
+    };
+    if nodes.is_empty() {
+        errors.push("decomposition.nodes must be a non-empty array".to_string());
+        return;
+    }
+    let mut ids = HashSet::new();
+    for (index, node) in nodes.iter().enumerate() {
+        let prefix = format!("decomposition.nodes[{index}]");
+        let Some(obj) = node.as_object() else {
+            errors.push(format!("{prefix} must be an object"));
+            continue;
+        };
+        let node_id = obj
+            .get("id")
+            .or_else(|| obj.get("name"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| index.to_string());
+        ids.insert(node_id);
+        for key in ["goal", "role_agent", "tool"] {
+            if !json_non_empty_string(obj.get(key)) {
+                errors.push(format!("{prefix}.{key} must be a non-empty string"));
+            }
+        }
+        let has_verification = obj
+            .get("verification_criteria")
+            .or_else(|| obj.get("verification"))
+            .or_else(|| obj.get("expected_evidence"))
+            .and_then(Value::as_array)
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        if !has_verification {
+            errors.push(format!(
+                "{prefix}.verification_criteria must be a non-empty array"
+            ));
+        }
+    }
+    for (index, node) in nodes.iter().enumerate() {
+        let Some(obj) = node.as_object() else {
+            continue;
+        };
+        if let Some(depends_on) = obj.get("depends_on") {
+            for dep in install_contract_string_items(depends_on) {
+                if !ids.contains(&dep) {
+                    errors.push(format!(
+                        "decomposition.nodes[{index}].depends_on references unknown node: {dep}"
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn validate_install_recovery_playbook(manifest: &Value, errors: &mut Vec<String>) {
+    let Some(playbook) = manifest.get("recovery_playbook") else {
+        return;
+    };
+    let Some(targets) = playbook.get("targets").and_then(Value::as_array) else {
+        errors.push("recovery_playbook.targets must be a non-empty array".to_string());
+        return;
+    };
+    if targets.is_empty() {
+        errors.push("recovery_playbook.targets must be a non-empty array".to_string());
+        return;
+    }
+    for (target_index, target) in targets.iter().enumerate() {
+        let prefix = format!("recovery_playbook.targets[{target_index}]");
+        let Some(obj) = target.as_object() else {
+            errors.push(format!("{prefix} must be an object"));
+            continue;
+        };
+        if !json_non_empty_string(obj.get("role_agent").or_else(|| obj.get("role"))) {
+            errors.push(format!("{prefix}.role_agent must be a non-empty string"));
+        }
+        let steps = obj.get("steps").and_then(Value::as_array);
+        if !steps.map(|v| !v.is_empty()).unwrap_or(false) {
+            errors.push(format!("{prefix}.steps must be a non-empty array"));
+        }
+    }
+}
+
+fn install_contract_quality_score(
+    manifest: &Value,
+    errors: &[String],
+    warnings: &mut Vec<String>,
+) -> f64 {
+    let mut score = 1.0_f64;
+    score -= (errors.len() as f64 * 0.18).min(0.54);
+
+    if manifest_value_or_metadata(manifest, "decomposition").is_none() {
+        warnings.push("missing decomposition; TaskDecomposer cannot build manifest-driven DAG".to_string());
+        score -= 0.18;
+    }
+    if manifest.get("recovery_playbook").is_none() {
+        warnings.push("missing recovery_playbook; RecoveryPlanner has no capability-owned fallback path".to_string());
+        score -= 0.16;
+    }
+    if !manifest_has_non_empty_array(manifest, "required_mcps")
+        && !manifest_has_non_empty_array(manifest, "required_models")
+        && !manifest_has_non_empty_array(manifest, "dependencies")
+    {
+        warnings.push("missing required_mcps/required_models/dependencies declaration".to_string());
+        score -= 0.06;
+    }
+    if !json_non_empty_string(manifest.get("description")) {
+        warnings.push("missing description; capability discovery quality is reduced".to_string());
+        score -= 0.04;
+    }
+    if !json_non_empty_string(manifest.get("tier")) {
+        warnings.push("missing tier; capability governance cannot distinguish core/business/extension".to_string());
+        score -= 0.04;
+    }
+
+    score.clamp(0.0, 1.0)
+}
+
+fn manifest_has_non_empty_array(manifest: &Value, key: &str) -> bool {
+    manifest
+        .get(key)
+        .or_else(|| manifest_value_or_metadata(manifest, key))
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false)
+}
+
+fn installed_contract_check(rec: &InstalledRecord) -> InstallContractCheck {
+    if rec.kind.eq_ignore_ascii_case("model") {
+        return InstallContractCheck {
+            quality_score: None,
+            production_ready: true,
+            ..Default::default()
+        };
+    }
+    let path = PathBuf::from(&rec.installed_path);
+    read_capability_manifest(&path)
+        .map(|manifest| validate_install_capability_contract(&manifest))
+        .unwrap_or_else(|| InstallContractCheck {
+            warnings: vec![
+                "installed capability manifest is unavailable; governance quality is unknown"
+                    .to_string(),
+            ],
+            quality_score: None,
+            production_ready: true,
+            ..Default::default()
+        })
+}
+
+fn capability_governance_status(score: Option<f64>, production_ready: bool) -> String {
+    if !production_ready {
+        return "low_quality".to_string();
+    }
+    match score {
+        Some(value) if value >= 0.85 => "production_ready".to_string(),
+        Some(value) if value >= 0.72 => "watch".to_string(),
+        Some(_) => "low_quality".to_string(),
+        None => "unknown".to_string(),
+    }
+}
+
+fn dedupe_strings(items: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for item in items {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        if seen.insert(item.to_string()) {
+            out.push(item.to_string());
+        }
+    }
+    out
+}
+
+fn manifest_value_or_metadata<'a>(manifest: &'a Value, key: &str) -> Option<&'a Value> {
+    manifest.get(key).or_else(|| {
+        manifest
+            .get("metadata")
+            .and_then(Value::as_object)
+            .and_then(|metadata| metadata.get(key))
+    })
+}
+
+fn install_contract_string_items(value: &Value) -> Vec<String> {
+    if let Some(s) = value.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+        return vec![s.to_string()];
+    }
+    value
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    item.as_str()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn json_non_empty_string(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_str)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
 }
 
 fn download_package(url: &str, id: &str) -> Result<PathBuf, String> {

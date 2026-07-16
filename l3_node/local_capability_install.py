@@ -11,6 +11,11 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from l3_node.cognitive_kernel.capability_contract_validator import (
+    contract_error_messages,
+    contract_warning_messages,
+    validate_capability_contract,
+)
 from l3_node.cognitive_kernel.recovery_playbook_schema import validate_recovery_playbook_manifest
 
 
@@ -102,10 +107,16 @@ def _install_single(base_url: str, item: dict[str, Any], item_id: str) -> dict[s
         _extract_zip(downloaded, staging)
         package_root = _detect_package_root(staging)
         meta = _read_package_meta(package_root)
-        playbook_errors = validate_recovery_playbook_manifest(meta)
+        manifest = _read_capability_manifest(package_root, meta)
+        playbook_errors = validate_recovery_playbook_manifest(manifest)
         if playbook_errors:
             preview = "; ".join(playbook_errors[:8])
             raise RuntimeError(f"invalid recovery_playbook in package {item_id}: {preview}")
+        contract = validate_capability_contract(manifest)
+        if contract.errors:
+            preview = "; ".join(contract_error_messages(contract)[:8])
+            raise RuntimeError(f"invalid capability contract in package {item_id}: {preview}")
+        contract_warnings = contract_warning_messages(contract)
         installed_id = str(meta.get("id") or item.get("plugin_id") or item.get("id") or item_id).strip()
         kind = _normalize_kind(meta.get("kind") or item.get("item_type") or item.get("kind") or "skill")
         version = str(meta.get("version") or item.get("version") or "0.0.0")
@@ -150,6 +161,8 @@ def _install_single(base_url: str, item: dict[str, Any], item_id: str) -> dict[s
         "package_assets": meta.get("package_assets") or [],
         "preserve_user_data": meta.get("preserve_user_data") or [],
         "dependencies": dependencies,
+        "capability_quality_score": contract.quality_score,
+        "capability_contract_warnings": contract_warnings,
     }
     _write_installed_registry(registry)
 
@@ -312,6 +325,18 @@ def _read_package_meta(package_root: Path) -> dict[str, Any]:
             except Exception:
                 return {}
     return {}
+
+
+def _read_capability_manifest(package_root: Path, fallback: dict[str, Any]) -> dict[str, Any]:
+    path = package_root / "plugin.json"
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            return fallback
+    return fallback
 
 
 def _replace_existing_preserving_user_data(final_dir: Path, preserve: list[str]) -> Path | None:

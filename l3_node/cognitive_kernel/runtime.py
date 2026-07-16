@@ -26,6 +26,7 @@ from .ledger import (
     record_verification,
     record_work_order,
 )
+from .tool_quality import evaluate_tool_observation
 
 
 def _now_ms() -> int:
@@ -324,6 +325,14 @@ def verify_work_order(
     failed, reason = _looks_failed(observation)
     if not failed:
         failed, reason = _strict_verification_failure(work_order, observation, extra_evidence)
+    quality = evaluate_tool_observation(
+        work_order=work_order,
+        observation=observation,
+        extra_evidence=extra_evidence,
+    )
+    if not failed and quality.blocks_execution:
+        failed = True
+        reason = f"tool_quality:{quality.issues[0] if quality.issues else 'blocked'}"
     ok = not failed
     report = VerificationReport(
         verification_id=_new_id("verify"),
@@ -337,8 +346,9 @@ def verify_work_order(
                 "length": len(str(observation or "")),
             }
         ]
+        + [{"type": "tool_quality", **quality.to_dict()}]
         + list(extra_evidence or []),
-        confidence=0.82 if ok else 0.45,
+        confidence=min(0.82, quality.score) if ok else min(0.45, quality.score),
         failure_reason=reason,
     )
     record_verification(report, turn_id)

@@ -1241,6 +1241,25 @@ def test_lark_short_chinese_message_matches_when_ocr_drops_first_char() -> None:
     assert match["required"] == 1
 
 
+def test_lark_long_chinese_message_matches_wrapped_composer_lines() -> None:
+    from l3_client.local_mcps.windows_uia_mcp.os_tasks import _lark_message_visible_match
+
+    message = "Jachin 记忆治理真实压力测试复测：鼠标安全角修复后验证真实发送、文件、计算器和治理链路。"
+    visible_ocr_tail = """
+    Neil
+    Jachin记忆治理真实压力测试复测 鼠标安全
+    角修复后验证真实发送、文件、计算器和治理
+    链路。
+    Shift + Enter 换行
+    """
+
+    match = _lark_message_visible_match(message, visible_ocr_tail)
+
+    assert match["ok"] is True
+    assert match["strategy"] == "anchor"
+    assert len(match["hits"]) >= match["required"]
+
+
 def test_lark_history_window_labels_include_iso_dates() -> None:
     from datetime import date
 

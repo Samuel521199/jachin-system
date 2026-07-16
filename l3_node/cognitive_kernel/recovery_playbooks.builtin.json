@@ -3,6 +3,68 @@
   "recovery_playbook": {
     "targets": [
       {
+        "id": "web_research_delivery_quality",
+        "role_agent": "BrowserExecutorAgent",
+        "tools": [
+          "mcp:tavily_search",
+          "mcp:fetch",
+          "core:web_research_summarize"
+        ],
+        "max_attempts": 5,
+        "steps": [
+          {
+            "strategy": "retry_search_with_clean_query",
+            "tool": "mcp:tavily_search",
+            "when": {
+              "failure_any": ["search_results_missing", "search_result_urls_missing", "timeout", "connection"]
+            },
+            "action_patch": {
+              "clean_query": true,
+              "max_results": 6,
+              "recovery_strategy": "retry_search_with_clean_query"
+            },
+            "rationale": "search returned no usable source URLs; retry with a cleaned query and more results",
+            "priority": 15
+          },
+          {
+            "strategy": "refetch_sources_for_summary",
+            "tool": "mcp:fetch",
+            "when": {
+              "failure_any": ["summary_missing_source_urls", "fetch_readable_content_missing", "fetch_access_or_bot_wall", "missing_search_or_fetch_evidence", "source"]
+            },
+            "action_patch": {
+              "prefer_search_result_urls": true,
+              "min_readable_chars": 800,
+              "recovery_strategy": "refetch_sources_for_summary"
+            },
+            "rationale": "summary lacks grounded source evidence; refetch readable pages before regenerating",
+            "priority": 25
+          },
+          {
+            "strategy": "regenerate_clean_summary",
+            "tool": "core:web_research_summarize",
+            "when": {
+              "failure_any": [
+                "tool_quality",
+                "summary_placeholder_text",
+                "summary_contains_web_noise",
+                "summary_has_ellipsis_truncation",
+                "summary_incomplete_sentence",
+                "summary_too_short"
+              ]
+            },
+            "action_patch": {
+              "strict_sentence_completion": true,
+              "strip_web_noise": true,
+              "require_source_urls": true,
+              "recovery_strategy": "regenerate_clean_summary"
+            },
+            "rationale": "summary failed quality gates; regenerate concise complete bullets from grounded evidence",
+            "priority": 30
+          }
+        ]
+      },
+      {
         "id": "windows_app_control",
         "role_agent": "AppControlExecutorAgent",
         "tools": [

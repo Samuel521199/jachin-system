@@ -155,11 +155,8 @@ fn tts_has_model() -> Result<bool, String> {
 /// 返回 WAV 音频的 base64 字符串，供前端解码播放
 #[tauri::command]
 async fn tts_speak(text: String) -> Result<String, String> {
-    let engine = tts::SpeechEngine::new(
-        "http://127.0.0.1:18982",
-        None,
-        None::<tts::AliyunTtsConfig>,
-    );
+    let engine =
+        tts::SpeechEngine::new("http://127.0.0.1:18982", None, None::<tts::AliyunTtsConfig>);
     let wav_bytes = engine.speak(&text).await?;
     Ok(base64::Engine::encode(
         &base64::engine::general_purpose::STANDARD,
@@ -602,8 +599,8 @@ fn resolve_companion_outer_size_for_monitor(
         .map(|h| h.max(COMPANION_MIN_WINDOW_LOGICAL))
         .unwrap_or(COMPANION_MIN_WINDOW_LOGICAL);
     let companion_h = companion_physical_height_from_logical(logical_h, sf);
-    let companion_min_h =
-        companion_physical_height_from_logical(COMPANION_MIN_WINDOW_LOGICAL, sf).max(CHAT_COMPANION_MIN_H);
+    let companion_min_h = companion_physical_height_from_logical(COMPANION_MIN_WINDOW_LOGICAL, sf)
+        .max(CHAT_COMPANION_MIN_H);
     if sf <= 1.05 {
         return (
             CHAT_COMPANION_W,
@@ -642,11 +639,8 @@ fn apply_companion_window_size(
         companion_min_h,
     ))))
     .map_err(|e| format!("set_min_size(companion): {e}"))?;
-    chat.set_size(Size::Physical(PhysicalSize::new(
-        companion_w,
-        companion_h,
-    )))
-    .map_err(|e| format!("set_size(companion): {e}"))?;
+    chat.set_size(Size::Physical(PhysicalSize::new(companion_w, companion_h)))
+        .map_err(|e| format!("set_size(companion): {e}"))?;
     if let (Some(old_pos), Some(old_size)) = (old_pos, old_size) {
         let new_h = companion_h as i32;
         let old_h = old_size.height as i32;
@@ -661,11 +655,7 @@ fn apply_companion_window_size(
 }
 
 /// 陪伴态窗口尺寸保护区：Omni/Skill 路径不得覆盖陪伴窗物理尺寸（§14.8 D-1）。
-fn set_chat_outer_size_guarded(
-    chat: &tauri::WebviewWindow,
-    w: u32,
-    h: u32,
-) -> Result<(), String> {
+fn set_chat_outer_size_guarded(chat: &tauri::WebviewWindow, w: u32, h: u32) -> Result<(), String> {
     if CHAT_COMPANION_MODE.load(Ordering::Relaxed) {
         eprintln!(
             "[Companion] blocked set_size({w}x{h}) while companion mode active; re-applying companion size"
@@ -1013,9 +1003,7 @@ pub(crate) fn minimize_chat_to_companion(app: &tauri::AppHandle) -> Result<(), S
     let _ = chat.set_always_on_top(true);
     // 从 Omni 大窗进入：强制右下角默认 dock，不复用 session 内可能被污染的坐标
     companion_reset_to_default_dock(app)?;
-    chat
-        .show()
-        .map_err(|e| format!("show(companion): {e}"))?;
+    chat.show().map_err(|e| format!("show(companion): {e}"))?;
     CHAT_COMPANION_MODE.store(true, Ordering::SeqCst);
     emit_omni_companion_ui(app, true);
     Ok(())
@@ -1496,6 +1484,7 @@ fn main() {
             commands::english_vocab::english_vocab_state_reset,
             commands::os_evidence::os_evidence_list,
             commands::os_evidence::os_evidence_stats,
+            commands::os_evidence::os_evidence_governance_index,
             commands::os_evidence::os_evidence_open_path,
             commands::os_evidence::os_evidence_start_standard_demo,
             commands::os_evidence::os_evidence_start_smoke_matrix,
@@ -2069,33 +2058,33 @@ async fn stt_emit_wake_up(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn expand_chat_window_for_skill_canvas(app: tauri::AppHandle) -> Result<(), String> {
     let app_handle = app.clone();
-    app
-        .run_on_main_thread(move || {
-            let Some(chat) = app_handle.get_webview_window("chat") else {
-                return;
-            };
-            if CHAT_COMPANION_MODE.load(Ordering::Relaxed) {
-                return;
+    app.run_on_main_thread(move || {
+        let Some(chat) = app_handle.get_webview_window("chat") else {
+            return;
+        };
+        if CHAT_COMPANION_MODE.load(Ordering::Relaxed) {
+            return;
+        }
+        let Ok(sz) = chat.outer_size() else {
+            return;
+        };
+        if let Ok(mut g) = CHAT_WIDTH_BEFORE_SKILL_CANVAS.lock() {
+            if g.is_none() {
+                *g = Some(sz.width);
             }
-            let Ok(sz) = chat.outer_size() else {
-                return;
-            };
-            if let Ok(mut g) = CHAT_WIDTH_BEFORE_SKILL_CANVAS.lock() {
-                if g.is_none() {
-                    *g = Some(sz.width);
-                }
-            }
-            let factor = chat.scale_factor().unwrap_or(1.0);
-            let min_w_phys =
-                (CHAT_SKILL_CANVAS_MIN_TOTAL_LOGICAL * factor).ceil().max(1.0) as u32;
-            let new_w = sz.width.max(min_w_phys);
-            // 始终 set_size：避免「已达标」时系统未重排导致右栏仍要手拖
-            let _ = set_chat_outer_size_guarded(&chat, new_w, sz.height);
-            let _ = position_chat_omni_bar(&app_handle);
-            let _ = chat.show();
-            let _ = chat.set_focus();
-        })
-        .map_err(|e| e.to_string())?;
+        }
+        let factor = chat.scale_factor().unwrap_or(1.0);
+        let min_w_phys = (CHAT_SKILL_CANVAS_MIN_TOTAL_LOGICAL * factor)
+            .ceil()
+            .max(1.0) as u32;
+        let new_w = sz.width.max(min_w_phys);
+        // 始终 set_size：避免「已达标」时系统未重排导致右栏仍要手拖
+        let _ = set_chat_outer_size_guarded(&chat, new_w, sz.height);
+        let _ = position_chat_omni_bar(&app_handle);
+        let _ = chat.show();
+        let _ = chat.set_focus();
+    })
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -2103,24 +2092,23 @@ async fn expand_chat_window_for_skill_canvas(app: tauri::AppHandle) -> Result<()
 #[tauri::command]
 async fn restore_chat_window_after_skill_canvas_rust(app: tauri::AppHandle) -> Result<(), String> {
     let app_handle = app.clone();
-    app
-        .run_on_main_thread(move || {
-            let prev = CHAT_WIDTH_BEFORE_SKILL_CANVAS
-                .lock()
-                .ok()
-                .and_then(|mut g| g.take());
-            let Some(w) = prev else {
-                return;
-            };
-            let Some(chat) = app_handle.get_webview_window("chat") else {
-                return;
-            };
-            if let Ok(sz) = chat.outer_size() {
-                let _ = set_chat_outer_size_guarded(&chat, w, sz.height);
-                let _ = position_chat_omni_bar(&app_handle);
-            }
-        })
-        .map_err(|e| e.to_string())?;
+    app.run_on_main_thread(move || {
+        let prev = CHAT_WIDTH_BEFORE_SKILL_CANVAS
+            .lock()
+            .ok()
+            .and_then(|mut g| g.take());
+        let Some(w) = prev else {
+            return;
+        };
+        let Some(chat) = app_handle.get_webview_window("chat") else {
+            return;
+        };
+        if let Ok(sz) = chat.outer_size() {
+            let _ = set_chat_outer_size_guarded(&chat, w, sz.height);
+            let _ = position_chat_omni_bar(&app_handle);
+        }
+    })
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -2130,11 +2118,7 @@ fn show_omni_chat_window(app: &tauri::AppHandle) {
         if CHAT_COMPANION_MODE.load(Ordering::Relaxed) {
             let _ = restore_chat_full_omni(app);
         } else if !chat_window.is_visible().unwrap_or(false) {
-            let _ = set_chat_min_size_guarded(
-                &chat_window,
-                CHAT_MIN_WIDTH,
-                CHAT_MIN_HEIGHT,
-            );
+            let _ = set_chat_min_size_guarded(&chat_window, CHAT_MIN_WIDTH, CHAT_MIN_HEIGHT);
             let (w, h) = resolve_chat_omni_outer_size(&chat_window);
             let _ = set_chat_outer_size_guarded(&chat_window, w, h);
             let _ = position_chat_omni_bar(app);
@@ -2815,32 +2799,32 @@ fn is_chat_companion_mode() -> bool {
 async fn companion_restore_surface(app: tauri::AppHandle) -> Result<(), String> {
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     let app_handle = app.clone();
-    app
-        .run_on_main_thread(move || {
-            let out = (|| {
-                let Some(chat) = app_handle.get_webview_window("chat") else {
-                    return Err("chat window missing".into());
-                };
-                if !CHAT_COMPANION_MODE.load(Ordering::Relaxed) {
-                    minimize_chat_to_companion(&app_handle)?;
-                    return Ok(());
-                }
-                apply_companion_window_size(&chat, None)?;
-                companion_apply_valid_dock_or_default(&app_handle).or_else(|e| {
-                    l3_spawn::write_jachin_shared_l3_debug(
-                        "companion_restore_surface_dock_fallback",
-                        &format!("err={e}"),
-                    );
-                    companion_reset_to_default_dock(&app_handle)
-                })?;
-                let _ = chat.set_always_on_top(true);
-                chat.show().map_err(|e| format!("show(companion restore): {e}"))?;
-                CHAT_COMPANION_MODE.store(true, Ordering::SeqCst);
-                Ok(())
-            })();
-            let _ = tx.send(out);
-        })
-        .map_err(|e| e.to_string())?;
+    app.run_on_main_thread(move || {
+        let out = (|| {
+            let Some(chat) = app_handle.get_webview_window("chat") else {
+                return Err("chat window missing".into());
+            };
+            if !CHAT_COMPANION_MODE.load(Ordering::Relaxed) {
+                minimize_chat_to_companion(&app_handle)?;
+                return Ok(());
+            }
+            apply_companion_window_size(&chat, None)?;
+            companion_apply_valid_dock_or_default(&app_handle).or_else(|e| {
+                l3_spawn::write_jachin_shared_l3_debug(
+                    "companion_restore_surface_dock_fallback",
+                    &format!("err={e}"),
+                );
+                companion_reset_to_default_dock(&app_handle)
+            })?;
+            let _ = chat.set_always_on_top(true);
+            chat.show()
+                .map_err(|e| format!("show(companion restore): {e}"))?;
+            CHAT_COMPANION_MODE.store(true, Ordering::SeqCst);
+            Ok(())
+        })();
+        let _ = tx.send(out);
+    })
+    .map_err(|e| e.to_string())?;
     rx.await
         .map_err(|_| "companion_restore_surface: 主线程未响应".to_string())?
 }
@@ -2853,21 +2837,20 @@ async fn ensure_companion_window_size(
 ) -> Result<(), String> {
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     let app_handle = app.clone();
-    app
-        .run_on_main_thread(move || {
-            let out = (|| {
-                let Some(chat) = app_handle.get_webview_window("chat") else {
-                    return Err("chat window missing".into());
-                };
-                apply_companion_window_size(&chat, content_logical_height)?;
-                if CHAT_COMPANION_MODE.load(Ordering::Relaxed) {
-                    let _ = companion_clamp_to_work_area(&chat);
-                }
-                Ok(())
-            })();
-            let _ = tx.send(out);
-        })
-        .map_err(|e| e.to_string())?;
+    app.run_on_main_thread(move || {
+        let out = (|| {
+            let Some(chat) = app_handle.get_webview_window("chat") else {
+                return Err("chat window missing".into());
+            };
+            apply_companion_window_size(&chat, content_logical_height)?;
+            if CHAT_COMPANION_MODE.load(Ordering::Relaxed) {
+                let _ = companion_clamp_to_work_area(&chat);
+            }
+            Ok(())
+        })();
+        let _ = tx.send(out);
+    })
+    .map_err(|e| e.to_string())?;
     rx.await
         .map_err(|_| "ensure_companion_window_size: 主线程未响应".to_string())?
 }

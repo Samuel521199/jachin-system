@@ -15,6 +15,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from .capability_intelligence import CapabilityIntelligenceProfile, build_capability_intelligence
+from .capability_governance_policy import governance_payload_for_work_order
 from .contracts import DecisionContract, ReviewSummary, RiskLevel
 from .ledger import append_event
 
@@ -107,13 +109,21 @@ def decompose_task(
     else:
         nodes, rationale = _decompose_single_tool(contract, summary, target)
 
+    capability_profiles = _capability_profiles_for(summary, primary_tool)
+    _attach_capability_profiles(
+        nodes=nodes,
+        profiles=capability_profiles,
+        primary_tool=primary_tool,
+        summary=summary,
+        contract=contract,
+    )
     plan = TaskDecompositionPlan(
         turn_id=contract.turn_id,
         decision_id=contract.decision_id,
         goal=contract.goal,
         nodes=nodes,
         rationale=rationale,
-        available_capabilities=capabilities,
+        available_capabilities=list(dict.fromkeys([*capabilities, *[p.capability_id for p in capability_profiles if p.capability_id]])),
     )
     append_event("task_decomposition_finished", contract.turn_id, plan.to_dict())
     return plan
@@ -181,6 +191,84 @@ def _decompose_from_capability_metadata(
     return nodes, [f"TaskDecomposerAgent used capability metadata decomposition from {descriptor.get('id') or 'manifest'}."]
 
 
+def _capability_profiles_for(summary: ReviewSummary, primary_tool: str) -> list[CapabilityIntelligenceProfile]:
+    profiles: list[CapabilityIntelligenceProfile] = []
+    seen: set[str] = set()
+    for candidate in summary.capability_candidates or []:
+        if not isinstance(candidate, dict):
+            continue
+        descriptor = candidate.get("descriptor") if isinstance(candidate.get("descriptor"), dict) else candidate
+        if not isinstance(descriptor, dict):
+            continue
+        cap_id = str(descriptor.get("id") or descriptor.get("capability_id") or "")
+        if cap_id and cap_id in seen:
+            continue
+        profile = build_capability_intelligence(descriptor)
+        if profile.capability_id:
+            profiles.append(profile)
+            seen.add(profile.capability_id)
+    if primary_tool and primary_tool not in seen and not profiles:
+        profiles.append(
+            build_capability_intelligence(
+                {
+                    "id": primary_tool,
+                    "domain": summary.task_type,
+                    "actions": [summary.top_intent],
+                    "objects": [str((summary.target or {}).get("name") or "")],
+                    "inputs": list((summary.target or {}).keys()),
+                    "risk": summary.risk_level.value,
+                    "description": f"ReviewBoard selected {primary_tool} for {summary.task_type}.",
+                    "task_type": summary.task_type,
+                    "evidence": summary.rationale,
+                    "source": "review_board",
+                    "metadata": {},
+                }
+            )
+        )
+    return profiles
+
+
+def _attach_capability_profiles(
+    *,
+    nodes: list[DecomposedTaskNode],
+    profiles: list[CapabilityIntelligenceProfile],
+    primary_tool: str,
+    summary: ReviewSummary,
+    contract: DecisionContract,
+) -> None:
+    if not nodes or not profiles:
+        return
+    by_id = {profile.capability_id: profile for profile in profiles if profile.capability_id}
+    primary_profile = by_id.get(primary_tool) or profiles[0]
+    for node in nodes:
+        profile = by_id.get(node.tool) or by_id.get(node.capability) or primary_profile
+        profile_payload = profile.to_dict()
+        governance_policy = governance_payload_for_work_order(
+            summary=summary,
+            contract=contract,
+            node_capability=node.capability or profile.capability_id,
+            node_tool=node.tool,
+        )
+        node.inputs.setdefault("capability_profile", profile_payload)
+        node.inputs.setdefault("governance_policy", governance_policy)
+        node.inputs.setdefault("preconditions", profile_payload.get("preconditions") or [])
+        if profile.verification_methods and not node.verification_criteria:
+            node.verification_criteria.extend(
+                [
+                    str(item.get("method") or item.get("name") or item)
+                    for item in profile.verification_methods
+                    if item
+                ]
+            )
+        node.recovery_policy = {
+            **dict(node.recovery_policy or {}),
+            "capability_profile_id": profile.capability_id,
+            "capability_recovery_paths": profile_payload.get("recovery_paths") or [],
+            "capability_quality_score": profile.quality_score,
+            "governance_policy": governance_policy,
+        }
+
+
 def _selected_capability_descriptor(summary: ReviewSummary, primary_tool: str) -> dict[str, Any]:
     candidates = summary.capability_candidates or []
     for candidate in candidates:
@@ -222,6 +310,9 @@ def _render_template(value: Any, *, contract: DecisionContract, summary: ReviewS
         "$target.path": str(target.get("path") or target.get("name") or ""),
         "$target.expression": str(target.get("expression") or ""),
         "$target.message": str(target.get("message") or ""),
+        "$target.query": str(target.get("query") or ""),
+        "$target.freshness": str(target.get("freshness") or ""),
+        "$target.delivery_stub": str(target.get("delivery_stub") or target.get("message") or ""),
     }
     if "$target.recipients_json" in text:
         recipients = target.get("recipients") if isinstance(target.get("recipients"), list) else []

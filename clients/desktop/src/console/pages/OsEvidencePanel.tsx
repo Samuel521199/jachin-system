@@ -148,6 +148,9 @@ type EvidenceEntry = {
   } | null;
   role_executions?: Array<Record<string, unknown>>;
   pending_decisions?: Array<Record<string, unknown>>;
+  tool_quality_reports?: Array<Record<string, unknown>>;
+  recovery_scorecards?: Array<Record<string, unknown>>;
+  failure_learning_records?: Array<Record<string, unknown>>;
   timeline: Array<{
     ts: string;
     stage: string;
@@ -222,6 +225,68 @@ type ActiveRun = {
   label: string;
   started_at: number;
 };
+
+type GovernanceSummary = {
+  qualityReports: number;
+  blockedReports: number;
+  recoveryCandidates: number;
+  failureLearningRecords: number;
+  toolQualityTop: Array<[string, number]>;
+  qualityIssueTop: Array<[string, number]>;
+  failureClassTop: Array<[string, number]>;
+  recoveryStrategyTop: Array<[string, number]>;
+  memoryTypeTop: Array<[string, number]>;
+};
+
+type BackendGovernanceSummary = {
+  evidence_count: number;
+  quality_reports: number;
+  blocked_reports: number;
+  block_rate: number;
+  recovery_candidates: number;
+  failure_learning_records: number;
+  tool_quality_top: Array<[string, number]>;
+  quality_issue_top: Array<[string, number]>;
+  failure_class_top: Array<[string, number]>;
+  recovery_strategy_top: Array<[string, number]>;
+  memory_type_top: Array<[string, number]>;
+};
+
+type BackendGovernanceSuggestion = {
+  severity: string;
+  category: string;
+  message: string;
+  action: string;
+};
+
+type BackendCapabilityHealth = {
+  capability: string;
+  days: number;
+  score: number;
+  level: string;
+  evidence_count: number;
+  block_rate: number;
+  recovery_density: number;
+  learning_density: number;
+  top_issue: string;
+  suggestions: BackendGovernanceSuggestion[];
+};
+
+type EvidenceGovernanceIndex = {
+  generated_at: number;
+  source_limit: number;
+  total_evidence: number;
+  index_path: string;
+  capability_options: Array<[string, number]>;
+  windows: Array<{
+    days: number;
+    capability: string;
+    summary: BackendGovernanceSummary;
+  }>;
+  health?: BackendCapabilityHealth[];
+};
+
+type GovernanceWindow = 7 | 14 | 30;
 
 const DEFAULT_PROJECT_NAME = "Jachin";
 const DEFAULT_PROJECT_PATH = "D:\\Projects\\jachi\\jachin-system-main";
@@ -343,6 +408,149 @@ function smokeRows(items: EvidenceEntry[]) {
   });
 }
 
+function itemCapabilityLabel(item: EvidenceEntry): string {
+  return (
+    item.workflow_composition?.selected_capability_id ||
+    item.capability_semantic?.selected?.id ||
+    item.workflow_composition?.workflow_id ||
+    item.mission_preview?.workflow_id ||
+    item.template?.workflow_id ||
+    item.route?.workflow_id ||
+    item.metrics?.workflow_id ||
+    item.intent?.task_type ||
+    item.metrics?.task_type ||
+    "unknown"
+  );
+}
+
+function isWithinDays(item: EvidenceEntry, days: number, nowMs: number) {
+  if (!item.generated_at) return false;
+  const ageMs = nowMs - item.generated_at * 1000;
+  return ageMs >= 0 && ageMs <= days * 24 * 60 * 60 * 1000;
+}
+
+function governanceCapabilityOptions(items: EvidenceEntry[]) {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    increment(counts, itemCapabilityLabel(item));
+  }
+  return topRows(counts, 24).map(([name, count]) => ({ name, count }));
+}
+
+function increment(map: Map<string, number>, key: string) {
+  const normalized = key.trim() || "unknown";
+  map.set(normalized, (map.get(normalized) ?? 0) + 1);
+}
+
+function topRows(map: Map<string, number>, limit = 5): Array<[string, number]> {
+  return Array.from(map.entries())
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, limit);
+}
+
+function buildGovernanceSummary(items: EvidenceEntry[]): GovernanceSummary {
+  const toolQuality = new Map<string, number>();
+  const qualityIssues = new Map<string, number>();
+  const failureClasses = new Map<string, number>();
+  const recoveryStrategies = new Map<string, number>();
+  const memoryTypes = new Map<string, number>();
+  let qualityReports = 0;
+  let blockedReports = 0;
+  let recoveryCandidates = 0;
+  let failureLearningRecords = 0;
+
+  for (const item of items) {
+    for (const row of item.tool_quality_reports ?? []) {
+      const payload = isRecord(row.payload) ? row.payload : row;
+      qualityReports += 1;
+      if (payload.blocks_execution === true) blockedReports += 1;
+      increment(toolQuality, String(payload.tool || "unknown_tool"));
+      for (const issue of stringArray(payload.issues)) {
+        increment(qualityIssues, issue);
+      }
+    }
+
+    for (const row of item.recovery_scorecards ?? []) {
+      const payload = isRecord(row.payload) ? row.payload : row;
+      const strategy = String(payload.candidate_strategy || "");
+      if (strategy) {
+        recoveryCandidates += 1;
+        increment(recoveryStrategies, strategy);
+      }
+    }
+
+    for (const row of item.failure_learning_records ?? []) {
+      const payload = isRecord(row.payload) ? row.payload : row;
+      failureLearningRecords += 1;
+      increment(failureClasses, String(payload.failure_class || "unknown"));
+      const memoryWrite = isRecord(payload.memory_write) ? payload.memory_write : {};
+      increment(memoryTypes, String(memoryWrite.memory_type || "unknown_memory"));
+    }
+  }
+
+  return {
+    qualityReports,
+    blockedReports,
+    recoveryCandidates,
+    failureLearningRecords,
+    toolQualityTop: topRows(toolQuality),
+    qualityIssueTop: topRows(qualityIssues),
+    failureClassTop: topRows(failureClasses),
+    recoveryStrategyTop: topRows(recoveryStrategies),
+    memoryTypeTop: topRows(memoryTypes),
+  };
+}
+
+function emptyGovernanceSummary(): GovernanceSummary {
+  return {
+    qualityReports: 0,
+    blockedReports: 0,
+    recoveryCandidates: 0,
+    failureLearningRecords: 0,
+    toolQualityTop: [],
+    qualityIssueTop: [],
+    failureClassTop: [],
+    recoveryStrategyTop: [],
+    memoryTypeTop: [],
+  };
+}
+
+function fromBackendGovernanceSummary(summary?: BackendGovernanceSummary): GovernanceSummary {
+  if (!summary) return emptyGovernanceSummary();
+  return {
+    qualityReports: summary.quality_reports || 0,
+    blockedReports: summary.blocked_reports || 0,
+    recoveryCandidates: summary.recovery_candidates || 0,
+    failureLearningRecords: summary.failure_learning_records || 0,
+    toolQualityTop: summary.tool_quality_top || [],
+    qualityIssueTop: summary.quality_issue_top || [],
+    failureClassTop: summary.failure_class_top || [],
+    recoveryStrategyTop: summary.recovery_strategy_top || [],
+    memoryTypeTop: summary.memory_type_top || [],
+  };
+}
+
+function indexedGovernanceSummary(index: EvidenceGovernanceIndex | null, days: number, capability: string): GovernanceSummary | null {
+  const row = index?.windows.find((item) => item.days === days && item.capability === capability);
+  return row ? fromBackendGovernanceSummary(row.summary) : null;
+}
+
+function indexedGovernanceEvidenceCount(index: EvidenceGovernanceIndex | null, days: number, capability: string): number | null {
+  const row = index?.windows.find((item) => item.days === days && item.capability === capability);
+  return row?.summary.evidence_count ?? null;
+}
+
+function indexedGovernanceHealth(index: EvidenceGovernanceIndex | null, days: number, capability: string): BackendCapabilityHealth | null {
+  return index?.health?.find((item) => item.days === days && item.capability === capability) ?? null;
+}
+
+function indexedLowestGovernanceHealth(index: EvidenceGovernanceIndex | null, days: number): BackendCapabilityHealth[] {
+  return (index?.health ?? [])
+    .filter((item) => item.days === days && item.capability !== "all")
+    .sort((a, b) => a.score - b.score || b.evidence_count - a.evidence_count || a.capability.localeCompare(b.capability))
+    .slice(0, 5);
+}
+
 export function OsEvidencePanel() {
   const [items, setItems] = useState<EvidenceEntry[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
@@ -367,22 +575,29 @@ export function OsEvidencePanel() {
   const [launchMessage, setLaunchMessage] = useState<string | null>(null);
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [stats, setStats] = useState<EvidenceStats | null>(null);
+  const [governanceIndex, setGovernanceIndex] = useState<EvidenceGovernanceIndex | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [governanceWindow, setGovernanceWindow] = useState<GovernanceWindow>(30);
+  const [governanceCapability, setGovernanceCapability] = useState("all");
 
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
     setError(null);
     try {
-      const rows = await invoke<EvidenceEntry[]>("os_evidence_list", { limit: 120 });
+      const rows = await invoke<EvidenceEntry[]>("os_evidence_list", { limit: 300 });
       setItems(rows);
       setSelectedId((prev) => (prev && rows.some((row) => row.id === prev) ? prev : rows[0]?.id ?? ""));
       void invoke<EvidenceStats>("os_evidence_stats", { limit: 300 })
         .then(setStats)
         .catch(() => setStats(null));
+      void invoke<EvidenceGovernanceIndex>("os_evidence_governance_index", { limit: 300 })
+        .then(setGovernanceIndex)
+        .catch(() => setGovernanceIndex(null));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setItems([]);
       setSelectedId("");
+      setGovernanceIndex(null);
     } finally {
       if (!quiet) setLoading(false);
     }
@@ -563,6 +778,38 @@ export function OsEvidencePanel() {
   const runCenterItems = runningItems.length > 0 ? runningItems.slice(0, 4) : items.slice(0, 3);
   const smoke = smokeRows(items);
   const smokePassed = smoke.filter((row) => row.status === "passed").length;
+  const governanceOptions = useMemo(
+    () =>
+      governanceIndex?.capability_options?.length
+        ? governanceIndex.capability_options.map(([name, count]) => ({ name, count }))
+        : governanceCapabilityOptions(items),
+    [governanceIndex, items],
+  );
+  const governanceItems = useMemo(
+    () =>
+      items.filter((item) => {
+        if (!isWithinDays(item, governanceWindow, nowMs)) return false;
+        if (governanceCapability === "all") return true;
+        return itemCapabilityLabel(item) === governanceCapability;
+      }),
+    [governanceCapability, governanceWindow, items, nowMs],
+  );
+  const governance = useMemo(
+    () => indexedGovernanceSummary(governanceIndex, governanceWindow, governanceCapability) ?? buildGovernanceSummary(governanceItems),
+    [governanceCapability, governanceIndex, governanceItems, governanceWindow],
+  );
+  const governanceTrends = useMemo(
+    () => ({
+      7: indexedGovernanceSummary(governanceIndex, 7, "all") ?? buildGovernanceSummary(items.filter((item) => isWithinDays(item, 7, nowMs))),
+      14: indexedGovernanceSummary(governanceIndex, 14, "all") ?? buildGovernanceSummary(items.filter((item) => isWithinDays(item, 14, nowMs))),
+      30: indexedGovernanceSummary(governanceIndex, 30, "all") ?? buildGovernanceSummary(items.filter((item) => isWithinDays(item, 30, nowMs))),
+    }),
+    [governanceIndex, items, nowMs],
+  );
+  const governanceEvidenceCount =
+    indexedGovernanceEvidenceCount(governanceIndex, governanceWindow, governanceCapability) ?? governanceItems.length;
+  const governanceHealth = indexedGovernanceHealth(governanceIndex, governanceWindow, governanceCapability);
+  const lowestGovernanceHealth = indexedLowestGovernanceHealth(governanceIndex, governanceWindow);
 
   return (
     <div className="flex min-h-full flex-col gap-4 p-6 text-slate-100">
@@ -612,6 +859,62 @@ export function OsEvidencePanel() {
         </div>
         <StatsList title="失败原因 Top" rows={stats?.failure_top ?? []} empty="暂无失败记录" />
         <StatsList title="Workflow 通过率" rows={(stats?.workflow_pass_rate ?? []).map(([name, total, pass, rate]) => [`${name} ${pass}/${total}`, Math.round(rate * 100)])} empty="暂无 workflow 统计" suffix="%" />
+      </section>
+
+      <section className="rounded-lg border border-fuchsia-400/15 bg-slate-950/45 p-4">
+        <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <div>
+            <div className="text-sm font-medium text-fuchsia-50">质量治理趋势</div>
+            <div className="mt-1 text-xs text-slate-500">
+              按时间窗口和 Capability/Workflow 观察质量、恢复和失败学习。
+              {governanceIndex?.index_path ? ` 索引：${shortPath(governanceIndex.index_path)}` : " 当前使用本地临时聚合。"}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {[7, 14, 30].map((days) => (
+              <button
+                key={days}
+                type="button"
+                onClick={() => setGovernanceWindow(days as GovernanceWindow)}
+                className={cn(
+                  "rounded-md border px-3 py-1.5 text-xs transition",
+                  governanceWindow === days
+                    ? "border-fuchsia-400/40 bg-fuchsia-400/15 text-fuchsia-100"
+                    : "border-slate-800 bg-slate-900/60 text-slate-400 hover:border-fuchsia-400/25",
+                )}
+              >
+                {days} 天
+              </button>
+            ))}
+            <select
+              value={governanceCapability}
+              onChange={(event) => setGovernanceCapability(event.target.value)}
+              className="rounded-md border border-slate-800 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-300 outline-none focus:border-fuchsia-400/40"
+            >
+              <option value="all">全部 Capability / Workflow</option>
+              {governanceOptions.map((option) => (
+                <option key={option.name} value={option.name}>
+                  {option.name} ({option.count})
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div className="grid gap-3 xl:grid-cols-3">
+          <TrendMiniCard label="7 天" summary={governanceTrends[7]} active={governanceWindow === 7} />
+          <TrendMiniCard label="14 天" summary={governanceTrends[14]} active={governanceWindow === 14} />
+          <TrendMiniCard label="30 天" summary={governanceTrends[30]} active={governanceWindow === 30} />
+        </div>
+      </section>
+
+      <section className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">
+        <GovernanceSummaryBlock summary={governance} evidenceCount={governanceEvidenceCount} windowDays={governanceWindow} capability={governanceCapability} />
+        <CapabilityHealthBlock health={governanceHealth} lowest={lowestGovernanceHealth} windowDays={governanceWindow} capability={governanceCapability} />
+        <StatsList title="低质量工具 Top" rows={governance.toolQualityTop} empty="暂无工具质量记录" />
+        <StatsList title="质量问题 Top" rows={governance.qualityIssueTop} empty="暂无质量问题" />
+        <StatsList title="失败学习类型 Top" rows={governance.failureClassTop} empty="暂无失败学习记录" />
+        <StatsList title="恢复策略 Top" rows={governance.recoveryStrategyTop} empty="暂无恢复策略记录" />
+        <StatsList title="记忆写入类型 Top" rows={governance.memoryTypeTop} empty="暂无记忆写入记录" />
       </section>
 
       <section className="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)]">
@@ -1005,6 +1308,24 @@ function EvidenceDetail({ item }: { item: EvidenceEntry }) {
         </div>
       ) : null}
 
+      {item.tool_quality_reports?.length ? (
+        <div className="px-5 pb-5">
+          <ToolQualityBlock rows={item.tool_quality_reports} />
+        </div>
+      ) : null}
+
+      {item.recovery_scorecards?.length ? (
+        <div className="px-5 pb-5">
+          <RecoveryScorecardBlock rows={item.recovery_scorecards} />
+        </div>
+      ) : null}
+
+      {item.failure_learning_records?.length ? (
+        <div className="px-5 pb-5">
+          <FailureLearningBlock rows={item.failure_learning_records} />
+        </div>
+      ) : null}
+
       {item.role_executions?.length ? (
         <div className="px-5 pb-5">
           <RoleExecutionBlock rows={item.role_executions} />
@@ -1048,6 +1369,194 @@ function EvidenceDetail({ item }: { item: EvidenceEntry }) {
         <PathList title="证据文件" paths={item.files} />
         <PathList title="截图/OCR" paths={item.screenshots} />
       </div>
+    </div>
+  );
+}
+
+function TrendMiniCard({ label, summary, active }: { label: string; summary: GovernanceSummary; active: boolean }) {
+  const blockRate = summary.qualityReports > 0 ? Math.round((summary.blockedReports / summary.qualityReports) * 100) : 0;
+  return (
+    <div
+      className={cn(
+        "rounded-md border p-3",
+        active ? "border-fuchsia-400/30 bg-fuchsia-400/[0.08]" : "border-slate-800 bg-slate-950/45",
+      )}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-xs font-medium text-slate-300">{label}</span>
+        <span className={cn("rounded px-2 py-0.5 text-[11px]", active ? "bg-fuchsia-400/10 text-fuchsia-200" : "bg-slate-800 text-slate-500")}>
+          block {blockRate}%
+        </span>
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+        <div>
+          <div className="text-slate-600">质量</div>
+          <div className="mt-1 font-semibold text-slate-200">{summary.qualityReports}</div>
+        </div>
+        <div>
+          <div className="text-slate-600">恢复</div>
+          <div className="mt-1 font-semibold text-cyan-200">{summary.recoveryCandidates}</div>
+        </div>
+        <div>
+          <div className="text-slate-600">学习</div>
+          <div className="mt-1 font-semibold text-emerald-200">{summary.failureLearningRecords}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GovernanceSummaryBlock({
+  summary,
+  evidenceCount,
+  windowDays,
+  capability,
+}: {
+  summary: GovernanceSummary;
+  evidenceCount: number;
+  windowDays: number;
+  capability: string;
+}) {
+  const blockRate = summary.qualityReports > 0 ? summary.blockedReports / summary.qualityReports : 0;
+  return (
+    <div className="rounded-lg border border-fuchsia-400/20 bg-fuchsia-400/[0.05] p-4">
+      <div className="mb-3 flex items-center gap-2 text-sm font-medium text-fuchsia-50">
+        <Activity className="h-4 w-4 text-fuchsia-300" />
+        质量治理总览
+      </div>
+      <div className="mb-3 flex flex-wrap gap-2 text-[11px]">
+        <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-300">{windowDays} 天</span>
+        <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-300">{capability === "all" ? "全部能力" : capability}</span>
+        <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-300">{evidenceCount} 条 evidence</span>
+      </div>
+      <div className="grid grid-cols-2 gap-3 text-xs">
+        <div>
+          <div className="text-slate-500">质量报告</div>
+          <div className="mt-1 text-lg font-semibold text-fuchsia-100">{summary.qualityReports}</div>
+        </div>
+        <div>
+          <div className="text-slate-500">阻断率</div>
+          <div className="mt-1 text-lg font-semibold text-rose-200">{Math.round(blockRate * 100)}%</div>
+        </div>
+        <div>
+          <div className="text-slate-500">恢复候选</div>
+          <div className="mt-1 text-lg font-semibold text-cyan-100">{summary.recoveryCandidates}</div>
+        </div>
+        <div>
+          <div className="text-slate-500">失败学习</div>
+          <div className="mt-1 text-lg font-semibold text-emerald-200">{summary.failureLearningRecords}</div>
+        </div>
+      </div>
+      <div className="mt-3 rounded-md border border-slate-800 bg-slate-950/45 p-3 text-xs leading-5 text-slate-500">
+        用于观察工具质量、恢复路径和失败记忆是否真的形成闭环。
+      </div>
+    </div>
+  );
+}
+
+function healthLevelTone(level?: string) {
+  if (level === "healthy") return "border-emerald-400/25 bg-emerald-400/10 text-emerald-200";
+  if (level === "watch") return "border-cyan-400/25 bg-cyan-400/10 text-cyan-200";
+  if (level === "degraded") return "border-amber-400/25 bg-amber-400/10 text-amber-200";
+  if (level === "warning") return "border-amber-400/25 bg-amber-400/10 text-amber-200";
+  if (level === "critical") return "border-rose-400/25 bg-rose-400/10 text-rose-200";
+  if (level === "info") return "border-cyan-400/25 bg-cyan-400/10 text-cyan-200";
+  return "border-slate-700 bg-slate-900/70 text-slate-400";
+}
+
+function healthLevelLabel(level?: string) {
+  if (level === "healthy") return "健康";
+  if (level === "watch") return "观察";
+  if (level === "degraded") return "降级";
+  if (level === "critical") return "高风险";
+  if (level === "no_data") return "无数据";
+  return level || "未知";
+}
+
+function CapabilityHealthBlock({
+  health,
+  lowest,
+  windowDays,
+  capability,
+}: {
+  health: BackendCapabilityHealth | null;
+  lowest: BackendCapabilityHealth[];
+  windowDays: number;
+  capability: string;
+}) {
+  const primary = health ?? (capability === "all" ? lowest[0] ?? null : null);
+  return (
+    <div className="rounded-lg border border-emerald-400/20 bg-emerald-400/[0.05] p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2 text-sm font-medium text-emerald-50">
+          <CheckCircle2 className="h-4 w-4 text-emerald-300" />
+          <span className="truncate">能力健康评分</span>
+        </div>
+        <span className="rounded bg-slate-800 px-2 py-0.5 text-[11px] text-slate-300">{windowDays} 天</span>
+      </div>
+
+      {!primary ? (
+        <div className="rounded-md border border-slate-800 bg-slate-950/45 p-3 text-sm text-slate-500">
+          等待治理索引生成健康分。刷新后会显示能力风险、建议动作和最低分能力。
+        </div>
+      ) : (
+        <>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="truncate text-xs text-slate-500">{capability === "all" ? "最低分能力" : "当前能力"}</div>
+              <div className="mt-1 truncate text-sm font-medium text-slate-100">{primary.capability === "all" ? "全部能力" : primary.capability}</div>
+            </div>
+            <div className="text-right">
+              <div className="text-2xl font-semibold text-emerald-100">{primary.score}</div>
+              <div className={cn("mt-1 rounded border px-2 py-0.5 text-[11px]", healthLevelTone(primary.level))}>{healthLevelLabel(primary.level)}</div>
+            </div>
+          </div>
+
+          <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+            <div>
+              <div className="text-slate-600">阻断率</div>
+              <div className="mt-1 font-semibold text-rose-200">{Math.round((primary.block_rate || 0) * 100)}%</div>
+            </div>
+            <div>
+              <div className="text-slate-600">恢复密度</div>
+              <div className="mt-1 font-semibold text-cyan-200">{primary.recovery_density.toFixed(1)}</div>
+            </div>
+            <div>
+              <div className="text-slate-600">学习密度</div>
+              <div className="mt-1 font-semibold text-emerald-200">{primary.learning_density.toFixed(1)}</div>
+            </div>
+          </div>
+
+          {primary.top_issue ? (
+            <div className="mt-3 rounded-md border border-slate-800 bg-slate-950/45 p-2 text-xs text-amber-200">
+              高频问题：{primary.top_issue}
+            </div>
+          ) : null}
+
+          <div className="mt-3 space-y-2">
+            {(primary.suggestions ?? []).slice(0, 2).map((suggestion, index) => (
+              <div key={`${suggestion.category}-${index}`} className="rounded-md border border-slate-800 bg-slate-950/45 p-2 text-xs leading-5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={cn("rounded border px-2 py-0.5 text-[11px]", healthLevelTone(suggestion.severity))}>{suggestion.category}</span>
+                  <span className="text-slate-300">{suggestion.message}</span>
+                </div>
+                <div className="mt-1 text-slate-500">{suggestion.action}</div>
+              </div>
+            ))}
+          </div>
+
+          {capability === "all" && lowest.length > 1 ? (
+            <div className="mt-3 space-y-1 border-t border-slate-800 pt-3">
+              {lowest.slice(1, 4).map((item) => (
+                <div key={`${item.days}-${item.capability}`} className="flex items-center justify-between gap-3 text-xs">
+                  <span className="min-w-0 truncate text-slate-500">{item.capability}</span>
+                  <span className={cn("rounded border px-2 py-0.5", healthLevelTone(item.level))}>{item.score}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }
@@ -1351,6 +1860,210 @@ function RuntimeBlock({ item }: { item: EvidenceEntry }) {
   );
 }
 
+function ToolQualityBlock({ rows }: { rows: Array<Record<string, unknown>> }) {
+  const normalized = rows
+    .map((row) => {
+      const payload = isRecord(row.payload) ? row.payload : row;
+      const score = typeof payload.score === "number" ? payload.score : Number(payload.score ?? NaN);
+      const issues = stringArray(payload.issues);
+      const evidence = isRecord(payload.evidence) ? payload.evidence : {};
+      return {
+        tool: String(payload.tool || ""),
+        score: Number.isFinite(score) ? score : undefined,
+        level: String(payload.quality_level || ""),
+        blocks: payload.blocks_execution === true,
+        issues,
+        evidence,
+      };
+    })
+    .filter((row) => row.tool || row.level || row.issues.length);
+  if (!normalized.length) return null;
+  const blocked = normalized.filter((row) => row.blocks).length;
+  const avg = normalized.reduce((sum, row) => sum + (row.score ?? 0), 0) / normalized.length;
+  return (
+    <div className="rounded-lg border border-amber-400/20 bg-amber-400/[0.05] p-4">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <span className="text-sm font-medium text-amber-50">Tool Quality Gate</span>
+        <span className="rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-300">avg {avg.toFixed(2)}</span>
+        {blocked ? <span className="rounded bg-rose-400/10 px-2 py-0.5 text-xs text-rose-300">blocked {blocked}</span> : null}
+      </div>
+      <div className="space-y-2">
+        {normalized.slice(0, 10).map((row, index) => (
+          <div key={`${row.tool}-${index}`} className="rounded-md border border-slate-800 bg-slate-950/45 p-3 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-300">{row.tool || "unknown_tool"}</span>
+              {typeof row.score === "number" ? <span className="rounded bg-amber-400/10 px-2 py-0.5 text-amber-200">score {row.score.toFixed(2)}</span> : null}
+              {row.level ? <span className={cn("rounded px-2 py-0.5", qualityTone(row.level))}>{row.level}</span> : null}
+              <span className={cn("rounded px-2 py-0.5", row.blocks ? "bg-rose-400/10 text-rose-300" : "bg-emerald-400/10 text-emerald-300")}>
+                {row.blocks ? "blocked" : "pass"}
+              </span>
+            </div>
+            {row.issues.length ? (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {row.issues.slice(0, 10).map((issue) => (
+                  <span key={issue} className="rounded bg-slate-900 px-2 py-0.5 text-[11px] text-amber-200">
+                    {issue}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {Object.keys(row.evidence).length ? (
+              <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-slate-900 p-2 text-[11px] leading-5 text-slate-500">
+                {JSON.stringify(row.evidence, null, 2)}
+              </pre>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RecoveryScorecardBlock({ rows }: { rows: Array<Record<string, unknown>> }) {
+  const normalized = rows
+    .map((row) => {
+      const payload = isRecord(row.payload) ? row.payload : row;
+      const score = typeof payload.score === "number" ? payload.score : Number(payload.score ?? NaN);
+      return {
+        score: Number.isFinite(score) ? score : undefined,
+        currentClass: String(payload.current_failure_class || ""),
+        candidateStrategy: String(payload.candidate_strategy || ""),
+        candidateTool: String(payload.candidate_tool || ""),
+        failedTool: String(payload.failed_tool || ""),
+        historyClasses: stringArray(payload.history_failure_classes),
+        rationale: stringArray(payload.rationale),
+        currentReason: String(payload.current_failure_reason || ""),
+      };
+    })
+    .filter((row) => row.candidateStrategy || row.currentClass || typeof row.score === "number");
+  if (!normalized.length) return null;
+  return (
+    <div className="rounded-lg border border-rose-400/20 bg-rose-400/[0.05] p-4">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <span className="text-sm font-medium text-rose-50">Adaptive Recovery Scorecard</span>
+        <span className="rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-300">{normalized.length} candidates scored</span>
+      </div>
+      <div className="space-y-2">
+        {normalized.slice(0, 10).map((row, index) => (
+          <div key={`${row.candidateStrategy}-${index}`} className="rounded-md border border-slate-800 bg-slate-950/45 p-3 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              {typeof row.score === "number" ? <span className="rounded bg-rose-400/10 px-2 py-0.5 text-rose-200">score {row.score}</span> : null}
+              {row.currentClass ? <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-300">{row.currentClass}</span> : null}
+              {row.candidateStrategy ? <span className="rounded bg-cyan-400/10 px-2 py-0.5 text-cyan-200">{row.candidateStrategy}</span> : null}
+              {row.candidateTool ? <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-400">{row.candidateTool}</span> : null}
+            </div>
+            {row.currentReason ? <div className="mt-2 text-[11px] text-slate-500">failure: {row.currentReason}</div> : null}
+            {row.failedTool ? <div className="mt-1 text-[11px] text-slate-600">failed tool: {row.failedTool}</div> : null}
+            {row.historyClasses.length ? (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {row.historyClasses.slice(0, 8).map((item, i) => (
+                  <span key={`${item}-${i}`} className="rounded bg-slate-900 px-2 py-0.5 text-[11px] text-slate-400">
+                    history: {item}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {row.rationale.length ? (
+              <div className="mt-2 space-y-1">
+                {row.rationale.slice(0, 8).map((reason) => (
+                  <div key={reason} className="rounded bg-slate-900 px-2 py-1 text-[11px] text-slate-500">
+                    {reason}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FailureLearningBlock({ rows }: { rows: Array<Record<string, unknown>> }) {
+  const normalized = rows
+    .map((row) => {
+      const payload = isRecord(row.payload) ? row.payload : row;
+      const memoryWrite = isRecord(payload.memory_write) ? payload.memory_write : {};
+      const evidence = Array.isArray(memoryWrite.evidence) ? memoryWrite.evidence : [];
+      return {
+        failureId: String(payload.failure_id || ""),
+        taskType: String(payload.task_type || ""),
+        tool: String(payload.tool || ""),
+        roleAgent: String(payload.role_agent || ""),
+        failureReason: String(payload.failure_reason || ""),
+        failureClass: String(payload.failure_class || ""),
+        attemptCount: typeof payload.attempt_count === "number" ? payload.attempt_count : Number(payload.attempt_count ?? NaN),
+        nextStrategy: String(payload.next_strategy || ""),
+        rationale: stringArray(payload.rationale),
+        memoryType: String(memoryWrite.memory_type || ""),
+        memoryContent: String(memoryWrite.content || ""),
+        memoryConfidence: typeof memoryWrite.confidence === "number" ? memoryWrite.confidence : Number(memoryWrite.confidence ?? NaN),
+        memoryTtl: String(memoryWrite.ttl || ""),
+        evidence,
+      };
+    })
+    .filter((row) => row.failureClass || row.nextStrategy || row.memoryContent);
+  if (!normalized.length) return null;
+  const classCounts = normalized.reduce<Record<string, number>>((acc, row) => {
+    const key = row.failureClass || "unknown";
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  return (
+    <div className="rounded-lg border border-fuchsia-400/20 bg-fuchsia-400/[0.05] p-4">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <span className="text-sm font-medium text-fuchsia-50">Failure Learning Memory</span>
+        <span className="rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-300">{normalized.length} records</span>
+        {Object.entries(classCounts)
+          .slice(0, 5)
+          .map(([klass, count]) => (
+            <span key={klass} className="rounded bg-fuchsia-400/10 px-2 py-0.5 text-xs text-fuchsia-200">
+              {klass}: {count}
+            </span>
+          ))}
+      </div>
+      <div className="space-y-2">
+        {normalized.slice(0, 10).map((row, index) => (
+          <div key={`${row.failureId}-${row.failureClass}-${index}`} className="rounded-md border border-slate-800 bg-slate-950/45 p-3 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              {row.failureClass ? <span className="rounded bg-fuchsia-400/10 px-2 py-0.5 text-fuchsia-200">{row.failureClass}</span> : null}
+              {row.nextStrategy ? <span className="rounded bg-cyan-400/10 px-2 py-0.5 text-cyan-200">{row.nextStrategy}</span> : null}
+              {row.tool ? <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-400">{row.tool}</span> : null}
+              {row.roleAgent ? <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-300">{row.roleAgent}</span> : null}
+              {Number.isFinite(row.attemptCount) ? <span className="ml-auto text-slate-500">attempt {row.attemptCount}</span> : null}
+            </div>
+            {row.failureReason ? <div className="mt-2 text-[11px] text-slate-500">failure: {row.failureReason}</div> : null}
+            {row.memoryContent ? (
+              <div className="mt-2 rounded bg-slate-900 px-2 py-2 text-[11px] leading-5 text-slate-400">
+                <div className="mb-1 flex flex-wrap gap-2">
+                  {row.memoryType ? <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-300">{row.memoryType}</span> : null}
+                  {Number.isFinite(row.memoryConfidence) ? <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-300">confidence {row.memoryConfidence.toFixed(2)}</span> : null}
+                  {row.memoryTtl ? <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-300">ttl {row.memoryTtl}</span> : null}
+                </div>
+                {row.memoryContent}
+              </div>
+            ) : null}
+            {row.rationale.length ? (
+              <div className="mt-2 space-y-1">
+                {row.rationale.slice(0, 6).map((reason) => (
+                  <div key={reason} className="rounded bg-slate-900 px-2 py-1 text-[11px] text-slate-500">
+                    {reason}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {row.evidence.length ? (
+              <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-slate-900 p-2 text-[11px] leading-5 text-slate-500">
+                {JSON.stringify(row.evidence.slice(0, 3), null, 2)}
+              </pre>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function RoleExecutionBlock({ rows }: { rows: Array<Record<string, unknown>> }) {
   const normalized = rows
     .map((row) => {
@@ -1363,6 +2076,7 @@ function RoleExecutionBlock({ rows }: { rows: Array<Record<string, unknown>> }) 
         tool: String(payload.tool || evidence.tool || ""),
         ok: typeof payload.ok === "boolean" ? payload.ok : undefined,
         elapsed: typeof payload.elapsed_ms === "number" ? payload.elapsed_ms : typeof payload.adapter_elapsed_ms === "number" ? payload.adapter_elapsed_ms : undefined,
+        governance: isRecord(evidence.governance_policy) ? evidence.governance_policy : undefined,
         evidence,
       };
     })
@@ -1377,6 +2091,18 @@ function RoleExecutionBlock({ rows }: { rows: Array<Record<string, unknown>> }) 
               <span className="rounded bg-cyan-400/10 px-2 py-0.5 text-cyan-200">{row.roleId || "RoleAgent"}</span>
               {row.adapterKind ? <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-300">{row.adapterKind}</span> : null}
               {row.tool ? <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-400">{row.tool}</span> : null}
+              {row.governance ? (
+                <span className={cn(
+                  "rounded px-2 py-0.5",
+                  String(row.governance.execution_mode || "").includes("manual")
+                    ? "bg-rose-400/10 text-rose-200"
+                    : String(row.governance.execution_mode || "").includes("degraded")
+                      ? "bg-amber-400/10 text-amber-200"
+                      : "bg-emerald-400/10 text-emerald-200"
+                )}>
+                  governance {String(row.governance.score ?? "-")} · {String(row.governance.execution_mode || row.governance.level || "normal")}
+                </span>
+              ) : null}
               {typeof row.ok === "boolean" ? (
                 <span className={cn("rounded px-2 py-0.5", row.ok ? "bg-emerald-400/10 text-emerald-300" : "bg-amber-400/10 text-amber-300")}>
                   {row.ok ? "OK" : "CHECK"}
@@ -1441,6 +2167,20 @@ function PendingDecisionBlock({ rows }: { rows: Array<Record<string, unknown>> }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item || "").trim()).filter(Boolean);
+}
+
+function qualityTone(level: string): string {
+  const normalized = String(level || "").toLowerCase();
+  if (normalized === "production") return "bg-emerald-400/10 text-emerald-300";
+  if (normalized === "usable_with_caution") return "bg-amber-400/10 text-amber-300";
+  if (normalized === "weak") return "bg-orange-400/10 text-orange-300";
+  if (normalized === "blocked") return "bg-rose-400/10 text-rose-300";
+  return "bg-slate-800 text-slate-300";
 }
 
 function InfoMini({ title, items }: { title: string; items: string[] }) {

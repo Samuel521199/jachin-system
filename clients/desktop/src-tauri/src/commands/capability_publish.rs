@@ -59,6 +59,9 @@ pub struct CapabilityPackageInfo {
     pub l1_review_status: Option<String>,
     pub l1_package_url: Option<String>,
     pub problems: Vec<String>,
+    pub warnings: Vec<String>,
+    pub quality_score: Option<f64>,
+    pub production_ready: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -807,6 +810,8 @@ fn read_package_info(
     state: &PublishState,
 ) -> Result<CapabilityPackageInfo, String> {
     let mut problems = Vec::new();
+    let mut warnings = Vec::new();
+    let mut quality_score: Option<f64> = None;
     let manifest_path;
     let mut id = dir
         .file_name()
@@ -862,6 +867,7 @@ fn read_package_info(
             validate_model_package_files(dir, &value, &mut problems);
         }
         validate_recovery_playbook_manifest(&value, &mut problems);
+        quality_score = validate_capability_contract_manifest(&value, &mut problems, &mut warnings);
         if value
             .get("version")
             .and_then(Value::as_str)
@@ -907,6 +913,7 @@ fn read_package_info(
     }
     let tier = package_tier(&id);
     let portable = problems.is_empty();
+    let production_ready = portable && quality_score.map(|score| score >= 0.72).unwrap_or(true);
     let record = state.packages.get(&id);
     let (published, published_version, last_published_at, package_path, sha256_path) =
         if let Some(r) = record {
@@ -946,6 +953,9 @@ fn read_package_info(
         l1_review_status: None,
         l1_package_url: None,
         problems,
+        warnings,
+        quality_score,
+        production_ready,
     })
 }
 
@@ -972,23 +982,24 @@ fn validate_recovery_playbook_manifest(manifest: &Value, problems: &mut Vec<Stri
             problems.push(format!("{prefix} must be an object"));
             continue;
         };
-        if !json_non_empty_string(target_obj.get("role_agent").or_else(|| target_obj.get("role"))) {
+        if !json_non_empty_string(
+            target_obj
+                .get("role_agent")
+                .or_else(|| target_obj.get("role")),
+        ) {
             problems.push(format!("{prefix}.role_agent must be a non-empty string"));
         }
         if let Some(tools) = target_obj
             .get("tools")
             .or_else(|| target_obj.get("tool_patterns"))
         {
-            validate_non_empty_string_array(
-                tools,
-                &format!("{prefix}.tools"),
-                true,
-                problems,
-            );
+            validate_non_empty_string_array(tools, &format!("{prefix}.tools"), true, problems);
         }
         if let Some(max_attempts) = target_obj.get("max_attempts") {
             if !json_int_in_range(max_attempts, 1, 8) {
-                problems.push(format!("{prefix}.max_attempts must be an integer from 1 to 8"));
+                problems.push(format!(
+                    "{prefix}.max_attempts must be an integer from 1 to 8"
+                ));
             }
         }
 
@@ -1006,6 +1017,191 @@ fn validate_recovery_playbook_manifest(manifest: &Value, problems: &mut Vec<Stri
     }
 }
 
+fn validate_capability_contract_manifest(
+    manifest: &Value,
+    problems: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) -> Option<f64> {
+    validate_decomposition_manifest(manifest, problems);
+    validate_contract_dependency_list(manifest, "required_mcps", problems);
+    validate_contract_dependency_list(manifest, "required_models", problems);
+    let score = capability_contract_quality_score(manifest);
+    if score < 0.72 {
+        warnings.push(format!(
+            "capability_profile_low_quality: score {:.2} < 0.72; can publish, but not production-grade",
+            score
+        ));
+    }
+    Some(score)
+}
+
+fn validate_decomposition_manifest(manifest: &Value, problems: &mut Vec<String>) {
+    let Some(decomposition) = manifest_value_or_metadata(manifest, "decomposition") else {
+        return;
+    };
+    let Some(decomposition_obj) = decomposition.as_object() else {
+        problems.push("decomposition must be an object".to_string());
+        return;
+    };
+    let Some(nodes) = decomposition_obj.get("nodes").and_then(Value::as_array) else {
+        problems.push("decomposition.nodes must be a non-empty array".to_string());
+        return;
+    };
+    if nodes.is_empty() {
+        problems.push("decomposition.nodes must be a non-empty array".to_string());
+        return;
+    }
+
+    let mut node_ids = HashSet::new();
+    for (index, node) in nodes.iter().enumerate() {
+        let prefix = format!("decomposition.nodes[{index}]");
+        let Some(node_obj) = node.as_object() else {
+            problems.push(format!("{prefix} must be an object"));
+            continue;
+        };
+        let node_id = node_obj
+            .get("id")
+            .or_else(|| node_obj.get("name"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| index.to_string());
+        node_ids.insert(node_id);
+        for key in ["goal", "role_agent", "tool"] {
+            if !json_non_empty_string(node_obj.get(key)) {
+                problems.push(format!("{prefix}.{key} must be a non-empty string"));
+            }
+        }
+        let verification = node_obj
+            .get("verification_criteria")
+            .or_else(|| node_obj.get("verification"))
+            .or_else(|| node_obj.get("expected_evidence"));
+        if !verification
+            .and_then(Value::as_array)
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+        {
+            problems.push(format!(
+                "{prefix}.verification_criteria must be a non-empty array"
+            ));
+        }
+    }
+
+    for (index, node) in nodes.iter().enumerate() {
+        let Some(node_obj) = node.as_object() else {
+            continue;
+        };
+        if let Some(depends_on) = node_obj.get("depends_on") {
+            for dep in contract_string_items(depends_on) {
+                if !node_ids.contains(&dep) {
+                    problems.push(format!(
+                        "decomposition.nodes[{index}].depends_on references unknown node: {dep}"
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn validate_contract_dependency_list(manifest: &Value, key: &str, problems: &mut Vec<String>) {
+    let Some(value) = manifest_value_or_metadata(manifest, key) else {
+        return;
+    };
+    let Some(items) = value.as_array() else {
+        problems.push(format!("{key} must be a string/object array"));
+        return;
+    };
+    for (index, item) in items.iter().enumerate() {
+        let ok = item.as_str().map(|s| !s.trim().is_empty()).unwrap_or(false)
+            || item
+                .as_object()
+                .and_then(|obj| {
+                    obj.get("id")
+                        .or_else(|| obj.get("plugin_id"))
+                        .or_else(|| obj.get("model_id"))
+                })
+                .and_then(Value::as_str)
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+        if !ok {
+            problems.push(format!(
+                "{key}[{index}] must be a non-empty string or dependency object"
+            ));
+        }
+    }
+}
+
+fn capability_contract_quality_score(manifest: &Value) -> f64 {
+    let mut missing = HashSet::new();
+    if !manifest_value_or_metadata(manifest, "inputs")
+        .and_then(Value::as_array)
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+    {
+        missing.insert("inputs");
+    }
+    let has_verification = manifest_value_or_metadata(manifest, "verification")
+        .or_else(|| manifest_value_or_metadata(manifest, "verification_methods"))
+        .and_then(Value::as_array)
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    if !has_verification {
+        missing.insert("verification");
+    }
+    if !manifest_value_or_metadata(manifest, "examples")
+        .and_then(Value::as_array)
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+    {
+        missing.insert("examples");
+    }
+    let risk = manifest_value_or_metadata(manifest, "risk")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    if risk.is_empty() {
+        missing.insert("risk");
+    }
+    if matches!(risk.as_str(), "external_effect" | "high" | "critical")
+        && manifest.get("recovery_playbook").is_none()
+    {
+        missing.insert("recovery_playbook");
+    }
+    let penalty = (missing.len() as f64 * 0.16).min(0.85);
+    ((1.0 - penalty) * 1000.0).round() / 1000.0
+}
+
+fn manifest_value_or_metadata<'a>(manifest: &'a Value, key: &str) -> Option<&'a Value> {
+    manifest.get(key).or_else(|| {
+        manifest
+            .get("metadata")
+            .and_then(Value::as_object)
+            .and_then(|metadata| metadata.get(key))
+    })
+}
+
+fn contract_string_items(value: &Value) -> Vec<String> {
+    if let Some(s) = value.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+        return vec![s.to_string()];
+    }
+    value
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    item.as_str()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn validate_recovery_step(step: &Value, prefix: &str, problems: &mut Vec<String>) {
     let Some(step_obj) = step.as_object() else {
         problems.push(format!("{prefix} must be an object"));
@@ -1021,7 +1217,9 @@ fn validate_recovery_step(step: &Value, prefix: &str, problems: &mut Vec<String>
     }
     if let Some(priority) = step_obj.get("priority") {
         if !json_int_in_range(priority, 0, 1000) {
-            problems.push(format!("{prefix}.priority must be an integer from 0 to 1000"));
+            problems.push(format!(
+                "{prefix}.priority must be an integer from 0 to 1000"
+            ));
         }
     }
     if let Some(rationale) = step_obj.get("rationale") {
@@ -1053,17 +1251,14 @@ fn validate_recovery_when(when: &Value, prefix: &str, problems: &mut Vec<String>
     };
     for key in ["failure_any", "failure_all", "tool_not_contains"] {
         if let Some(value) = when_obj.get(key) {
-            validate_non_empty_string_array(
-                value,
-                &format!("{prefix}.{key}"),
-                false,
-                problems,
-            );
+            validate_non_empty_string_array(value, &format!("{prefix}.{key}"), false, problems);
         }
     }
     if let Some(after_attempt) = when_obj.get("after_attempt") {
         if !json_int_in_range(after_attempt, 1, 8) {
-            problems.push(format!("{prefix}.after_attempt must be an integer from 1 to 8"));
+            problems.push(format!(
+                "{prefix}.after_attempt must be an integer from 1 to 8"
+            ));
         }
     }
 }

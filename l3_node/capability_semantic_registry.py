@@ -13,7 +13,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-
 @dataclass(frozen=True)
 class CapabilityDescriptor:
     id: str
@@ -85,6 +84,115 @@ BUILTIN_CAPABILITIES: tuple[CapabilityDescriptor, ...] = (
         task_type="codex_ask_lark_send",
         tool_chain=["windows_open_app", "codex_reply_capture", "windows_lark_send_message", "ocr_verify"],
         evidence=["codex_reply", "reply_validation", "lark_screenshot", "ocr_check"],
+    ),
+    CapabilityDescriptor(
+        id="mcp:web_research_delivery",
+        domain="os_assistant.web_research_delivery",
+        actions=["web_search", "fetch", "extract", "summarize", "send_message", "verify"],
+        objects=["web_query", "search_result", "web_page", "lark_contact", "lark_group", "summary"],
+        inputs=["query", "recipients", "freshness", "max_results"],
+        risk="external_effect",
+        description="Search the web for current information, fetch selected pages, summarize evidence, send the summary through Lark, and verify delivery.",
+        examples=[
+            "search today's latest AI news, summarize it, and send it to Neil",
+            "上网搜索今天 AI 最新消息，总结后发给 Neil",
+            "查一下最新行业消息，整理重点发到测试备注冒烟草稿",
+        ],
+        workflow_id="web_research_to_lark",
+        task_type="web_research_delivery",
+        tool_chain=["tavily_search", "fetch", "web_research_summarize", "windows_lark_send_message", "ocr_verify"],
+        evidence=["search_results", "fetched_pages", "summary_with_sources", "lark_screenshot", "ocr_check"],
+        metadata={
+            "preconditions": [
+                "search provider is available, such as Tavily MCP or equivalent browser search",
+                "official fetch MCP is available for URL content extraction",
+                "Lark sender capability is installed and configured",
+            ],
+            "required_mcps": [
+                "com.jachin.mcp.tavily.search",
+                "com.jachin.mcp.officialfetch",
+                "mcp:windows_lark_send_message",
+            ],
+            "verification_methods": [
+                "search results returned with URLs",
+                "fetch extracted at least one page or browser fallback requested",
+                "summary includes source evidence",
+                "Lark post-send verification succeeded",
+            ],
+            "recovery_playbook": {
+                "paths": [
+                    {
+                        "when": "tavily_search_failed",
+                        "next_tool": "mcp:browser_search",
+                        "strategy": "switch_tool",
+                        "rationale": "If search MCP fails, use browser search/CDP extraction.",
+                    },
+                    {
+                        "when": "fetch_failed_or_dynamic_page",
+                        "next_tool": "mcp:browser_extract",
+                        "strategy": "switch_tool",
+                        "rationale": "If static fetch cannot read the page, use browser-rendered extraction.",
+                    },
+                    {
+                        "when": "message_post_send_verification_missing",
+                        "next_tool": "mcp:windows_lark_send_message",
+                        "strategy": "retry",
+                        "rationale": "Retry Lark delivery with visual verification.",
+                    },
+                ]
+            },
+            "decomposition": {
+                "nodes": [
+                    {
+                        "id": "search",
+                        "goal": "Search the web for $target.query",
+                        "role_agent": "BrowserExecutorAgent",
+                        "tool": "mcp:tavily_search",
+                        "inputs": {"query": "$target.query", "max_results": 5, "freshness": "$target.freshness"},
+                        "work_order_input": {"query": "$target.query", "max_results": 5, "search_depth": "basic"},
+                        "risk_level": "low",
+                        "verification_criteria": ["search results include at least one URL"],
+                        "recovery_policy": {"strategy": "switch_to_browser_search", "max_attempts": 2},
+                    },
+                    {
+                        "id": "fetch",
+                        "goal": "Fetch and extract top web pages for $target.query",
+                        "role_agent": "BrowserExecutorAgent",
+                        "tool": "mcp:fetch",
+                        "depends_on": ["search"],
+                        "inputs": {"source_node": "search", "url_selector": "top_results", "max_pages": 3},
+                        "work_order_input": {"source_node": "search", "url_selector": "top_results", "max_pages": 3, "query": "$target.query"},
+                        "risk_level": "low",
+                        "verification_criteria": ["at least one fetched page has readable content"],
+                        "recovery_policy": {"strategy": "switch_to_browser_extract", "max_attempts": 2},
+                    },
+                    {
+                        "id": "summarize",
+                        "goal": "Summarize web evidence for Lark delivery",
+                        "role_agent": "BrowserExecutorAgent",
+                        "tool": "core:web_research_summarize",
+                        "depends_on": ["fetch"],
+                        "inputs": {"query": "$target.query", "source_node": "fetch", "format": "brief_lark_message"},
+                        "work_order_input": {"query": "$target.query", "source_node": "fetch", "format": "brief_lark_message", "recipients_json": "$target.recipients_json"},
+                        "risk_level": "low",
+                        "verification_criteria": ["summary includes key points and source evidence"],
+                        "recovery_policy": {"strategy": "retry_with_shorter_summary", "max_attempts": 2},
+                    },
+                    {
+                        "id": "send",
+                        "goal": "Send web research summary to Lark recipients",
+                        "role_agent": "MessageExecutorAgent",
+                        "tool": "mcp:windows_lark_send_message",
+                        "depends_on": ["summarize"],
+                        "inputs": {"recipients_json": "$target.recipients_json", "message_source_node": "summarize"},
+                        "work_order_input": {"recipients_json": "$target.recipients_json", "message_source_node": "summarize", "message": "$target.delivery_stub"},
+                        "risk_level": "high",
+                        "verification_criteria": ["recipient and message preview match", "post-send visual/OCR evidence exists"],
+                        "recovery_policy": {"strategy": "preview_verify_retry", "max_attempts": 3},
+                    },
+                ]
+            },
+        },
     ),
     CapabilityDescriptor(
         id="mcp:windows_lark_send_message",
@@ -492,6 +600,16 @@ def _descriptor_for_manifest(path: Path) -> CapabilityDescriptor | None:
     tags = _list_texts(data.get("tags"))
     item_type = str(data.get("item_type") or data.get("type") or "").strip()
     metadata = _manifest_metadata(data, path)
+    from l3_node.cognitive_kernel.capability_contract_validator import validate_capability_contract
+
+    contract = validate_capability_contract(data)
+    metadata["capability_contract"] = contract.to_dict()
+    metadata["capability_quality_score"] = contract.quality_score
+    metadata["capability_production_ready"] = contract.production_ready
+    if contract.errors:
+        metadata["capability_contract_errors"] = [issue.to_dict() for issue in contract.errors]
+    if contract.warnings:
+        metadata["capability_contract_warnings"] = [issue.to_dict() for issue in contract.warnings]
     text = " ".join([item_id, name, description, " ".join(tags), json.dumps(metadata, ensure_ascii=False, default=str)])
     override = data.get("capability") if isinstance(data.get("capability"), dict) else {}
     x_override = data.get("x_jachin_capability") if isinstance(data.get("x_jachin_capability"), dict) else {}

@@ -41,6 +41,7 @@ def test_os_live_stress_plans_common_workflows(tmp_path, monkeypatch):
         file_read_open_reveal_planning,
         lifecycle_store_corruption_is_ignored,
         lark_message_has_slots_and_two_steps,
+        memory_governance_os_workflow_fault_injection,
         planning_common_apps,
         recovery_attempt_limit_summary,
     )
@@ -54,6 +55,12 @@ def test_os_live_stress_plans_common_workflows(tmp_path, monkeypatch):
     assert file_read_open_reveal_planning(kernel_home, tmp_path / "run")["ok"]
     assert recovery_attempt_limit_summary(kernel_home)["ok"]
     assert lifecycle_store_corruption_is_ignored(kernel_home)["ok"]
+    governed = memory_governance_os_workflow_fault_injection(kernel_home, tmp_path / "run")
+    assert governed["ok"], json.dumps(governed, ensure_ascii=False)
+    assert governed["checks"]["false_success_blocked"] is True
+    assert governed["checks"]["failure_memory_persisted"] is True
+    assert governed["checks"]["stale_memory_governed"] is True
+    assert governed["checks"]["conflict_memory_governed"] is True
 
 
 def test_live_confirmed_lark_recipient_allowlist_blocks_unknown_recipient():
@@ -77,3 +84,26 @@ def test_live_confirmed_lark_sender_validates_allowlist_before_tool_call(tmp_pat
     with pytest.raises(ValueError, match="live-confirmed Lark recipients"):
         matrix.live_confirmed_lark_send(tmp_path / "kernel", tmp_path / "run", ["Vivian"], "hello")
     assert called["value"] is False
+
+
+def test_continuous_live_confirmed_stress_fault_only_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from scripts.os_live_stress_matrix import continuous_live_confirmed_stress
+
+    result = continuous_live_confirmed_stress(
+        tmp_path / "kernel",
+        tmp_path / "run",
+        rounds=8,
+        recipients=["Neil"],
+        message="unit test",
+        lark_every=0,
+        live_desktop=False,
+        live_lark=False,
+    )
+
+    assert result["ok"], json.dumps(result, ensure_ascii=False)
+    assert result["rounds"] == 8
+    assert result["scenario_counts"]["network_fault"]["ok"] >= 1
+    assert result["scenario_counts"]["governance_fault"]["ok"] >= 1
+    assert result["failure_hint_recall_count"] >= 1

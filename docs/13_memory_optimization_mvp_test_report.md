@@ -497,3 +497,174 @@ output\os_live_stress_matrix\20260714_162500\os_live_stress_matrix_20260714_1625
 当前记忆系统已经达到“能真实参与任务执行，并能被 Evidence 验证”的水平，明显高于普通聊天上下文和简单 RAG。它已经具备自学习、自纠错、自复盘的基础骨架。
 
 下一阶段的目标不再是证明“有没有记忆”，而是证明“记忆是否稳定、是否可靠、是否越用越强”。核心方向是：用更多真实任务和失败样本喂给系统，让 Memory Growth 从日志复盘升级为真正可持续维护的知识资产系统。
+
+## 11. 主线一：记忆质量治理压测结果
+
+本轮开始执行后续主线中的第一条：记忆质量治理。目标不是继续堆记忆，而是让系统能主动发现低质量、冲突、陈旧和损坏的记忆，并把它们进入待确认/治理队列，避免后续任务被错误记忆污染。
+
+### 11.1 本轮新增能力
+
+- 新增生命周期记忆治理入口：`govern_lifecycle_memories`。
+- 新增待治理队列读取入口：`pending_lifecycle_review_items`。
+- 新增质量快照入口：`memory_quality_snapshot`。
+- 治理维度覆盖：低置信、失败压力、陈旧未验证、同对象冲突、过期记忆、损坏 JSONL 行统计。
+- 治理结果会写入 `memory_lifecycle_governance.json`，并写入 ledger 事件 `memory_lifecycle_governance`。
+
+### 11.2 压测命令
+
+```powershell
+python -m pytest -o addopts= -q tests\unit\test_memory_quality_governance.py tests\unit\test_memory_stress_mvp.py
+python scripts\memory_quality_governance_stress.py
+```
+
+### 11.3 压测结果
+
+```text
+5 passed
+memory_quality_governance_stress: PASS
+governance elapsed: 11 ms
+```
+
+Evidence：
+
+```text
+output\memory_quality_governance\20260714_172026\memory_quality_governance_stress.evidence.json
+```
+
+独立报告：
+
+```text
+output\memory_quality_governance\20260714_172026\memory_quality_governance_stress_report.md
+```
+
+### 11.4 压测覆盖
+
+| 场景 | 结果 | 说明 |
+| --- | --- | --- |
+| 低置信记忆识别 | 通过 | 20 条低置信 failure_hint 被标记为 `low_confidence` |
+| 陈旧记忆识别 | 通过 | 12 条长期未验证 project_fact 被标记为 `stale_unverified` |
+| 冲突记忆识别 | 通过 | 2 条同一 governance_key 的 correction 被标记为 `memory_conflict` |
+| 损坏 JSONL 容错 | 通过 | 1 条损坏 lifecycle 行被统计，治理不中断 |
+| 重复写入去重 | 通过 | 150 次重复 alias 写入最终只保留 1 条生命周期记忆 |
+| 待确认队列 | 通过 | 34 条问题记忆进入 pending review 队列 |
+
+### 11.5 结论
+
+记忆系统已经从“能写入、能召回”进一步升级到“能治理、能排队、能压测”。这说明后续真实任务压力测试不会继续盲目积累错误记忆，而是有了一个质量闸门：低质量记忆会降级为待确认项，冲突记忆不会直接覆盖，陈旧事实不会长期无脑驱动真实执行。
+
+当前主线一完成度：约 30%。下一步还需要把治理结果接入控制台可视化，并让真实任务执行前的 Recall/Arbiter 显式引用这些质量状态。
+
+## 12. 主线二：真实 OS Workflow 记忆治理压力测试
+
+执行日期：2026-07-14
+
+本轮目标不是只跑模拟单测，而是把记忆治理能力放进真实 OS workflow 中验证：Lark 真实发送、文件 reveal/open、计算器视觉校验，以及故障注入下的虚假成功拦截、失败记忆写入、陈旧/冲突记忆治理。
+
+### 12.1 新增测试覆盖
+
+- `scripts/os_live_stress_matrix.py` 增加 `memory_governed_os_workflow_fault_injection`。
+- 故障注入场景模拟 Lark 发送工具返回 `ok=true/status=queued`，但没有任何发送后截图/OCR/API 证据。
+- Verification 必须拦截这类虚假成功，返回 `message_post_send_verification_missing`。
+- TurnClosure 中的 `failure_hint` 必须真实写入 lifecycle memory，而不是只留在返回对象中。
+- 同时写入陈旧 `project_fact` 和冲突 `correction`，再运行 `govern_lifecycle_memories`，验证 stale/conflict 是否进入治理队列。
+- live-confirmed 前增加鼠标安全角预检，避免 PyAutoGUI fail-safe 导致真实 UI 自动化被用户鼠标位置误中断。
+- Lark 长中文消息预览校验升级：支持中文冒号、OCR 丢标点、输入框换行后的重叠锚点匹配。
+- live-confirmed observation 全量落盘到 `*_full_observation.json`，避免只看 2000 字截断日志时无法排查。
+
+### 12.2 默认压力矩阵结果
+
+命令：
+
+```powershell
+python -m pytest -o addopts= -q tests\unit\test_os_live_stress_matrix.py tests\unit\test_os_assistant_capability.py::test_lark_long_chinese_message_matches_wrapped_composer_lines
+python scripts\os_live_stress_matrix.py
+```
+
+结果：
+
+```text
+5 passed
+12/12 passed
+```
+
+Evidence：
+
+```text
+output\os_live_stress_matrix\20260714_174145\os_live_stress_matrix_20260714_174145.evidence.json
+```
+
+### 12.3 真实压测中发现并修复的问题
+
+第一次 live-confirmed：
+
+```text
+14/15 passed
+失败项：Neil Lark 真实发送
+失败原因：mouse_failsafe_triggered
+证据：output\os_live_stress_matrix\20260714_173341\os_live_stress_matrix_20260714_173341.evidence.json
+```
+
+根因：鼠标停在屏幕安全角，PyAutoGUI 触发 fail-safe，真实 UI 自动化被中断。
+修复：在 live WorkOrder 执行前增加 `_move_pointer_away_from_failsafe`，把鼠标移到屏幕中间安全区域，并将 `pointer_preflight` 写入结果证据。
+
+第二次 live-confirmed：
+
+```text
+14/15 passed
+失败项：Lark 长中文消息预览校验
+失败原因：预览截图里消息已经粘贴成功，但 OCR 换行和中文冒号导致 `_lark_message_visible_match` 锚点误判
+证据：output\os_live_stress_matrix\20260714_173541\os_live_stress_matrix_20260714_173541.evidence.json
+```
+
+根因：长中文消息中 `：` 后面的一整段被当成一个超长 anchor，Lark 输入框换行后 OCR 文本无法整体命中。
+修复：`_lark_message_visible_match` 增加中文冒号切分和长文本重叠 compact anchors，并新增回归测试 `test_lark_long_chinese_message_matches_wrapped_composer_lines`。
+
+### 12.4 修复后真实复测结果
+
+命令：
+
+```powershell
+python scripts\os_live_stress_matrix.py --live-confirmed --confirmed-lark-recipients "Neil,测试备注冒烟草稿" --confirmed-message "Jachin 记忆治理真实压力测试复测2：验证长中文预览校验、真实发送、文件、计算器和治理链路。"
+```
+
+结果：
+
+```text
+15/15 passed
+```
+
+Evidence：
+
+```text
+output\os_live_stress_matrix\20260714_174233\os_live_stress_matrix_20260714_174233.evidence.json
+```
+
+关键真实动作：
+
+| 类别 | 场景 | 结果 | 证据 |
+| --- | --- | --- | --- |
+| governance | 虚假 Lark 成功注入，无发送后证据 | 通过，成功拦截 | `output\os_live_stress_matrix\20260714_174233\os_live_stress_matrix_20260714_174233.evidence.json` |
+| governance | failure_hint 写入并可召回 | 通过 | `output\os_live_stress_matrix\20260714_174233\os_live_stress_matrix_20260714_174233.evidence.json` |
+| governance | 陈旧/冲突记忆进入治理队列 | 通过 | `output\os_live_stress_matrix\20260714_174233\os_live_stress_matrix_20260714_174233.evidence.json` |
+| live_confirmed | Lark 真实发送给 Neil | 通过 | `output\os_live_stress_matrix\20260714_174233\live_confirmed\lark\Neil\` |
+| live_confirmed | Lark 真实发送给测试备注冒烟草稿 | 通过 | `output\os_live_stress_matrix\20260714_174233\live_confirmed\lark\测试备注冒烟草稿\` |
+| live_confirmed | 文件 reveal/open | 通过 | `output\os_live_stress_matrix\20260714_174233\live_confirmed\file\` |
+| live_confirmed | 计算器 91+9 视觉校验 | 通过 | `output\os_live_stress_matrix\20260714_174233\live_confirmed\calculator\` |
+
+### 12.5 本轮结论
+
+本轮把“记忆治理”从单元测试推进到了真实 OS workflow。系统不仅能在成功任务后写入经验，也能在真实失败和故障注入中阻断虚假成功，把失败原因沉淀为 `failure_hint`，并把陈旧/冲突记忆推入治理队列。
+
+本轮暴露的两个真实问题都不是单点业务问题，而是自动化系统常见的一类问题：
+
+1. 环境状态干扰真实执行：鼠标安全角、窗口焦点、遮挡等都会让 UI 自动化失败。修复方向是执行前环境预检和证据落盘。
+2. 视觉/OCR 证据不是结构化 API：长中文、换行、标点丢失会造成误判。修复方向是更稳健的语义锚点和回归测试。
+
+当前记忆系统水平可从“可验证闭环 MVP / 准 Beta”进一步提升到：
+
+```text
+真实 OS workflow 可验证闭环 Beta 初段
+完成度判断：约 78% - 82%
+```
+
+下一步应继续扩大 live-confirmed 压测样本，尤其是连续多轮真实任务、窗口遮挡、网络异常、目标联系人变化、文件移动/重命名等场景，让 Memory Growth 和 RecoveryPlanner 吃到更多真实失败样本。

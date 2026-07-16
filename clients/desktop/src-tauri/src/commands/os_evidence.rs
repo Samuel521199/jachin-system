@@ -57,6 +57,9 @@ pub struct OsEvidenceEntry {
     pub metrics: Option<Value>,
     pub role_executions: Vec<Value>,
     pub pending_decisions: Vec<Value>,
+    pub tool_quality_reports: Vec<Value>,
+    pub recovery_scorecards: Vec<Value>,
+    pub failure_learning_records: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,6 +116,61 @@ pub struct OsEvidenceStats {
     pub failure_top: Vec<(String, usize)>,
     pub workflow_top: Vec<(String, usize)>,
     pub workflow_pass_rate: Vec<(String, usize, usize, f64)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OsEvidenceGovernanceSummary {
+    pub evidence_count: usize,
+    pub quality_reports: usize,
+    pub blocked_reports: usize,
+    pub block_rate: f64,
+    pub recovery_candidates: usize,
+    pub failure_learning_records: usize,
+    pub tool_quality_top: Vec<(String, usize)>,
+    pub quality_issue_top: Vec<(String, usize)>,
+    pub failure_class_top: Vec<(String, usize)>,
+    pub recovery_strategy_top: Vec<(String, usize)>,
+    pub memory_type_top: Vec<(String, usize)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OsEvidenceGovernanceSuggestion {
+    pub severity: String,
+    pub category: String,
+    pub message: String,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OsEvidenceCapabilityHealth {
+    pub capability: String,
+    pub days: u64,
+    pub score: u64,
+    pub level: String,
+    pub evidence_count: usize,
+    pub block_rate: f64,
+    pub recovery_density: f64,
+    pub learning_density: f64,
+    pub top_issue: String,
+    pub suggestions: Vec<OsEvidenceGovernanceSuggestion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OsEvidenceGovernanceWindow {
+    pub days: u64,
+    pub capability: String,
+    pub summary: OsEvidenceGovernanceSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OsEvidenceGovernanceIndex {
+    pub generated_at: u64,
+    pub source_limit: usize,
+    pub total_evidence: usize,
+    pub index_path: String,
+    pub capability_options: Vec<(String, usize)>,
+    pub windows: Vec<OsEvidenceGovernanceWindow>,
+    pub health: Vec<OsEvidenceCapabilityHealth>,
 }
 
 fn project_output_dir() -> Result<PathBuf, String> {
@@ -458,7 +516,10 @@ fn collect_pending_decisions(value: &Value, out: &mut Vec<Value>) {
             }
             if let Some(payload) = map.get("payload").and_then(|v| v.as_object()) {
                 if payload.get("pending_decision").is_some()
-                    || (payload.get("requires_confirmation").and_then(|v| v.as_bool()) == Some(true)
+                    || (payload
+                        .get("requires_confirmation")
+                        .and_then(|v| v.as_bool())
+                        == Some(true)
                         && payload.get("decision_id").is_some())
                 {
                     out.push(value.clone());
@@ -471,6 +532,85 @@ fn collect_pending_decisions(value: &Value, out: &mut Vec<Value>) {
         Value::Array(items) => {
             for item in items {
                 collect_pending_decisions(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_tool_quality_reports(value: &Value, out: &mut Vec<Value>) {
+    match value {
+        Value::Object(map) => {
+            if map.get("type").and_then(|v| v.as_str()) == Some("tool_quality")
+                || (map.get("quality_level").is_some()
+                    && map.get("score").is_some()
+                    && map.get("issues").is_some())
+            {
+                out.push(value.clone());
+            }
+            for item in map.values() {
+                collect_tool_quality_reports(item, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_tool_quality_reports(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_recovery_scorecards(value: &Value, out: &mut Vec<Value>) {
+    match value {
+        Value::Object(map) => {
+            if let Some(scorecard) = map.get("adaptive_scorecard") {
+                out.push(scorecard.clone());
+            }
+            if map.get("current_failure_class").is_some()
+                && map.get("candidate_strategy").is_some()
+                && map.get("score").is_some()
+            {
+                out.push(value.clone());
+            }
+            for item in map.values() {
+                collect_recovery_scorecards(item, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_recovery_scorecards(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_failure_learning_records(value: &Value, out: &mut Vec<Value>) {
+    match value {
+        Value::Object(map) => {
+            let event_type = map.get("event_type").and_then(|v| v.as_str()).unwrap_or("");
+            if event_type == "failure_learning_recorded" {
+                out.push(value.clone());
+                for (key, item) in map {
+                    if key != "payload" {
+                        collect_failure_learning_records(item, out);
+                    }
+                }
+                return;
+            } else if map.get("failure_class").is_some()
+                && map.get("next_strategy").is_some()
+                && map.get("memory_write").is_some()
+            {
+                out.push(value.clone());
+            }
+            for item in map.values() {
+                collect_failure_learning_records(item, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_failure_learning_records(item, out);
             }
         }
         _ => {}
@@ -612,6 +752,15 @@ fn evidence_entry(path: &Path) -> Option<OsEvidenceEntry> {
     let mut pending_decisions = Vec::new();
     collect_pending_decisions(&value, &mut pending_decisions);
     pending_decisions.truncate(20);
+    let mut tool_quality_reports = Vec::new();
+    collect_tool_quality_reports(&value, &mut tool_quality_reports);
+    tool_quality_reports.truncate(40);
+    let mut recovery_scorecards = Vec::new();
+    collect_recovery_scorecards(&value, &mut recovery_scorecards);
+    recovery_scorecards.truncate(40);
+    let mut failure_learning_records = Vec::new();
+    collect_failure_learning_records(&value, &mut failure_learning_records);
+    failure_learning_records.truncate(40);
     let evidence_panel_path = get_path(&value, &["evidence_panel_path"]);
     let report_path = get_path(&value, &["report_path"]);
     let id = path.to_string_lossy().into_owned();
@@ -652,6 +801,9 @@ fn evidence_entry(path: &Path) -> Option<OsEvidenceEntry> {
         metrics: value.get("metrics").cloned(),
         role_executions,
         pending_decisions,
+        tool_quality_reports,
+        recovery_scorecards,
+        failure_learning_records,
     })
 }
 
@@ -742,6 +894,9 @@ fn cognitive_turn_entry(path: &Path, turn_id: &str, events: Vec<Value>) -> Optio
     let mut recipients = BTreeSet::new();
     let mut role_executions = Vec::new();
     let mut pending_decisions = Vec::new();
+    let mut tool_quality_reports = Vec::new();
+    let mut recovery_scorecards = Vec::new();
+    let mut failure_learning_records = Vec::new();
     let mut timeline = Vec::new();
     let mut metrics_start_ms: Option<u64> = None;
     let mut metrics_end_ms: Option<u64> = None;
@@ -756,6 +911,9 @@ fn cognitive_turn_entry(path: &Path, turn_id: &str, events: Vec<Value>) -> Optio
     collect_apps(&aggregate, &mut apps);
     collect_role_executions(&aggregate, &mut role_executions);
     collect_pending_decisions(&aggregate, &mut pending_decisions);
+    collect_tool_quality_reports(&aggregate, &mut tool_quality_reports);
+    collect_recovery_scorecards(&aggregate, &mut recovery_scorecards);
+    collect_failure_learning_records(&aggregate, &mut failure_learning_records);
 
     for event in events.iter() {
         let event_type = event
@@ -874,6 +1032,9 @@ fn cognitive_turn_entry(path: &Path, turn_id: &str, events: Vec<Value>) -> Optio
     }
     role_executions.truncate(60);
     pending_decisions.truncate(20);
+    tool_quality_reports.truncate(40);
+    recovery_scorecards.truncate(40);
+    failure_learning_records.truncate(40);
     let duration_ms = metrics_start_ms
         .zip(metrics_end_ms)
         .map(|(start, end)| end.saturating_sub(start))
@@ -920,6 +1081,9 @@ fn cognitive_turn_entry(path: &Path, turn_id: &str, events: Vec<Value>) -> Optio
         })),
         role_executions,
         pending_decisions,
+        tool_quality_reports,
+        recovery_scorecards,
+        failure_learning_records,
     })
 }
 
@@ -1072,6 +1236,432 @@ pub fn os_evidence_list(limit: Option<usize>) -> Result<Vec<OsEvidenceEntry>, St
     rows.sort_by(|a, b| b.generated_at.cmp(&a.generated_at));
     rows.truncate(max_items);
     Ok(rows)
+}
+
+fn now_secs() -> u64 {
+    UNIX_EPOCH.elapsed().map(|d| d.as_secs()).unwrap_or(0)
+}
+
+fn payload_or_self(value: &Value) -> &Value {
+    value.get("payload").unwrap_or(value)
+}
+
+fn string_array(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn bump(map: &mut BTreeMap<String, usize>, key: impl Into<String>) {
+    let key = key.into();
+    let normalized = if key.trim().is_empty() {
+        "unknown".to_string()
+    } else {
+        key.trim().to_string()
+    };
+    *map.entry(normalized).or_insert(0) += 1;
+}
+
+fn top_counts(map: BTreeMap<String, usize>, limit: usize) -> Vec<(String, usize)> {
+    let mut rows = map.into_iter().collect::<Vec<_>>();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    rows.truncate(limit);
+    rows
+}
+
+fn evidence_capability_label(row: &OsEvidenceEntry) -> String {
+    row.workflow_composition
+        .as_ref()
+        .and_then(|v| v.get("selected_capability_id"))
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            row.capability_semantic
+                .as_ref()
+                .and_then(|v| v.get("selected"))
+                .and_then(|v| v.get("id"))
+                .and_then(|v| v.as_str())
+        })
+        .or_else(|| {
+            row.workflow_composition
+                .as_ref()
+                .and_then(|v| v.get("workflow_id"))
+                .and_then(|v| v.as_str())
+        })
+        .or_else(|| {
+            row.mission_preview
+                .as_ref()
+                .and_then(|v| v.get("workflow_id"))
+                .and_then(|v| v.as_str())
+        })
+        .or_else(|| {
+            row.template
+                .as_ref()
+                .and_then(|v| v.get("workflow_id"))
+                .and_then(|v| v.as_str())
+        })
+        .or_else(|| {
+            row.route
+                .as_ref()
+                .and_then(|v| v.get("workflow_id"))
+                .and_then(|v| v.as_str())
+        })
+        .or_else(|| {
+            row.metrics
+                .as_ref()
+                .and_then(|v| v.get("workflow_id"))
+                .and_then(|v| v.as_str())
+        })
+        .or_else(|| {
+            row.intent
+                .as_ref()
+                .and_then(|v| v.get("task_type"))
+                .and_then(|v| v.as_str())
+        })
+        .or_else(|| {
+            row.metrics
+                .as_ref()
+                .and_then(|v| v.get("task_type"))
+                .and_then(|v| v.as_str())
+        })
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn is_within_days(row: &OsEvidenceEntry, days: u64, now: u64) -> bool {
+    row.generated_at > 0
+        && row.generated_at <= now
+        && now.saturating_sub(row.generated_at) <= days * 24 * 60 * 60
+}
+
+fn governance_summary(rows: &[&OsEvidenceEntry]) -> OsEvidenceGovernanceSummary {
+    let mut tool_quality = BTreeMap::<String, usize>::new();
+    let mut quality_issues = BTreeMap::<String, usize>::new();
+    let mut failure_classes = BTreeMap::<String, usize>::new();
+    let mut recovery_strategies = BTreeMap::<String, usize>::new();
+    let mut memory_types = BTreeMap::<String, usize>::new();
+    let mut quality_reports = 0usize;
+    let mut blocked_reports = 0usize;
+    let mut recovery_candidates = 0usize;
+    let mut failure_learning_records = 0usize;
+
+    for row in rows {
+        for report in row.tool_quality_reports.iter() {
+            let payload = payload_or_self(report);
+            quality_reports += 1;
+            if payload
+                .get("blocks_execution")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                blocked_reports += 1;
+            }
+            bump(
+                &mut tool_quality,
+                payload
+                    .get("tool")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown_tool"),
+            );
+            for issue in string_array(payload.get("issues")) {
+                bump(&mut quality_issues, issue);
+            }
+        }
+
+        for scorecard in row.recovery_scorecards.iter() {
+            let payload = payload_or_self(scorecard);
+            if let Some(strategy) = payload
+                .get("candidate_strategy")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+            {
+                recovery_candidates += 1;
+                bump(&mut recovery_strategies, strategy);
+            }
+        }
+
+        for record in row.failure_learning_records.iter() {
+            let payload = payload_or_self(record);
+            failure_learning_records += 1;
+            bump(
+                &mut failure_classes,
+                payload
+                    .get("failure_class")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown"),
+            );
+            let memory_type = payload
+                .get("memory_write")
+                .and_then(|v| v.get("memory_type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown_memory");
+            bump(&mut memory_types, memory_type);
+        }
+    }
+
+    OsEvidenceGovernanceSummary {
+        evidence_count: rows.len(),
+        quality_reports,
+        blocked_reports,
+        block_rate: if quality_reports == 0 {
+            0.0
+        } else {
+            blocked_reports as f64 / quality_reports as f64
+        },
+        recovery_candidates,
+        failure_learning_records,
+        tool_quality_top: top_counts(tool_quality, 8),
+        quality_issue_top: top_counts(quality_issues, 8),
+        failure_class_top: top_counts(failure_classes, 8),
+        recovery_strategy_top: top_counts(recovery_strategies, 8),
+        memory_type_top: top_counts(memory_types, 8),
+    }
+}
+
+fn governance_suggestion(
+    severity: &str,
+    category: &str,
+    message: impl Into<String>,
+    action: impl Into<String>,
+) -> OsEvidenceGovernanceSuggestion {
+    OsEvidenceGovernanceSuggestion {
+        severity: severity.to_string(),
+        category: category.to_string(),
+        message: message.into(),
+        action: action.into(),
+    }
+}
+
+fn capability_health(
+    capability: &str,
+    days: u64,
+    summary: &OsEvidenceGovernanceSummary,
+) -> OsEvidenceCapabilityHealth {
+    let recovery_density = if summary.evidence_count == 0 {
+        0.0
+    } else {
+        summary.recovery_candidates as f64 / summary.evidence_count as f64
+    };
+    let learning_density = if summary.evidence_count == 0 {
+        0.0
+    } else {
+        summary.failure_learning_records as f64 / summary.evidence_count as f64
+    };
+    let top_issue = summary
+        .quality_issue_top
+        .first()
+        .map(|(name, count)| format!("{name} ({count})"))
+        .unwrap_or_default();
+
+    let mut score = 100_i64;
+    let mut suggestions = Vec::new();
+
+    if summary.evidence_count == 0 {
+        return OsEvidenceCapabilityHealth {
+            capability: capability.to_string(),
+            days,
+            score: 0,
+            level: "no_data".to_string(),
+            evidence_count: 0,
+            block_rate: 0.0,
+            recovery_density: 0.0,
+            learning_density: 0.0,
+            top_issue,
+            suggestions: vec![governance_suggestion(
+                "info",
+                "evidence",
+                "这个时间窗口还没有可评估的 Evidence。",
+                "继续运行真实任务并确保 TurnClosure、VerificationReport 和 FailureLearningRecord 落盘。",
+            )],
+        };
+    }
+
+    if summary.block_rate >= 0.50 {
+        score -= 40;
+        suggestions.push(governance_suggestion(
+            "critical",
+            "quality",
+            format!(
+                "质量阻断率达到 {}%。",
+                (summary.block_rate * 100.0).round() as u64
+            ),
+            "优先查看低质量工具和质量问题 Top，为高频问题补 verification_contract 或替换执行路径。",
+        ));
+    } else if summary.block_rate >= 0.25 {
+        score -= 25;
+        suggestions.push(governance_suggestion(
+            "warning",
+            "quality",
+            format!(
+                "质量阻断率达到 {}%。",
+                (summary.block_rate * 100.0).round() as u64
+            ),
+            "检查阻断报告是否来自同一工具或同一失败类别，并把规则沉淀到 Capability Manifest。",
+        ));
+    } else if summary.block_rate > 0.0 {
+        score -= 10;
+        suggestions.push(governance_suggestion(
+            "info",
+            "quality",
+            format!("存在 {} 条阻断型质量报告。", summary.blocked_reports),
+            "继续观察是否形成重复失败，必要时为该能力补充失败学习和恢复路径。",
+        ));
+    }
+
+    if summary.blocked_reports > 0 && summary.recovery_candidates == 0 {
+        score -= 15;
+        suggestions.push(governance_suggestion(
+            "warning",
+            "recovery",
+            "有阻断失败，但没有可用恢复候选。",
+            "为对应 Skill/MCP 增加 recovery_playbook，让 RecoveryPlanner 能按失败原因选择下一条路径。",
+        ));
+    }
+
+    if summary.blocked_reports > 0 && summary.failure_learning_records == 0 {
+        score -= 15;
+        suggestions.push(governance_suggestion(
+            "warning",
+            "learning",
+            "有阻断失败，但没有写入失败学习记忆。",
+            "检查 VerificationReport 到 FailureLearningLoop 的链路，确保失败原因、上下文和恢复结果进入统一记忆。",
+        ));
+    }
+
+    if let Some((issue, count)) = summary.quality_issue_top.first() {
+        if *count >= 3 {
+            score -= 10;
+            suggestions.push(governance_suggestion(
+                "warning",
+                "quality",
+                format!("高频质量问题：{issue}，出现 {count} 次。"),
+                "把这个问题升级为专项门禁：执行前预检、执行后校验、失败后自动换路。",
+            ));
+        }
+    }
+
+    if summary.evidence_count < 3 {
+        score -= 5;
+        suggestions.push(governance_suggestion(
+            "info",
+            "confidence",
+            "样本量较少，健康分可信度有限。",
+            "继续积累真实任务 Evidence，至少覆盖成功、失败、恢复三类样本。",
+        ));
+    }
+
+    if suggestions.is_empty() {
+        suggestions.push(governance_suggestion(
+            "info",
+            "quality",
+            "当前能力健康，没有发现明显治理风险。",
+            "保持自动监控，继续沉淀成功样本和恢复样本。",
+        ));
+    }
+
+    let score = score.clamp(0, 100) as u64;
+    let level = if score >= 85 {
+        "healthy"
+    } else if score >= 70 {
+        "watch"
+    } else if score >= 50 {
+        "degraded"
+    } else {
+        "critical"
+    };
+
+    OsEvidenceCapabilityHealth {
+        capability: capability.to_string(),
+        days,
+        score,
+        level: level.to_string(),
+        evidence_count: summary.evidence_count,
+        block_rate: summary.block_rate,
+        recovery_density,
+        learning_density,
+        top_issue,
+        suggestions,
+    }
+}
+
+#[tauri::command]
+pub fn os_evidence_governance_index(
+    limit: Option<usize>,
+) -> Result<OsEvidenceGovernanceIndex, String> {
+    let source_limit = limit.unwrap_or(300).clamp(1, 300);
+    let rows = os_evidence_list(Some(source_limit))?;
+    let now = now_secs();
+    let mut capability_counts = BTreeMap::<String, usize>::new();
+    for row in rows.iter() {
+        bump(&mut capability_counts, evidence_capability_label(row));
+    }
+    let capability_options = top_counts(capability_counts, 48);
+    let mut capability_names = vec!["all".to_string()];
+    capability_names.extend(capability_options.iter().map(|(name, _)| name.clone()));
+
+    let mut windows = Vec::new();
+    for days in [7_u64, 14, 30] {
+        let rows_in_window = rows
+            .iter()
+            .filter(|row| is_within_days(row, days, now))
+            .collect::<Vec<_>>();
+        windows.push(OsEvidenceGovernanceWindow {
+            days,
+            capability: "all".to_string(),
+            summary: governance_summary(&rows_in_window),
+        });
+        for capability in capability_names
+            .iter()
+            .filter(|name| name.as_str() != "all")
+        {
+            let filtered = rows_in_window
+                .iter()
+                .copied()
+                .filter(|row| evidence_capability_label(row) == capability.as_str())
+                .collect::<Vec<_>>();
+            if filtered.is_empty() {
+                continue;
+            }
+            windows.push(OsEvidenceGovernanceWindow {
+                days,
+                capability: capability.clone(),
+                summary: governance_summary(&filtered),
+            });
+        }
+    }
+
+    let mut health = windows
+        .iter()
+        .map(|window| capability_health(&window.capability, window.days, &window.summary))
+        .collect::<Vec<_>>();
+    health.sort_by(|a, b| {
+        a.score
+            .cmp(&b.score)
+            .then_with(|| b.evidence_count.cmp(&a.evidence_count))
+            .then_with(|| a.days.cmp(&b.days))
+            .then_with(|| a.capability.cmp(&b.capability))
+    });
+
+    let index_path = project_output_dir()?.join("os_evidence_governance_index.json");
+    let index = OsEvidenceGovernanceIndex {
+        generated_at: now,
+        source_limit,
+        total_evidence: rows.len(),
+        index_path: index_path.to_string_lossy().into_owned(),
+        capability_options,
+        windows,
+        health,
+    };
+    let value = serde_json::to_value(&index)
+        .map_err(|e| format!("serialize governance index failed: {e}"))?;
+    write_json_file(&index_path, &value)?;
+    Ok(index)
 }
 
 #[tauri::command]
@@ -1567,4 +2157,58 @@ pub fn os_evidence_config_set(config: OsEvidenceConfig) -> Result<OsEvidenceConf
     let value = serde_json::to_value(&cfg).map_err(|e| format!("serialize config failed: {e}"))?;
     write_json_file(&path, &value)?;
     Ok(cfg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collects_failure_learning_records_from_nested_ledger_events() {
+        let value = json!({
+            "events": [
+                {
+                    "event_type": "failure_learning_recorded",
+                    "payload": {
+                        "failure_class": "tool_quality_failed",
+                        "next_strategy": "regenerate_clean_summary",
+                        "memory_write": {
+                            "memory_type": "failure_hint",
+                            "content": "summary failed quality gate"
+                        }
+                    }
+                }
+            ]
+        });
+        let mut rows = Vec::new();
+        collect_failure_learning_records(&value, &mut rows);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("event_type").and_then(|v| v.as_str()),
+            Some("failure_learning_recorded")
+        );
+        assert_eq!(
+            rows[0]
+                .get("payload")
+                .and_then(|v| v.get("failure_class"))
+                .and_then(|v| v.as_str()),
+            Some("tool_quality_failed")
+        );
+    }
+
+    #[test]
+    fn collects_failure_learning_records_from_plain_payloads() {
+        let value = json!({
+            "failure_class": "target_not_found",
+            "next_strategy": "resolve_target_from_memory_or_ask_user",
+            "memory_write": { "memory_type": "failure_hint" }
+        });
+        let mut rows = Vec::new();
+        collect_failure_learning_records(&value, &mut rows);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("failure_class").and_then(|v| v.as_str()),
+            Some("target_not_found")
+        );
+    }
 }

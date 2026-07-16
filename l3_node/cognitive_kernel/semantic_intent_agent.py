@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -112,6 +113,7 @@ def resolve_semantic_intent_candidates(
 
 def choose_semantic_override(
     *,
+    text: str = "",
     base_intent: str,
     base_task_type: str,
     base_tool: str,
@@ -123,7 +125,11 @@ def choose_semantic_override(
     best = candidates[0]
     if not best.intent:
         return None
+    if not _candidate_allowed_for_text(best, text=text, base_intent=base_intent):
+        return None
     if base_intent in {"", "conversation"} and best.confidence >= 0.55:
+        return best
+    if base_intent == "message_send" and best.task_type in {"project_briefing_delivery", "codex_ask_lark_send", "web_research_delivery"} and best.confidence >= 0.55:
         return best
     if not base_tool and best.tool and best.confidence >= 0.58 and best.intent == base_intent:
         return best
@@ -134,6 +140,128 @@ def choose_semantic_override(
     ):
         return best
     return None
+
+
+def _candidate_allowed_for_text(candidate: SemanticIntentCandidate, *, text: str, base_intent: str) -> bool:
+    task_type = str(candidate.task_type or "").strip()
+    raw = str(text or "")
+    low = raw.lower()
+    if task_type == "project_briefing_delivery":
+        if not _looks_like_project_briefing_goal(low, candidate.target_patch):
+            return False
+    if task_type == "codex_ask_lark_send":
+        if not _looks_like_codex_ask_goal(low):
+            return False
+    if task_type == "web_research_delivery":
+        if not _looks_like_web_research_delivery_goal(low):
+            return False
+    if base_intent == "message_send" and task_type == "project_briefing_delivery":
+        return _looks_like_project_briefing_goal(low, candidate.target_patch)
+    if base_intent == "message_send" and task_type == "codex_ask_lark_send":
+        return _looks_like_codex_ask_goal(low)
+    if base_intent == "message_send" and task_type == "web_research_delivery":
+        return _looks_like_web_research_delivery_goal(low)
+    # A clear deterministic route should not be replaced by a different
+    # capability family. App/entity correction still gets handled below by
+    # matching the same base intent.
+    if base_intent not in {"", "conversation"}:
+        expected = _task_type_for_intent(base_intent)
+        if expected and task_type and task_type != expected:
+            return False
+    return True
+
+
+def _looks_like_project_briefing_goal(low: str, target_patch: dict[str, Any]) -> bool:
+    if target_patch.get("project_name") or target_patch.get("project_path") or target_patch.get("feature_query"):
+        return True
+    project_terms = (
+        "project",
+        "repo",
+        "repository",
+        "codebase",
+        "codex",
+        "jachin",
+        "git",
+        "\\",
+        "/",
+        "\u9879\u76ee",  # 项目
+        "\u4ee3\u7801",  # 代码
+        "\u4ed3\u5e93",  # 仓库
+        "\u672c\u673a",  # 本机
+        "\u76ee\u5f55",  # 目录
+        "\u529f\u80fd",  # 功能
+        "\u8fdb\u5c55",  # 进展
+    )
+    briefing_terms = (
+        "summary",
+        "summarize",
+        "brief",
+        "briefing",
+        "\u603b\u7ed3",  # 总结
+        "\u6574\u7406",  # 整理
+        "\u6c47\u62a5",  # 汇报
+        "\u7b80\u62a5",  # 简报
+        "\u6700\u8fd1",  # 最近
+    )
+    return any(term in low for term in project_terms) and any(term in low for term in briefing_terms)
+
+
+def _looks_like_codex_ask_goal(low: str) -> bool:
+    return any(
+        term in low
+        for term in (
+            "codex",
+            "ask codex",
+            "\u8ba9 codex",
+            "\u95ee codex",
+            "\u4f7f\u7528 codex",
+        )
+    )
+
+
+def _looks_like_web_research_delivery_goal(low: str) -> bool:
+    search_terms = (
+        "search",
+        "web",
+        "internet",
+        "latest",
+        "news",
+        "\u641c\u7d22",  # 搜索
+        "\u4e0a\u7f51",  # 上网
+        "\u67e5\u4e00\u4e0b",  # 查一下
+        "\u6700\u65b0",  # 最新
+        "\u6d88\u606f",  # 消息
+        "\u65b0\u95fb",  # 新闻
+        "\u8d44\u8baf",  # 资讯
+    )
+    delivery_terms = (
+        "send",
+        "message",
+        "lark",
+        "feishu",
+        "\u53d1\u7ed9",  # 发给
+        "\u53d1\u9001",  # 发送
+        "\u53d1\u5230",  # 发到
+        "\u98de\u4e66",  # 飞书
+        "\u7fa4",  # 群
+    )
+    summarize_terms = (
+        "summary",
+        "summarize",
+        "brief",
+        "\u603b\u7ed3",  # 总结
+        "\u6574\u7406",  # 整理
+        "\u6458\u8981",  # 摘要
+        "\u91cd\u70b9",  # 重点
+    )
+    has_search = any(term in low for term in search_terms)
+    has_delivery = any(term in low for term in delivery_terms) or bool(
+        re.search(r"(发|发送|推送|同步|转发)(给|到|至)?[A-Za-z0-9_\-\u4e00-\u9fff]{2,}", low)
+    )
+    _has_summary = any(term in low for term in summarize_terms)
+    # Searching current information and sending it implies a sendable summary.
+    # Do not misroute "search latest AI model news and send Neil" as a raw message.
+    return has_search and has_delivery
 
 
 def _mission_candidates(text: str, registry: list[CapabilityDescriptor], *, limit: int) -> list[SemanticIntentCandidate]:
@@ -455,6 +583,7 @@ def _review_task_type_for_mission(task_type: str) -> str:
         "system_status_report": "system_status_report",
         "project_briefing_delivery": "project_briefing_delivery",
         "codex_ask_lark_send": "codex_ask_lark_send",
+        "web_research_delivery": "web_research_delivery",
     }.get(task_type, task_type)
 
 
@@ -467,6 +596,8 @@ def _intent_for_task_type(task_type: str, text: str) -> str:
         return _app_intent_from_text(text.lower()) or "open_app"
     if task_type in {"file_operation", "file_to_app", "file_find", "file_delete"}:
         return "file_operation"
+    if task_type == "web_research_delivery":
+        return "web_research_delivery"
     if task_type:
         return task_type
     return ""
@@ -500,6 +631,7 @@ def _tool_for_task_type(task_type: str) -> str:
         "file_operation": "core:fs_read",
         "project_briefing_delivery": "mcp:windows_codex_lark_workflow_template",
         "codex_ask_lark_send": "mcp:windows_codex_ask_lark_send",
+        "web_research_delivery": "mcp:web_research_delivery",
     }.get(task_type, "")
 
 
@@ -514,4 +646,16 @@ def _target_from_mission(slots: dict[str, Any], task_type: str) -> dict[str, Any
     if task_type in {"file_operation", "file_to_app", "file_find", "file_delete"}:
         path = str(slots.get("file_path") or slots.get("directory_path") or "").strip()
         return {"type": "file", "path": path, "name": path, "source": "semantic_parser"} if path else {}
+    if task_type == "web_research_delivery":
+        query = str(slots.get("query") or slots.get("topic") or slots.get("message") or "").strip()
+        return {
+            "type": "web_research_delivery",
+            "app": "Lark",
+            "query": query,
+            "name": query,
+            "recipients": slots.get("recipients") or [],
+            "freshness": slots.get("freshness") or "latest",
+            "delivery_stub": f"网页研究摘要生成中：{query}" if query else "网页研究摘要生成中",
+            "source": "semantic_parser",
+        }
     return {}

@@ -48,9 +48,24 @@ def _write(path: Path, data: Any) -> Path:
     return path
 
 
+def _move_pointer_away_from_failsafe() -> dict[str, Any]:
+    """Move the pointer away from PyAutoGUI fail-safe corners before live UI work."""
+
+    try:
+        import pyautogui  # type: ignore
+
+        width, height = pyautogui.size()
+        x = max(40, min(width - 40, width // 2))
+        y = max(40, min(height - 40, height // 2))
+        pyautogui.moveTo(x, y, duration=0.05)
+        return {"ok": True, "x": x, "y": y, "screen": {"width": width, "height": height}}
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
 def _parse_recipients(value: str) -> list[str]:
     recipients = [item.strip() for item in str(value or "").split(",") if item.strip()]
-    return recipients or ["Neil", "测试备注冒烟草稿"]
+    return recipients or ["Neil"]
 
 
 def _validate_live_lark_recipients(recipients: list[str]) -> list[str]:
@@ -684,6 +699,7 @@ async def _dispatch_live_work_order(
     from l3_node.cognitive_kernel.dispatcher import dispatch_existing_work_order
     from l3_node.cognitive_kernel.runtime import close_turn
 
+    pointer_preflight = _move_pointer_away_from_failsafe()
     contract, work_order = _live_contract_and_work_order(
         turn_id=turn_id,
         tool=tool,
@@ -733,10 +749,40 @@ async def _dispatch_live_work_order(
         aborted=not result.verification.ok,
         extra_memory_write_requests=extra_memory,
     )
+    persisted_memory = []
+    try:
+        from l3_node.cognitive_kernel.memory_lifecycle import write_lifecycle_memory
+
+        for request in closure.memory_write_requests:
+            persisted = write_lifecycle_memory(request)
+            persisted_memory.append(
+                {
+                    "memory_id": persisted.memory_id,
+                    "memory_type": persisted.memory_type,
+                    "confidence": persisted.confidence,
+                    "review_required": persisted.review_required,
+                    "review_reason": persisted.review_reason,
+                }
+            )
+    except Exception as exc:
+        persisted_memory.append({"error": f"{type(exc).__name__}: {exc}"})
+    full_observation_path = ""
+    try:
+        out_dir_value = action_input.get("out_dir") if isinstance(action_input, dict) else ""
+        if out_dir_value:
+            obs_dir = Path(str(out_dir_value))
+            obs_dir.mkdir(parents=True, exist_ok=True)
+            obs_path = obs_dir / f"{_safe_name(turn_id)}_full_observation.json"
+            obs_path.write_text(str(result.observation or ""), encoding="utf-8")
+            full_observation_path = str(obs_path)
+    except Exception:
+        full_observation_path = ""
     return {
         "ok": bool(result.verification.ok),
         "detail": "live_work_order_verified" if result.verification.ok else result.verification.failure_reason,
         "turn_id": turn_id,
+        "pointer_preflight": pointer_preflight,
+        "full_observation_path": full_observation_path,
         "contract": result.contract.to_dict(),
         "work_order": result.work_order.to_dict(),
         "verification": result.verification.to_dict(),
@@ -744,6 +790,7 @@ async def _dispatch_live_work_order(
         "attempts": result.attempts or [],
         "final_failure_report": result.final_failure_report,
         "closure": closure.to_dict(),
+        "persisted_memory": persisted_memory,
         "observation_preview": str(result.observation or "")[:2000],
     }
 
@@ -879,6 +926,361 @@ def live_confirmed_calculator_visual(kernel_home: Path, run_dir: Path) -> dict[s
     }
 
 
+def live_confirmed_file_moved_recovery(kernel_home: Path, run_dir: Path, round_no: int) -> dict[str, Any]:
+    os.environ["JACHIN_COGNITIVE_KERNEL_HOME"] = str(kernel_home)
+    fixture_dir = run_dir / "continuous" / f"round_{round_no:03d}" / "file_moved"
+    fixture_dir.mkdir(parents=True, exist_ok=True)
+    original = fixture_dir / "target_before_move.txt"
+    moved = fixture_dir / "target_after_move.txt"
+    original.write_text(f"Jachin file moved stress fixture round={round_no}\n", encoding="utf-8")
+    if moved.exists():
+        moved.unlink()
+    original.rename(moved)
+    result = asyncio.run(
+        _dispatch_live_work_order(
+            turn_id=f"os-live-continuous-file-moved-{round_no}-{int(time.time())}",
+            tool="mcp:windows_file_reveal_in_explorer",
+            action_input={"path": str(original), "out_dir": str(fixture_dir / "evidence")},
+            role_agent="FileExecutorAgent",
+            goal=f"Continuous stress file moved recovery round {round_no}",
+            executor=_transport_should_not_run,
+        )
+    )
+    attempts = result.get("attempts") or []
+    strategy_chain = [str(item.get("strategy") or "") for item in attempts if isinstance(item, dict)]
+    return {
+        "ok": bool(attempts) and result.get("ok") is False and any(s != "initial" for s in strategy_chain),
+        "detail": "file_moved_failure_recovered_to_report" if attempts else "file_moved_no_attempts",
+        "expected_failure": True,
+        "original": str(original),
+        "moved": str(moved),
+        "strategy_chain": strategy_chain,
+        "result": result,
+    }
+
+
+async def _fake_network_outage_executor(work_order: Any) -> str:
+    payload = json.loads(str(work_order.inputs.get("work_order_input") or "{}"))
+    strategy = str(payload.get("recovery_strategy") or "initial")
+    return json.dumps(
+        {
+            "ok": False,
+            "error": "connection refused simulated network outage",
+            "status": "failed",
+            "network": "offline",
+            "recovery_strategy": strategy,
+            "hint": "fault injection: network unavailable for this attempt",
+        },
+        ensure_ascii=False,
+    )
+
+
+def live_confirmed_network_fault_recovery(kernel_home: Path, run_dir: Path, round_no: int) -> dict[str, Any]:
+    os.environ["JACHIN_COGNITIVE_KERNEL_HOME"] = str(kernel_home)
+    result = asyncio.run(
+        _dispatch_live_work_order(
+            turn_id=f"os-live-continuous-network-fault-{round_no}-{int(time.time())}",
+            tool="mcp:network_probe",
+            action_input={
+                "url": "https://open.larksuite.com",
+                "timeout": 1.0,
+                "out_dir": str(run_dir / "continuous" / f"round_{round_no:03d}" / "network_fault"),
+            },
+            role_agent="ToolExecutionAgent",
+            goal=f"Continuous stress simulated network outage round {round_no}",
+            executor=_fake_network_outage_executor,
+        )
+    )
+    attempts = result.get("attempts") or []
+    strategy_chain = [str(item.get("strategy") or "") for item in attempts if isinstance(item, dict)]
+    return {
+        "ok": result.get("ok") is False and len(attempts) >= 2 and "retry_with_backoff_hint" in strategy_chain,
+        "detail": "network_fault_retry_recorded" if len(attempts) >= 2 else "network_fault_missing_retry",
+        "expected_failure": True,
+        "strategy_chain": strategy_chain,
+        "result": result,
+    }
+
+
+async def _fake_lark_not_logged_in_executor(work_order: Any) -> str:
+    payload = json.loads(str(work_order.inputs.get("work_order_input") or "{}"))
+    return json.dumps(
+        {
+            "ok": False,
+            "error": "lark_not_logged_in simulated login expired",
+            "recipient": (payload.get("recipients") or ["Neil"])[0],
+            "side_effect_status": "not_started",
+            "post_send_verified": False,
+        },
+        ensure_ascii=False,
+    )
+
+
+def live_confirmed_lark_not_logged_in_fault(kernel_home: Path, run_dir: Path, round_no: int) -> dict[str, Any]:
+    os.environ["JACHIN_COGNITIVE_KERNEL_HOME"] = str(kernel_home)
+    result = asyncio.run(
+        _dispatch_live_work_order(
+            turn_id=f"os-live-continuous-lark-login-fault-{round_no}-{int(time.time())}",
+            tool="mcp:windows_lark_send_message",
+            action_input={
+                "recipients": ["Neil"],
+                "recipients_json": json.dumps(["Neil"], ensure_ascii=False),
+                "message": f"not sent: simulated login fault round {round_no}",
+                "out_dir": str(run_dir / "continuous" / f"round_{round_no:03d}" / "lark_not_logged_in"),
+            },
+            role_agent="MessageExecutorAgent",
+            goal=f"Continuous stress simulated Lark login expiry round {round_no}",
+            executor=_fake_lark_not_logged_in_executor,
+        )
+    )
+    persisted_types = [
+        item.get("memory_type")
+        for item in (result.get("persisted_memory") or [])
+        if isinstance(item, dict)
+    ]
+    return {
+        "ok": result.get("ok") is False and "failure_hint" in persisted_types,
+        "detail": "lark_login_failure_memory_recorded" if "failure_hint" in persisted_types else "lark_login_failure_memory_missing",
+        "expected_failure": True,
+        "result": result,
+    }
+
+
+def continuous_live_confirmed_stress(
+    kernel_home: Path,
+    run_dir: Path,
+    *,
+    rounds: int,
+    recipients: list[str],
+    message: str,
+    lark_every: int = 10,
+    live_desktop: bool = True,
+    live_lark: bool = True,
+) -> dict[str, Any]:
+    os.environ["JACHIN_COGNITIVE_KERNEL_HOME"] = str(kernel_home)
+    from l3_node.cognitive_kernel.memory_lifecycle import (
+        govern_lifecycle_memories,
+        recall_lifecycle_memories,
+    )
+
+    rounds = max(1, min(50, int(rounds or 1)))
+    lark_every = max(0, int(lark_every or 0))
+    if live_lark:
+        recipients = _validate_live_lark_recipients(recipients)
+    rows: list[dict[str, Any]] = []
+    for round_no in range(1, rounds + 1):
+        scenario = "governance_fault"
+        if live_lark and lark_every and (round_no == 1 or round_no % lark_every == 0):
+            scenario = "lark_real_send"
+        elif live_desktop and round_no % 5 == 2:
+            scenario = "calculator_real"
+        elif live_desktop and round_no % 5 == 3:
+            scenario = "file_real_open_reveal"
+        elif live_desktop and round_no % 5 == 4:
+            scenario = "file_moved_fault"
+        elif round_no % 5 == 0:
+            scenario = "network_fault"
+        elif round_no % 7 == 0:
+            scenario = "lark_not_logged_in_fault"
+
+        started = time.perf_counter()
+        try:
+            if scenario == "lark_real_send":
+                payload = live_confirmed_lark_send(
+                    kernel_home,
+                    run_dir / "continuous" / f"round_{round_no:03d}",
+                    recipients,
+                    f"{message} round={round_no}/{rounds}",
+                )
+            elif scenario == "calculator_real":
+                payload = live_confirmed_calculator_visual(kernel_home, run_dir / "continuous" / f"round_{round_no:03d}")
+            elif scenario == "file_real_open_reveal":
+                payload = live_confirmed_file_open_reveal(kernel_home, run_dir / "continuous" / f"round_{round_no:03d}")
+            elif scenario == "file_moved_fault":
+                payload = live_confirmed_file_moved_recovery(kernel_home, run_dir, round_no)
+            elif scenario == "network_fault":
+                payload = live_confirmed_network_fault_recovery(kernel_home, run_dir, round_no)
+            elif scenario == "lark_not_logged_in_fault":
+                payload = live_confirmed_lark_not_logged_in_fault(kernel_home, run_dir, round_no)
+            else:
+                payload = memory_governance_os_workflow_fault_injection(
+                    kernel_home,
+                    run_dir / "continuous" / f"round_{round_no:03d}",
+                )
+            ok = bool(payload.get("ok"))
+            detail = str(payload.get("detail") or ("ok" if ok else "failed"))
+        except Exception as exc:
+            ok = False
+            detail = f"{type(exc).__name__}: {exc}"
+            payload = {"ok": False, "detail": detail, "traceback": traceback.format_exc()}
+        rows.append(
+            {
+                "round": round_no,
+                "scenario": scenario,
+                "ok": ok,
+                "detail": detail,
+                "elapsed_ms": int((time.perf_counter() - started) * 1000),
+                "payload": payload,
+            }
+        )
+
+    governance = govern_lifecycle_memories(stale_after_days=1)
+    failure_hits = recall_lifecycle_memories(
+        "live confirmed stress lark network file moved post-send verification",
+        memory_types=["failure_hint"],
+        limit=25,
+    )
+    scenario_counts: dict[str, dict[str, int]] = {}
+    for row in rows:
+        bucket = scenario_counts.setdefault(str(row["scenario"]), {"total": 0, "ok": 0, "failed": 0})
+        bucket["total"] += 1
+        bucket["ok" if row["ok"] else "failed"] += 1
+    failed = [row for row in rows if not row["ok"]]
+    expected_failures = [
+        row for row in rows if row.get("payload", {}).get("expected_failure") is True
+    ]
+    return {
+        "ok": not failed,
+        "detail": f"continuous_live_confirmed_stress {len(rows) - len(failed)}/{len(rows)} passed",
+        "rounds": rounds,
+        "live_desktop": live_desktop,
+        "live_lark": live_lark,
+        "lark_every": lark_every,
+        "recipients": recipients if live_lark else [],
+        "scenario_counts": scenario_counts,
+        "expected_failure_rounds": len(expected_failures),
+        "failure_hint_recall_count": len(failure_hits),
+        "governance": governance,
+        "rows": rows,
+        "failures": failed,
+    }
+
+
+async def _fake_message_missing_post_send_executor(work_order: Any) -> str:
+    payload = json.loads(str(work_order.inputs.get("work_order_input") or "{}"))
+    return json.dumps(
+        {
+            "ok": True,
+            "status": "queued",
+            "recipient": (payload.get("recipients") or ["Neil"])[0],
+            "message_preview": str(payload.get("message") or "")[:80],
+            "note": "fault injection: no post-send visual/API evidence",
+        },
+        ensure_ascii=False,
+    )
+
+
+def memory_governance_os_workflow_fault_injection(kernel_home: Path, run_dir: Path) -> dict[str, Any]:
+    os.environ["JACHIN_COGNITIVE_KERNEL_HOME"] = str(kernel_home)
+    from l3_node.cognitive_kernel.contracts import MemoryWriteRequest
+    from l3_node.cognitive_kernel.memory_lifecycle import (
+        govern_lifecycle_memories,
+        pending_lifecycle_review_items,
+        recall_lifecycle_memories,
+        write_lifecycle_memory,
+    )
+
+    fault_id = f"{time.time_ns()}"
+    dispatch = asyncio.run(
+        _dispatch_live_work_order(
+            turn_id=f"os-live-governance-message-fault-{fault_id}",
+            tool="mcp:windows_lark_send_message",
+            action_input={
+                "recipients": ["Neil"],
+                "recipients_json": json.dumps(["Neil"], ensure_ascii=False),
+                "message": f"Jachin governance fault injection should not be reported as sent. id={fault_id}",
+                "out_dir": str(run_dir / "fault_injection" / "lark_missing_post_send"),
+            },
+            role_agent="MessageExecutorAgent",
+            goal="Fault-injected Lark send without post-send verification",
+            executor=_fake_message_missing_post_send_executor,
+        )
+    )
+
+    stale = write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="os-live-governance-stale",
+            source_event="os_live_stress_governance",
+            memory_type="project_fact",
+            content="Stale OS workflow fact: old Lark window title should be revalidated.",
+            confidence=0.82,
+            ttl="permanent",
+            evidence=[{"type": "os_live_governance", "governance_key": "lark:window:title"}],
+        )
+    )
+    write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="os-live-governance-conflict-a",
+            source_event="os_live_stress_governance",
+            memory_type="correction",
+            content="When speech hears lock, open Lark.",
+            confidence=0.83,
+            ttl="permanent",
+            evidence=[{"type": "os_live_governance", "governance_key": "speech:lock"}],
+        )
+    )
+    write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="os-live-governance-conflict-b",
+            source_event="os_live_stress_governance",
+            memory_type="correction",
+            content="When speech hears lock, open Windows lock screen.",
+            confidence=0.83,
+            ttl="permanent",
+            evidence=[{"type": "os_live_governance", "governance_key": "speech:lock"}],
+        )
+    )
+
+    store = kernel_home / "memory" / "memory_lifecycle.jsonl"
+    records = []
+    for line in store.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            records.append(line)
+            continue
+        if obj.get("memory_id") == stale.memory_id:
+            obj["created_at_ms"] = 1
+            obj["updated_at_ms"] = 1
+            obj["last_verified_at_ms"] = 1
+        records.append(json.dumps(obj, ensure_ascii=False))
+    store.write_text("\n".join(records) + "\n", encoding="utf-8")
+
+    governance = govern_lifecycle_memories(stale_after_days=1)
+    pending = pending_lifecycle_review_items(limit=20)
+    failure_hits = recall_lifecycle_memories("post-send verification Lark send", memory_types=["failure_hint"], limit=10)
+    verification = dispatch.get("verification") or {}
+    role_evidence = [
+        item
+        for item in verification.get("evidence", [])
+        if isinstance(item, dict) and item.get("type") == "role_execution"
+    ]
+    persisted = dispatch.get("persisted_memory") or []
+    persisted_types = [item.get("memory_type") for item in persisted if isinstance(item, dict)]
+    pending_reasons = {item.get("review_reason") for item in pending}
+    checks = {
+        "false_success_blocked": dispatch.get("ok") is False and verification.get("failure_reason") == "message_post_send_verification_missing",
+        "role_execution_evidence_present": bool(role_evidence),
+        "failure_memory_persisted": "failure_hint" in persisted_types,
+        "failure_memory_recallable": any("mcp:windows_lark_send_message" in hit.content or "post-send" in hit.content for hit in failure_hits),
+        "stale_memory_governed": "stale_unverified" in pending_reasons,
+        "conflict_memory_governed": "memory_conflict" in pending_reasons,
+        "pending_queue_populated": len(pending) >= 3,
+    }
+    return {
+        "ok": all(checks.values()),
+        "detail": "memory_governed_os_fault_injection_ok" if all(checks.values()) else "memory_governed_os_fault_injection_failed",
+        "checks": checks,
+        "dispatch": dispatch,
+        "governance": governance,
+        "pending_preview": pending[:10],
+        "failure_hit_count": len(failure_hits),
+        "failure_hits": [hit.to_dict() for hit in failure_hits],
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run OS live stress matrix for planning, memory learning, and safe live probes.")
     parser.add_argument("--live-safe", action="store_true", help="Also run safe live probes through capability_live_matrix.py.")
@@ -889,13 +1291,30 @@ def main() -> int:
     )
     parser.add_argument(
         "--confirmed-lark-recipients",
-        default="Neil,测试备注冒烟草稿",
+        default="Neil",
         help="Comma-separated Lark recipients for --live-confirmed. Hard allowlist: Neil, 测试备注冒烟草稿.",
     )
     parser.add_argument(
         "--confirmed-message",
         default="",
         help="Message body for live-confirmed Lark sends. Defaults to a timestamped stress-test note.",
+    )
+    parser.add_argument(
+        "--live-confirmed-rounds",
+        type=int,
+        default=0,
+        help="Run a continuous 1-50 round live-confirmed/fault-injection stress loop after the base matrix.",
+    )
+    parser.add_argument(
+        "--lark-every",
+        type=int,
+        default=10,
+        help="In --live-confirmed-rounds, send real allowlisted Lark messages on round 1 and every N rounds. Use 0 to disable real Lark sends.",
+    )
+    parser.add_argument(
+        "--continuous-no-desktop",
+        action="store_true",
+        help="For development tests, disable real desktop actions in --live-confirmed-rounds and keep only fault-injection rows.",
     )
     args = parser.parse_args()
 
@@ -915,6 +1334,7 @@ def main() -> int:
     matrix.run("workflow", "file_read_open_reveal_planning", lambda: file_read_open_reveal_planning(kernel_home, run_dir))
     matrix.run("recovery", "attempt_limit_and_failure_summary", lambda: recovery_attempt_limit_summary(kernel_home))
     matrix.run("resilience", "lifecycle_store_corrupt_line", lambda: lifecycle_store_corruption_is_ignored(kernel_home))
+    matrix.run("governance", "memory_governed_os_workflow_fault_injection", lambda: memory_governance_os_workflow_fault_injection(kernel_home, run_dir))
     if args.live_safe:
         matrix.run("live_safe", "capability_live_matrix_bridge", lambda: live_safe_bridge(run_dir))
     if args.live_confirmed:
@@ -934,6 +1354,23 @@ def main() -> int:
             "live_confirmed",
             "calculator_visual_91_plus_9",
             lambda: live_confirmed_calculator_visual(kernel_home, run_dir),
+        )
+    if args.live_confirmed_rounds:
+        recipients = _validate_live_lark_recipients(_parse_recipients(args.confirmed_lark_recipients))
+        message = args.confirmed_message.strip() or f"Jachin continuous live-confirmed stress run={run_id}"
+        matrix.run(
+            "live_confirmed_continuous",
+            f"rounds_{max(1, min(50, int(args.live_confirmed_rounds)))}",
+            lambda: continuous_live_confirmed_stress(
+                kernel_home,
+                run_dir,
+                rounds=args.live_confirmed_rounds,
+                recipients=recipients,
+                message=message,
+                lark_every=args.lark_every,
+                live_desktop=not args.continuous_no_desktop,
+                live_lark=bool(args.lark_every),
+            ),
         )
 
     summary = matrix.write_summary()

@@ -656,3 +656,288 @@ python -m pytest -o addopts= tests\unit\test_cognitive_kernel_architecture.py te
    - 优秀输出应进入 examples 或 playbook section。
 
 本轮完成后，Jachin 的自生长知识系统已经从“记录事件”进一步推进到“任务经验可写回、可召回、可参与下一轮决策”。下一阶段重点是把这些经验从 lifecycle memory 继续消化为 Concepts 和 Playbooks。
+
+## 11. 后续主线：从可验证闭环 MVP 走向稳定自生长记忆系统
+
+基于当前测试报告，Jachin 记忆系统已经达到“可验证闭环 MVP / 准 Beta 级”：它已经高于普通上下文缓存和简单 RAG，具备 TurnClosure、MemoryWrite、Recall、DailyReview、Recovery、live-confirmed 等闭环能力。下一阶段主线不再是证明“有没有记忆”，而是证明“记忆是否稳定、可靠、越用越强”。
+
+后续主线分为五条，后续开发按这五条持续推进，每一条都必须形成可测试、可回放、可量化的验收结果。
+
+### 11.1 主线一：记忆质量治理
+
+目标：
+
+- 让长期记忆不只是越积越多，而是越用越准。
+- 建立置信度、冲突、陈旧、污染、人工确认队列。
+- 防止错误纠错、过期路径、错误联系人、失效项目路径污染后续任务。
+
+核心任务：
+
+1. 增加记忆置信度衰减机制。
+2. 增加冲突检测和冲突合并队列。
+3. 增加陈旧记忆清理，例如 App 路径、项目路径、联系人别名、窗口标题。
+4. 增加高价值记忆评分：能减少失败、减少澄清、跨任务复用的记忆优先沉淀为 playbook。
+5. 增加需要用户确认的知识队列，尤其是联系人、危险操作习惯、业务规则和项目路径。
+
+验收标准：
+
+- 相同错误纠错连续失败后，系统能自动降权并重新询问用户。
+- 同一对象存在多个冲突事实时，不直接覆盖，而是进入冲突队列。
+- 陈旧记忆不会继续驱动真实执行。
+- Evidence 中能看到某条记忆为什么被使用、为什么被降权、为什么需要确认。
+
+### 11.2 主线二：真实任务压力测试
+
+目标：
+
+- 把记忆能力放进真实 OS workflow 中验证，而不只停留在单元测试。
+- 用真实成功和失败样本喂给 Memory Growth 和 RecoveryPlanner。
+- 证明系统可以在多轮真实任务中保持稳定，不虚假执行，不污染记忆。
+
+核心任务：
+
+1. 扩大 live-confirmed 场景：App open/switch/close、文件 read/open/reveal/write、Lark 多对象发送、计算器视觉校验。
+2. 故意制造失败：关闭 Lark、移动文件、改联系人名、打开错误窗口、断网、窗口被遮挡。
+3. 增加连续任务压测：同一个用户连续 50-100 轮任务，观察记忆是否膨胀、污染或错误泛化。
+4. 增加跨天测试：今天学到的纠错、工具习惯、最近任务，明天是否仍然能正确召回。
+5. 每次真实任务都必须写 Evidence、Verification、TurnClosure 和必要的 failure_hint。
+
+验收标准：
+
+- live-confirmed 任务必须真实执行并有截图/OCR/API/文件证据。
+- 失败不能被报告成成功。
+- 连续失败后 RecoveryPlanner 必须逐步改变策略，而不是重复同一路径。
+- 压测报告能统计成功率、失败原因、恢复次数和记忆命中情况。
+
+### 11.3 主线三：Memory Growth 自生长
+
+目标：
+
+- 让 raw evidence 不只是日志，而是能定期消化为 Concepts、Playbooks、Outputs。
+- 把成功经验沉淀为可复用流程，把失败经验沉淀为 recovery playbook。
+- 形成“原始证据 -> 概念 -> 方法论 -> 输出 -> 回流”的知识循环。
+
+核心任务：
+
+1. DailyReview 按天扫描 raw evidence，生成 concepts patch、playbook patch、output review。
+2. WeeklyReview 合并重复概念，降权陈旧事实，提升高价值 playbook。
+3. 将高频成功路径沉淀为 workflow playbook。
+4. 将高频失败路径沉淀为 recovery playbook。
+5. 输出回流：Lark 消息、项目报告、PMO 战报、调试总结、工作记录都进入 outputs，并在复盘时反哺 Concepts 和 Playbooks。
+
+验收标准：
+
+- 每天能生成 review artifact。
+- 每个 concept / playbook 都有 source_refs，可追溯到 raw evidence。
+- 高质量输出能进入 outputs，并被后续任务召回。
+- RecoveryPlanner 能显式引用从失败样本沉淀出的 recovery playbook。
+
+### 11.4 主线四：可视化指标
+
+目标：
+
+- 让用户和开发者看得见记忆系统是否真的变强。
+- 把 Evidence、ledger、memory growth、recovery 结果变成可观察指标。
+- 从“跑完看 JSON”升级为“控制台能看趋势、风险和收益”。
+
+核心任务：
+
+1. 增加记忆命中率：每个任务用了哪些记忆，命中后是否提高成功率。
+2. 增加恢复收益：哪些 failure_hint 或 playbook 真的帮助 Recovery 成功。
+3. 增加污染监控：哪些记忆被多次使用后导致失败，需要降权或删除。
+4. 增加 7/14/30 天趋势：记忆数量、有效率、冲突数、陈旧数、确认队列。
+5. 增加治理动作归因：哪些治理动作最有效，哪些反复失败。
+
+验收标准：
+
+- 控制台能看到记忆增长趋势。
+- 控制台能看到冲突、陈旧、失败模式聚合。
+- 控制台能看到“需要用户确认的知识”队列。
+- 控制台能看到每次 Weekly Review 的治理效果评分和趋势归因。
+
+### 11.5 主线五：安全边界
+
+目标：
+
+- 让记忆越用越强，但不能因为记住用户习惯而越权执行危险动作。
+- 对真实发送、删除、覆盖、批量移动、外部发布等动作保持明确安全边界。
+- 让记忆写入本身也有风险等级，而不是所有记忆都同等可信。
+
+核心任务：
+
+1. 对真实发送、删除、覆盖、批量移动继续强制 Evidence 和白名单/确认策略。
+2. 记忆写入分风险等级：用户偏好、联系人映射、业务规则、危险操作习惯不能同等对待。
+3. 一次确认后自动执行的记忆必须有失效期。
+4. 高风险记忆必须支持撤销、降权和人工确认。
+5. 任何外部副作用任务必须保证 Verification 不通过就不能报告成功。
+
+验收标准：
+
+- Lark 真实发送只能在明确授权或白名单策略下执行。
+- 删除、覆盖、批量移动等高危动作必须进入确认门控。
+- 高风险记忆不会因为一次确认而永久生效。
+- 如果工具没有产生真实证据，系统必须报告未通过，而不是虚假成功。
+
+### 11.6 主线推进顺序
+
+建议后续按以下顺序执行：
+
+1. 先做记忆质量治理，避免错误记忆继续污染系统。
+2. 再做真实任务压力测试，用真实成功/失败样本喂给系统。
+3. 然后增强 Memory Growth 自生长，让样本沉淀为 Concepts 和 Playbooks。
+4. 同步建设可视化指标，让每次升级都能被观察和评估。
+5. 最后持续加强安全边界，确保系统越智能越可控。
+
+阶段性目标：
+
+```text
+当前：可验证闭环 MVP / 准 Beta 级，约 70% - 75%
+下一阶段：稳定闭环 Beta，目标 80% - 85%
+再下一阶段：真实任务持续学习 Beta+，目标 90%
+最终目标：可运营、可治理、可回放、可控的自生长记忆系统
+```
+
+### 11.7 执行记录：主线一第一阶段
+
+执行日期：2026-07-14
+
+本阶段已经开始落地主线一“记忆质量治理”，完成了可运行、可压测、可回放的第一版治理闭环。
+
+已完成内容：
+
+- `memory_lifecycle` 增加统一治理入口 `govern_lifecycle_memories`。
+- 增加 `pending_lifecycle_review_items`，用于读取需要人工确认/治理的记忆队列。
+- 增加 `memory_quality_snapshot`，用于控制台或后续指标层读取当前记忆质量状态。
+- 治理覆盖低置信、失败压力、陈旧未验证、同对象冲突、过期记忆和损坏 JSONL 行统计。
+- 治理结果写入 `memory_lifecycle_governance.json`，同时写入 ledger 事件 `memory_lifecycle_governance`。
+- 新增单元测试 `tests/unit/test_memory_quality_governance.py`。
+- 新增压测脚本 `scripts/memory_quality_governance_stress.py`。
+
+压测结果：
+
+```text
+python -m pytest -o addopts= -q tests\unit\test_memory_quality_governance.py tests\unit\test_memory_stress_mvp.py
+5 passed
+
+python scripts\memory_quality_governance_stress.py
+PASS, elapsed 11 ms
+```
+
+压测 Evidence：
+
+```text
+output\memory_quality_governance\20260714_172026\memory_quality_governance_stress.evidence.json
+```
+
+当前结论：
+
+- 记忆系统已经具备“质量治理闸门”的第一版能力。
+- 低质量、冲突和陈旧记忆不会再只靠人工排查，而是可以自动进入待确认队列。
+- 后续主线二“真实任务压力测试”可以在这个治理基础上继续扩大真实 OS workflow 验证。
+
+### 11.8 执行记录：主线二第一阶段
+
+执行日期：2026-07-14
+
+本阶段开始落地主线二“真实任务压力测试”。重点不是继续模拟，而是把记忆治理、失败学习、Verification 和 Evidence 放进真实 OS workflow 中验证。
+
+已完成内容：
+
+- `scripts/os_live_stress_matrix.py` 增加治理故障注入场景 `memory_governed_os_workflow_fault_injection`。
+- 故障注入模拟 Lark 工具返回 `ok=true/status=queued` 但缺少发送后证据，验证系统不会把虚假成功报告给用户。
+- `_dispatch_live_work_order` 增加 TurnClosure 记忆请求真实落盘，确保 `failure_hint` 不只是停留在返回对象。
+- live-confirmed 执行前增加鼠标安全角预检，避免真实 UI 自动化被 PyAutoGUI fail-safe 误中断。
+- Lark 长中文消息预览校验升级为中文冒号切分 + 重叠 compact anchors，避免输入框换行和 OCR 丢标点造成误判。
+- live-confirmed observation 全量落盘到 `*_full_observation.json`，后续排查不再只依赖截断 preview。
+- 新增回归测试 `test_lark_long_chinese_message_matches_wrapped_composer_lines`。
+
+本阶段发现并修复的问题：
+
+| 问题 | 影响 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| 鼠标安全角触发 fail-safe | Neil Lark 真实发送被中断 | 鼠标位于屏幕安全角 | live WorkOrder 前移动鼠标到安全区域并记录 `pointer_preflight` |
+| 长中文消息预览误判 | 消息已粘贴但 Verification 判失败 | OCR 换行、中文冒号和长 anchor 组合导致匹配失败 | 中文冒号切分 + 长文本重叠锚点 + 回归测试 |
+
+验证命令：
+
+```powershell
+python -m pytest -o addopts= -q tests\unit\test_os_live_stress_matrix.py tests\unit\test_os_assistant_capability.py::test_lark_long_chinese_message_matches_wrapped_composer_lines
+python scripts\os_live_stress_matrix.py
+python scripts\os_live_stress_matrix.py --live-confirmed --confirmed-lark-recipients "Neil,测试备注冒烟草稿" --confirmed-message "Jachin 记忆治理真实压力测试复测2：验证长中文预览校验、真实发送、文件、计算器和治理链路。"
+```
+
+验证结果：
+
+```text
+5 passed
+12/12 default matrix passed
+15/15 live-confirmed matrix passed
+```
+
+最终 Evidence：
+
+```text
+output\os_live_stress_matrix\20260714_174233\os_live_stress_matrix_20260714_174233.evidence.json
+```
+
+本阶段结论：
+
+- 记忆治理已经进入真实 OS workflow，而不是只停留在单元测试。
+- 系统可以阻断缺少发送后证据的虚假成功。
+- 真实失败可以沉淀为 `failure_hint`，并被后续 Recall/Recovery 使用。
+- 陈旧/冲突记忆可以在真实 workflow 压测中进入治理队列。
+- Lark 真实发送、文件 reveal/open、计算器视觉校验均能写出可回放 Evidence。
+
+阶段性完成度：
+
+```text
+当前整体完成度：约 78% - 82%
+主线一：记忆质量治理第一阶段完成
+主线二：真实 OS workflow 压测第一阶段完成
+```
+
+下一步主线：
+
+1. 扩大 live-confirmed 样本：连续 20-50 轮真实任务，观察记忆是否膨胀、污染或错误泛化。
+2. 增加故障类型：窗口遮挡、Lark 未登录、目标联系人变化、文件移动/重命名、网络异常。
+3. 让 RecoveryPlanner 显式读取本轮产生的 `failure_hint`，并在下一轮自动改变路径。
+4. 把本轮压力测试结果接入控制台趋势指标：成功率、失败类型、恢复次数、记忆命中率、治理队列数量。
+5. 将真实成功/失败样本纳入 Daily/Weekly Review，继续沉淀为 Concepts 和 Playbooks。
+
+
+## 14. Million-scale Memory Recall: Three-layer Architecture
+
+This stage upgrades MemoryRecall into a three-layer retrieval pipeline. The goal is to find useful memories quickly and explainably even when the local memory store contains hundreds of thousands or millions of records.
+
+### 14.1 Layer 1: inverted-index keyword recall
+
+Each memory is indexed by searchable terms from content, tags, memory_type, domain, owner, skill_id, and evidence fields such as governance_key, entity_key, app_key, and project_key.
+
+A query first uses these terms to find candidate memories through the inverted index. This avoids scanning every memory record during user-facing recall.
+
+### 14.2 Layer 2: rule-score coarse ranking
+
+Candidate memories are then ranked with deterministic rules. Positive signals include keyword hit count, confidence, historical hit count, successful feedback, memory layer, and recency. Negative signals include failures, expired status, conflict markers, low confidence, and review_required.
+
+This layer produces a small and reliable coarse-ranked candidate window.
+
+### 14.3 Layer 3: normalized dot-product rerank
+
+The top coarse candidates are converted into stable local normalized hash vectors. The query vector and candidate vectors are L2-normalized, so their dot product is equivalent to cosine similarity.
+
+This rerank only runs on the coarse-ranked window, not on the full memory store. It improves final ordering without turning million-scale recall into a full vector scan.
+
+### 14.4 Current implementation status
+
+- `memory_lifecycle` now uses `inverted-index -> rule-score -> normalized-dot-rerank`.
+- Recall ledger records candidate_count, active_candidate_count, rule_scored_count, rerank_window, and hit_count.
+- Unit tests cover normalized dot-product math and Evidence reason markers.
+- The million-scale recall report is `docs/15_memory_recall_precision_1m_report.md`.
+
+### 14.5 Next steps
+
+1. Move the in-process inverted index to persistent SQLite FTS / BM25.
+2. Warm the recall index in the background after L3 startup.
+3. Add incremental index updates for memory write, expire, and feedback events.
+4. Show query terms, rule score, dot score, confidence, freshness, and governance state in Evidence Console.
+5. Add polluted-memory stress tests for wrong paths, wrong contacts, wrong corrections, and bad tool habits.

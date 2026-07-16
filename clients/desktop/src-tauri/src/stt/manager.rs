@@ -21,7 +21,10 @@ const CHUNK_LEN: usize = 512;
 /// 10 * 32ms
 const MIN_PTT_CHUNKS: usize = 10;
 
-fn ptt_stream_finalize_timeout(buffer_chunks: usize, has_partial_text: bool) -> std::time::Duration {
+fn ptt_stream_finalize_timeout(
+    buffer_chunks: usize,
+    has_partial_text: bool,
+) -> std::time::Duration {
     let ms = if has_partial_text {
         1500
     } else if buffer_chunks <= 45 {
@@ -130,17 +133,15 @@ pub fn run_ptt_capture(
             .unwrap_or(0)
     );
     let jvs_base_url = resolve_jvs_base_url(&app);
-    let mut stream_client = super::stream_stt_client::take_prewarmed(
-        &jvs_base_url,
-        std::time::Duration::from_secs(45),
-    )
-    .or_else(|| {
-        super::stream_stt_client::SttStreamClient::connect(
-            &jvs_base_url,
-            &stream_session_id,
-        )
-        .ok()
-    });
+    let mut stream_client =
+        super::stream_stt_client::take_prewarmed(&jvs_base_url, std::time::Duration::from_secs(45))
+            .or_else(|| {
+                super::stream_stt_client::SttStreamClient::connect(
+                    &jvs_base_url,
+                    &stream_session_id,
+                )
+                .ok()
+            });
     let (stream, rx_raw, sample_rate, source_channels) = match start_capture() {
         Ok(v) => v,
         Err(e) => {

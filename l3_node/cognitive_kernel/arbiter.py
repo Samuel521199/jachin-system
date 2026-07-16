@@ -8,6 +8,7 @@ import uuid
 from typing import Any
 
 from .contracts import DecisionContract, ReviewSummary, RiskLevel, ToolPolicy, WorkOrder
+from .capability_governance_policy import apply_governance_to_contract, evaluate_capability_governance
 from .ledger import append_event, record_decision, record_work_order
 from .task_decomposer import DecomposedTaskNode, decompose_task
 
@@ -61,6 +62,8 @@ def arbitrate_review_summary(summary: ReviewSummary, *, goal: str = "") -> Decis
         ],
         memory_context_refs=memory_context_refs,
     )
+    governance_policy = evaluate_capability_governance(summary=summary, contract=contract)
+    apply_governance_to_contract(contract, governance_policy)
     record_decision(contract)
     append_event(
         "arbiter_decision",
@@ -77,6 +80,7 @@ def arbitrate_review_summary(summary: ReviewSummary, *, goal: str = "") -> Decis
             "risk_level": contract.risk_level.value,
             "requires_confirmation": contract.tool_policy.requires_confirmation,
             "memory_context_refs": memory_context_refs,
+            "capability_governance_policy": governance_policy.to_dict(),
         },
     )
     return contract
@@ -130,6 +134,11 @@ def _work_order_from_decomposed_node(contract: DecisionContract, summary: Review
         "depends_on": list(node.depends_on),
         "recovery_policy": dict(node.recovery_policy),
     }
+    if "governance_policy" not in inputs:
+        inputs["governance_policy"] = {
+            "reason": "not_attached_by_decomposer",
+            "execution_mode": "normal",
+        }
     return WorkOrder(
         work_order_id=_new_id("work"),
         decision_id=contract.decision_id,
@@ -190,6 +199,8 @@ def _workflow_for(summary: ReviewSummary) -> str:
         return "reviewed_app_control_workflow"
     if summary.task_type == "message_delivery":
         return "reviewed_message_delivery_workflow"
+    if summary.task_type == "web_research_delivery":
+        return "reviewed_web_research_delivery_workflow"
     if summary.task_type == "file_operation":
         return "reviewed_file_operation_workflow"
     return "conversation_reply_workflow"
@@ -217,6 +228,13 @@ def _verification_criteria(summary: ReviewSummary) -> list[str]:
         ]
     if summary.task_type == "message_delivery":
         return ["message target and content preview match", "send result has observable evidence"]
+    if summary.task_type == "web_research_delivery":
+        return [
+            "search results include at least one URL",
+            "fetch or browser extraction returns readable evidence",
+            "summary is grounded in fetched/search evidence",
+            "Lark send result has observable evidence",
+        ]
     if summary.task_type == "file_operation":
         return ["file operation result matches expected path and content evidence"]
     return ["no external-world action required"]
