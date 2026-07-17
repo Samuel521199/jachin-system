@@ -586,6 +586,15 @@ def _inject_upstream_into_work_order(work_order: WorkOrder, upstream_observation
         summary_message = _extract_message_from_upstream(upstream_observations)
         if summary_message:
             payload["message"] = summary_message
+        summary_quality = _extract_summary_quality_from_upstream(upstream_observations)
+        if summary_quality:
+            payload["quality_report"] = summary_quality
+        summary_sources = _extract_summary_sources_from_upstream(upstream_observations)
+        if summary_sources:
+            payload["sources"] = summary_sources
+        payload.setdefault("delivery_mode", _extract_delivery_mode_from_upstream(upstream_observations, payload))
+        payload.setdefault("dry_run", payload.get("delivery_mode") != "live_run")
+        payload.setdefault("send_allowed", payload.get("delivery_mode") == "live_run")
     work_order.inputs["work_order_input"] = json.dumps(payload, ensure_ascii=False)
 
 
@@ -601,6 +610,55 @@ def _extract_message_from_upstream(upstream_observations: list[dict[str, Any]]) 
             if msg:
                 return msg
     return ""
+
+
+def _extract_summary_quality_from_upstream(upstream_observations: list[dict[str, Any]]) -> dict[str, Any]:
+    for item in reversed(upstream_observations or []):
+        text = str(item.get("observation") or "")
+        try:
+            obj = json.loads(text)
+        except Exception:
+            obj = None
+        if isinstance(obj, dict) and isinstance(obj.get("quality_report"), dict):
+            return dict(obj["quality_report"])
+    return {}
+
+
+def _extract_summary_sources_from_upstream(upstream_observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for item in reversed(upstream_observations or []):
+        text = str(item.get("observation") or "")
+        try:
+            obj = json.loads(text)
+        except Exception:
+            obj = None
+        if isinstance(obj, dict) and isinstance(obj.get("sources"), list):
+            return [src for src in obj["sources"] if isinstance(src, dict)][:6]
+    return []
+
+
+def _extract_delivery_mode_from_upstream(upstream_observations: list[dict[str, Any]], payload: dict[str, Any]) -> str:
+    explicit = str(payload.get("delivery_mode") or "").strip().lower()
+    if explicit in {"live_run", "dry_run"}:
+        return explicit
+    if payload.get("send_allowed") is False or payload.get("dry_run") is True:
+        return "dry_run"
+    if payload.get("send_allowed") is True or payload.get("live_run") is True:
+        return "live_run"
+    for item in reversed(upstream_observations or []):
+        text = str(item.get("observation") or "")
+        try:
+            obj = json.loads(text)
+        except Exception:
+            obj = None
+        if isinstance(obj, dict):
+            mode = str(obj.get("delivery_mode") or "").strip().lower()
+            if mode in {"live_run", "dry_run"}:
+                return mode
+            if obj.get("dry_run") is True or obj.get("send_allowed") is False:
+                return "dry_run"
+            if obj.get("live_run") is True or obj.get("send_allowed") is True:
+                return "live_run"
+    return "dry_run"
 
 
 def _extract_urls_from_upstream(upstream_observations: list[dict[str, Any]]) -> list[str]:
@@ -689,6 +747,8 @@ def _planned_direct_reply(plan: KernelPlanningResult, ok: bool, observation: str
             recipients = target_obj.get("recipients") if isinstance(target_obj.get("recipients"), list) else []
             names = "\u3001".join(str(x) for x in recipients if str(x).strip()) or "\u76ee\u6807\u4f1a\u8bdd"
             query = str(target_obj.get("query") or target_obj.get("name") or "\u6700\u65b0\u4fe1\u606f").strip()
+            if _observation_is_dry_run_preview(observation):
+                return f"\u5df2\u81ea\u52a8\u8054\u7f51\u68c0\u7d22\u201c{query}\u201d\uff0c\u5e76\u751f\u6210\u53d1\u7ed9 {names} \u7684\u9884\u89c8\uff1b\u672c\u6b21\u662f dry-run\uff0c\u672a\u771f\u5b9e\u53d1\u9001\u3002"
             return f"\u5df2\u81ea\u52a8\u8054\u7f51\u68c0\u7d22\u201c{query}\u201d\uff0c\u5e76\u5c06\u6458\u8981\u53d1\u9001\u7ed9 {names}\u3002"
         if task_type == "calculator_calculate":
             return _calculator_result_reply(target_obj, observation)
@@ -699,3 +759,11 @@ def _planned_direct_reply(plan: KernelPlanningResult, ok: bool, observation: str
     if preview:
         return f"{target} \u7684\u4efb\u52a1\u6ca1\u6709\u901a\u8fc7\u9a8c\u8bc1\u3002{preview}"
     return f"{target} \u7684\u4efb\u52a1\u6ca1\u6709\u901a\u8fc7\u9a8c\u8bc1\u3002"
+
+
+def _observation_is_dry_run_preview(observation: str) -> bool:
+    try:
+        obj = json.loads(str(observation or ""))
+    except Exception:
+        return False
+    return isinstance(obj, dict) and obj.get("dry_run") is True and obj.get("dry_run_preview_verified") is True

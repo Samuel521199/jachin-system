@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 
 def test_memory_growth_scaffold_and_append_raw_event(tmp_path, monkeypatch):
@@ -152,6 +153,1094 @@ def test_daily_review_generates_review_and_patch_from_raw_evidence(tmp_path, mon
     assert patch["task_summaries"][0]["turn_id"] == contract.turn_id
     assert patch["concept_candidates"][0]["source_refs"]
     assert "Daily Review" in result.review_path.read_text(encoding="utf-8")
+
+
+def test_failure_learning_grows_reusable_experience_playbook(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.contracts import DecisionContract, VerificationReport, WorkOrder
+    from l3_node.cognitive_kernel.daily_review import run_daily_review
+    from l3_node.cognitive_kernel.failure_learning_loop import learn_from_failure
+    from l3_node.cognitive_kernel.memory_growth import memory_growth_dir
+
+    decision = DecisionContract(
+        decision_id="decision-failure-growth-1",
+        turn_id="turn-failure-growth-1",
+        task_type="app_control",
+        goal="open lark",
+    )
+    work_order = WorkOrder(
+        work_order_id="wo-failure-growth-1",
+        decision_id=decision.decision_id,
+        role_agent="AppControlExecutorAgent",
+        task="open_app",
+        inputs={"tool": "mcp:windows_app_open", "app": "Lark"},
+    )
+    verification = VerificationReport(
+        verification_id="vr-failure-growth-1",
+        work_order_id=work_order.work_order_id,
+        ok=False,
+        evidence=[{"window": "Lock", "expected": "Lark"}],
+        confidence=0.2,
+        failure_reason="window_not_found: Lark",
+    )
+
+    record = learn_from_failure(
+        turn_id=decision.turn_id,
+        decision=decision,
+        work_order=work_order,
+        verification=verification,
+        attempt_count=1,
+    )
+    assert record.failure_class == "target_not_found"
+
+    raw_paths = list((memory_growth_dir() / "raw" / "evidence").glob("*.failure_learning.jsonl"))
+    assert len(raw_paths) == 1
+    raw_row = json.loads(raw_paths[0].read_text(encoding="utf-8").splitlines()[0])
+    assert raw_row["source"] == "failure_learning_loop"
+    assert raw_row["payload"]["failure_learning"]["next_strategy"] == "resolve_target_from_memory_or_ask_user"
+
+    result = run_daily_review()
+    assert result.learned_playbook_created_count == 1
+    assert result.learned_playbook_updated_count == 0
+
+    root = memory_growth_dir()
+    learned_index = json.loads((root / "indexes" / "learned_playbooks.json").read_text(encoding="utf-8"))
+    assert len(learned_index["playbooks"]) == 1
+    learned = learned_index["playbooks"][0]
+    assert learned["task_type"] == "app_control"
+    assert learned["tool"] == "mcp:windows_app_open"
+    assert learned["failure_class"] == "target_not_found"
+    assert learned["next_strategy"] == "resolve_target_from_memory_or_ask_user"
+
+    playbook_path = root / learned["path"]
+    text = playbook_path.read_text(encoding="utf-8")
+    assert "Learned Recovery Playbook" in text
+    assert "resolve_target_from_memory_or_ask_user" in text
+    assert "window_not_found" in text
+
+    playbook_index = json.loads((root / "indexes" / "playbooks.json").read_text(encoding="utf-8"))
+    assert any(row.get("path") == learned["path"] for row in playbook_index["playbooks"])
+
+
+def test_experience_playbook_builder_dedupes_repeated_daily_review(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.memory_growth import append_raw_event, memory_growth_dir
+    from l3_node.cognitive_kernel.daily_review import run_daily_review
+
+    for idx in range(2):
+        append_raw_event(
+            category="evidence",
+            source="unit_test_failure_learning",
+            stream="failure_learning",
+            payload={
+                "turn_id": f"turn-repeat-{idx}",
+                "failure_learning": {
+                    "failure_id": f"failure-repeat-{idx}",
+                    "task_type": "web_research_delivery",
+                    "tool": "mcp:official-fetch",
+                    "role_agent": "WebResearchExecutorAgent",
+                    "failure_reason": "fetch_readable_content_missing",
+                    "failure_class": "tool_quality_failed",
+                    "attempt_count": 1,
+                    "next_strategy": "switch_to_higher_quality_path_or_regenerate_output",
+                    "rationale": ["fetch produced unreadable content"],
+                },
+            },
+            source_refs=[{"type": "unit", "idx": idx}],
+            review={"review_candidate": True, "promotion_targets": ["playbooks"], "priority": "high"},
+        )
+
+    first = run_daily_review()
+    second = run_daily_review()
+    assert first.learned_playbook_created_count == 1
+    assert second.learned_playbook_created_count == 0
+    assert second.learned_playbook_updated_count == 0
+
+    root = memory_growth_dir()
+    learned_index = json.loads((root / "indexes" / "learned_playbooks.json").read_text(encoding="utf-8"))
+    assert len(learned_index["playbooks"]) == 1
+    assert learned_index["playbooks"][0]["source_event_count"] == 2
+
+
+def test_learned_experience_playbook_is_recalled_for_similar_task(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.contracts import AgentInputEnvelope, InputSource, MemoryRecallRequest
+    from l3_node.cognitive_kernel.daily_review import run_daily_review
+    from l3_node.cognitive_kernel.memory_growth import append_raw_event
+    from l3_node.cognitive_kernel.memory_growth_recall import recall_memory_growth
+
+    append_raw_event(
+        category="evidence",
+        source="unit_test_failure_learning",
+        stream="failure_learning",
+        payload={
+            "turn_id": "turn-recall-learned-playbook",
+            "failure_learning": {
+                "failure_id": "failure-recall-learned-playbook",
+                "task_type": "message_delivery",
+                "tool": "mcp:windows_lark_send_message",
+                "role_agent": "MessageExecutorAgent",
+                "failure_reason": "post_send_verification_missing",
+                "failure_class": "verification_missing",
+                "attempt_count": 1,
+                "next_strategy": "collect_evidence_then_retry_or_mark_uncertain",
+                "rationale": ["message delivery must verify post-send evidence"],
+            },
+        },
+        review={"review_candidate": True, "promotion_targets": ["playbooks"], "priority": "high"},
+    )
+    run_daily_review()
+
+    envelope = AgentInputEnvelope(
+        turn_id="turn-recall-query",
+        source=InputSource.TEXT,
+        raw_text="send lark message and verify it was sent",
+        normalized_text="send lark message and verify it was sent",
+    )
+    request = MemoryRecallRequest(
+        turn_id=envelope.turn_id,
+        input_envelope=envelope,
+        candidate_intents=["message_delivery"],
+        candidate_task_domains=["lark", "message"],
+        candidate_entities=["Neil", "Lark"],
+        multi_queries={"goal": "Lark message delivery post send verification missing"},
+    )
+    memories, gaps = recall_memory_growth(request, limit=5)
+    assert not gaps
+    assert any(memory.memory_id.startswith("memory_growth:playbook:failure-message") for memory in memories)
+    assert any("collect_evidence_then_retry_or_mark_uncertain" in memory.content for memory in memories)
+
+
+def test_success_experience_playbook_is_built_and_indexed(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.daily_review import run_daily_review
+    from l3_node.cognitive_kernel.memory_growth import append_raw_event, memory_growth_dir
+
+    append_raw_event(
+        category="evidence",
+        source="unit_test_turn_closure",
+        stream="turn_closure",
+        payload={
+            "turn_id": "turn-success-message-1",
+            "closure": {
+                "turn_id": "turn-success-message-1",
+                "closure_type": "completed",
+                "final_user_message_intent": "send Lark message to Neil",
+                "executed_work_orders": ["decomp_open_lark_1", "decomp_send_lark_1"],
+                "verification_status": "passed",
+                "memory_write_requests": [],
+                "next_turn_hints": [],
+            },
+        },
+        review={"review_candidate": True, "promotion_targets": ["playbooks"], "priority": "normal"},
+    )
+    result = run_daily_review()
+    assert result.learned_success_playbook_created_count == 1
+    assert result.learned_success_playbook_updated_count == 0
+
+    root = memory_growth_dir()
+    success_index = json.loads((root / "indexes" / "learned_success_playbooks.json").read_text(encoding="utf-8"))
+    assert len(success_index["playbooks"]) == 1
+    learned = success_index["playbooks"][0]
+    assert learned["type"] == "success_playbook"
+    assert learned["task_type"] == "message_delivery"
+    assert learned["success_strategy"] == "reuse_verified_message_delivery_chain"
+
+    text = (root / learned["path"]).read_text(encoding="utf-8")
+    assert "Learned Success Playbook" in text
+    assert "reuse_verified_message_delivery_chain" in text
+
+    playbook_index = json.loads((root / "indexes" / "playbooks.json").read_text(encoding="utf-8"))
+    assert any(row.get("path") == learned["path"] and row.get("type") == "success_playbook" for row in playbook_index["playbooks"])
+
+
+def test_success_experience_playbook_is_recalled_for_similar_task(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.contracts import AgentInputEnvelope, InputSource, MemoryRecallRequest
+    from l3_node.cognitive_kernel.daily_review import run_daily_review
+    from l3_node.cognitive_kernel.memory_growth import append_raw_event
+    from l3_node.cognitive_kernel.memory_growth_recall import recall_memory_growth
+
+    append_raw_event(
+        category="evidence",
+        source="unit_test_turn_closure",
+        stream="turn_closure",
+        payload={
+            "turn_id": "turn-success-recall-1",
+            "closure": {
+                "turn_id": "turn-success-recall-1",
+                "closure_type": "completed",
+                "final_user_message_intent": "send Lark message to Neil",
+                "executed_work_orders": ["decomp_open_lark_1", "decomp_send_lark_1"],
+                "verification_status": "passed",
+            },
+        },
+        review={"review_candidate": True, "promotion_targets": ["playbooks"], "priority": "normal"},
+    )
+    run_daily_review()
+
+    envelope = AgentInputEnvelope(
+        turn_id="turn-success-recall-query",
+        source=InputSource.TEXT,
+        raw_text="send a lark message to Neil and verify delivery",
+        normalized_text="send a lark message to Neil and verify delivery",
+    )
+    request = MemoryRecallRequest(
+        turn_id=envelope.turn_id,
+        input_envelope=envelope,
+        candidate_intents=["message_delivery"],
+        candidate_task_domains=["lark", "message"],
+        candidate_entities=["Neil", "Lark"],
+        multi_queries={"goal": "send Lark message to Neil"},
+    )
+    memories, gaps = recall_memory_growth(request, limit=5)
+    assert not gaps
+    assert any(memory.memory_id.startswith("memory_growth:playbook:success-message") for memory in memories)
+    assert any("success_strategy=reuse_verified_message_delivery_chain" in memory.content for memory in memories)
+
+
+def test_task_decomposer_attaches_success_playbook_refs(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.contracts import DecisionContract, ReviewSummary, RiskLevel, ToolPolicy
+    from l3_node.cognitive_kernel.task_decomposer import decompose_task
+
+    success_ref = {
+        "memory_id": "memory_growth:playbook:success-message-delivery-lark",
+        "memory_type": "tool_habit",
+        "source": "Memory Growth Playbooks",
+        "confidence": 0.91,
+        "artifact_path": "playbooks/learned_success/success-message-delivery-lark.md",
+        "preview": "playbook path=...; success_strategy=reuse_verified_message_delivery_chain; flow=open Lark then send message",
+        "relevance_reason": "success playbook matched current query",
+    }
+    contract = DecisionContract(
+        decision_id="decision-success-decomp",
+        turn_id="turn-success-decomp",
+        task_type="message_delivery",
+        goal="send Lark message to Neil",
+        selected_roles=["AppControlExecutorAgent", "MessageExecutorAgent"],
+        risk_level=RiskLevel.LOW,
+        tool_policy=ToolPolicy(allowed_tools=["mcp:windows_lark_send_message"], risk_level=RiskLevel.LOW),
+        verification_criteria=["message send evidence is visible"],
+        memory_context_refs=[success_ref],
+    )
+    summary = ReviewSummary(
+        review_session_id="review-success-decomp",
+        turn_id=contract.turn_id,
+        top_intent="message_send",
+        task_type="message_delivery",
+        target={"app": "Lark", "recipients": ["Neil"], "message": "hello"},
+        selected_roles=["AppControlExecutorAgent", "MessageExecutorAgent"],
+        candidate_tools=["mcp:windows_lark_send_message"],
+        risk_level=RiskLevel.LOW,
+        confidence=0.9,
+    )
+    plan = decompose_task(contract=contract, summary=summary)
+    assert plan.nodes
+    assert "learned success" in " ".join(plan.rationale).lower()
+    assert all(node.inputs.get("preferred_success_playbooks") for node in plan.nodes)
+    assert plan.nodes[-1].recovery_policy.get("preferred_success_playbooks")[0]["success_strategy"] == "reuse_verified_message_delivery_chain"
+    assert plan.nodes[-1].inputs.get("preferred_execution_strategy") == "reuse_verified_message_delivery_chain"
+    assert plan.nodes[-1].inputs.get("success_playbook_preference", {}).get("selected_memory_id") == success_ref["memory_id"]
+
+
+def test_task_decomposer_prioritizes_best_success_playbook_ref(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.contracts import DecisionContract, ReviewSummary, RiskLevel, ToolPolicy
+    from l3_node.cognitive_kernel.task_decomposer import decompose_task
+
+    weaker_ref = {
+        "memory_id": "memory_growth:playbook:success-message-delivery-generic",
+        "memory_type": "tool_habit",
+        "source": "Memory Growth Playbooks",
+        "confidence": 0.62,
+        "artifact_path": "playbooks/learned_success/success-message-delivery-generic.md",
+        "preview": "playbook path=...; success_strategy=reuse_generic_message_path; work_order_chain=['open_app','send_message']; artifact_success_rate=0.60",
+        "relevance_reason": "generic success playbook matched",
+    }
+    stronger_ref = {
+        "memory_id": "memory_growth:playbook:success-message-delivery-lark-neil",
+        "memory_type": "tool_habit",
+        "source": "Memory Growth Playbooks",
+        "confidence": 0.88,
+        "artifact_path": "playbooks/learned_success/success-message-delivery-lark-neil.md",
+        "preview": "playbook path=...; success_strategy=reuse_verified_lark_neil_delivery_chain; work_order_chain=['open_lark','resolve_recipient','send_lark_message','verify_delivery']; artifact_success_rate=0.94",
+        "relevance_reason": "specific Neil delivery success playbook matched",
+    }
+    contract = DecisionContract(
+        decision_id="decision-success-ranking",
+        turn_id="turn-success-ranking",
+        task_type="message_delivery",
+        goal="send Lark message to Neil",
+        selected_roles=["AppControlExecutorAgent", "MessageExecutorAgent"],
+        risk_level=RiskLevel.LOW,
+        tool_policy=ToolPolicy(allowed_tools=["mcp:windows_lark_send_message"], risk_level=RiskLevel.LOW),
+        verification_criteria=["message send evidence is visible"],
+        memory_context_refs=[weaker_ref, stronger_ref],
+    )
+    summary = ReviewSummary(
+        review_session_id="review-success-ranking",
+        turn_id=contract.turn_id,
+        top_intent="message_send",
+        task_type="message_delivery",
+        target={"app": "Lark", "recipients": ["Neil"], "message": "hello"},
+        selected_roles=["AppControlExecutorAgent", "MessageExecutorAgent"],
+        candidate_tools=["mcp:windows_lark_send_message"],
+        risk_level=RiskLevel.LOW,
+        confidence=0.9,
+    )
+
+    plan = decompose_task(contract=contract, summary=summary)
+    assert plan.nodes
+    preference = plan.nodes[-1].inputs.get("success_playbook_preference")
+    assert preference["selected_memory_id"] == stronger_ref["memory_id"]
+    assert preference["preferred_execution_strategy"] == "reuse_verified_lark_neil_delivery_chain"
+    assert preference["preferred_work_order_chain"] == [
+        "open_lark",
+        "resolve_recipient",
+        "send_lark_message",
+        "verify_delivery",
+    ]
+    ranked = plan.nodes[-1].inputs["preferred_success_playbooks"]
+    assert ranked[0]["memory_id"] == stronger_ref["memory_id"]
+    assert ranked[0]["rank"] == 1
+    assert ranked[1]["rank"] == 2
+    assert "preferred learned success strategy" in " ".join(plan.rationale).lower()
+
+
+def test_task_decomposer_downranks_degraded_success_playbook_ref(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.contracts import DecisionContract, ReviewSummary, RiskLevel, ToolPolicy
+    from l3_node.cognitive_kernel.task_decomposer import decompose_task
+
+    degraded_ref = {
+        "memory_id": "memory_growth:playbook:success-message-delivery-degraded",
+        "memory_type": "tool_habit",
+        "source": "Memory Growth Playbooks",
+        "confidence": 0.96,
+        "artifact_path": "playbooks/learned_success/success-message-delivery-degraded.md",
+        "preview": (
+            "playbook path=...; success_strategy=reuse_old_lark_delivery_chain; "
+            "work_order_chain=['open_lark','send_lark_message']; artifact_success_rate=0.10; "
+            "artifact_use_count=12; artifact_failure_count=10; artifact_last_failure_reason=post_send_verification_missing"
+        ),
+        "relevance_reason": "specific but degraded success playbook matched",
+    }
+    reliable_ref = {
+        "memory_id": "memory_growth:playbook:success-message-delivery-reliable",
+        "memory_type": "tool_habit",
+        "source": "Memory Growth Playbooks",
+        "confidence": 0.76,
+        "artifact_path": "playbooks/learned_success/success-message-delivery-reliable.md",
+        "preview": (
+            "playbook path=...; success_strategy=reuse_verified_lark_delivery_chain; "
+            "work_order_chain=['open_lark','resolve_recipient','send_lark_message','verify_delivery']; "
+            "artifact_success_rate=0.82; artifact_use_count=8; artifact_failure_count=1"
+        ),
+        "relevance_reason": "reliable success playbook matched",
+    }
+    contract = DecisionContract(
+        decision_id="decision-success-degraded-ranking",
+        turn_id="turn-success-degraded-ranking",
+        task_type="message_delivery",
+        goal="send Lark message to Neil",
+        selected_roles=["AppControlExecutorAgent", "MessageExecutorAgent"],
+        risk_level=RiskLevel.LOW,
+        tool_policy=ToolPolicy(allowed_tools=["mcp:windows_lark_send_message"], risk_level=RiskLevel.LOW),
+        verification_criteria=["message send evidence is visible"],
+        memory_context_refs=[degraded_ref, reliable_ref],
+    )
+    summary = ReviewSummary(
+        review_session_id="review-success-degraded-ranking",
+        turn_id=contract.turn_id,
+        top_intent="message_send",
+        task_type="message_delivery",
+        target={"app": "Lark", "recipients": ["Neil"], "message": "hello"},
+        selected_roles=["AppControlExecutorAgent", "MessageExecutorAgent"],
+        candidate_tools=["mcp:windows_lark_send_message"],
+        risk_level=RiskLevel.LOW,
+        confidence=0.9,
+    )
+
+    plan = decompose_task(contract=contract, summary=summary)
+    preference = plan.nodes[-1].inputs["success_playbook_preference"]
+    ranked = plan.nodes[-1].inputs["preferred_success_playbooks"]
+    assert preference["selected_memory_id"] == reliable_ref["memory_id"]
+    assert preference["selected_health"] == "reliable"
+    assert preference["selected_failure_count"] == 1
+    assert ranked[0]["health"] == "reliable"
+    assert ranked[1]["health"] == "degraded"
+    assert ranked[1]["last_failure_reason"] == "post_send_verification_missing"
+
+
+def test_success_playbook_usage_score_promotes_high_success_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.contracts import AgentInputEnvelope, InputSource, MemoryRecallRequest
+    from l3_node.cognitive_kernel.memory_growth import ensure_memory_growth_scaffold, memory_growth_dir
+    from l3_node.cognitive_kernel.memory_growth_recall import recall_memory_growth
+
+    ensure_memory_growth_scaffold()
+    root = memory_growth_dir()
+    learned_dir = root / "playbooks" / "learned_success"
+    learned_dir.mkdir(parents=True, exist_ok=True)
+    high_path = learned_dir / "success-message-delivery-lark-neil-high.md"
+    low_path = learned_dir / "success-message-delivery-lark-neil-low.md"
+    common_body = """
+
+# Success path
+
+## Trigger Conditions
+Send Lark message to Neil and verify delivery.
+
+## Recommended Flow
+open_lark -> send_lark_message -> verify_delivery
+"""
+    high_path.write_text(
+        """---
+id: "playbook:success-message-delivery-lark-neil-high"
+type: "success_playbook"
+summary: "Verified Lark message delivery to Neil"
+confidence: 0.80
+success_strategy: "reuse_verified_lark_neil_delivery_chain"
+work_order_chain: ["open_lark", "send_lark_message", "verify_delivery"]
+memory_use_count: 10
+memory_success_count: 9
+memory_failure_count: 1
+memory_success_rate: 0.9
+---""" + common_body,
+        encoding="utf-8",
+    )
+    low_path.write_text(
+        """---
+id: "playbook:success-message-delivery-lark-neil-low"
+type: "success_playbook"
+summary: "Verified Lark message delivery to Neil"
+confidence: 0.80
+success_strategy: "reuse_unstable_lark_neil_delivery_chain"
+work_order_chain: ["open_lark", "send_lark_message", "verify_delivery"]
+memory_use_count: 10
+memory_success_count: 1
+memory_failure_count: 9
+memory_success_rate: 0.1
+memory_last_failure_reason: "post_send_verification_missing"
+---""" + common_body,
+        encoding="utf-8",
+    )
+    (root / "indexes" / "playbooks.json").write_text(
+        json.dumps(
+            {
+                "playbooks": [
+                    {"path": str(low_path.relative_to(root)), "type": "success_playbook", "slug": low_path.stem},
+                    {"path": str(high_path.relative_to(root)), "type": "success_playbook", "slug": high_path.stem},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    request = MemoryRecallRequest(
+        turn_id="turn-success-usage-ranking",
+        input_envelope=AgentInputEnvelope(
+            turn_id="turn-success-usage-ranking",
+            source=InputSource.TEXT,
+            raw_text="send Lark message to Neil and verify delivery",
+            normalized_text="send Lark message to Neil and verify delivery",
+        ),
+        candidate_intents=["message_delivery"],
+        candidate_task_domains=["lark", "message"],
+        candidate_entities=["Neil", "Lark"],
+        multi_queries={"goal": "send Lark message to Neil verify delivery"},
+    )
+
+    memories, gaps = recall_memory_growth(request, limit=2)
+    assert not gaps
+    assert memories[0].memory_id.endswith("success-message-delivery-lark-neil-high")
+    assert "artifact_success_rate=0.900" in memories[0].relevance_reason
+    assert "artifact_last_failure_reason=post_send_verification_missing" in memories[1].relevance_reason
+
+
+def test_arbiter_work_order_carries_success_execution_preference(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.arbiter import arbitrate_review_summary, build_work_orders_from_decision
+    from l3_node.cognitive_kernel.contracts import ReviewSummary, RiskLevel
+
+    success_ref = {
+        "memory_id": "memory_growth:playbook:success-message-delivery-lark-neil",
+        "memory_type": "tool_habit",
+        "source": "Memory Growth Playbooks",
+        "confidence": 0.93,
+        "artifact_path": "playbooks/learned_success/success-message-delivery-lark-neil.md",
+        "preview": "playbook path=...; success_strategy=reuse_verified_lark_neil_delivery_chain; work_order_chain=['open_lark','send_lark_message','verify_delivery']; artifact_success_rate=0.91",
+        "relevance_reason": "specific Neil delivery success playbook matched",
+    }
+    summary = ReviewSummary(
+        review_session_id="review-success-work-order",
+        turn_id="turn-success-work-order",
+        top_intent="message_send",
+        task_type="message_delivery",
+        target={"app": "Lark", "recipients": ["Neil"], "message": "hello"},
+        selected_roles=["AppControlExecutorAgent", "MessageExecutorAgent"],
+        candidate_tools=["mcp:windows_lark_send_message"],
+        risk_level=RiskLevel.LOW,
+        confidence=0.92,
+        reviews=[
+            type(
+                "FakeReview",
+                (),
+                {
+                    "evidence": [{"memory_growth_refs": [success_ref]}],
+                },
+            )()
+        ],
+    )
+
+    contract = arbitrate_review_summary(summary, goal="send Lark message to Neil")
+    work_orders = build_work_orders_from_decision(contract, summary)
+
+    assert work_orders
+    preference = work_orders[-1].inputs["execution_preference"]
+    assert preference["source"] == "memory_growth_success_playbook"
+    assert preference["selected_memory_id"] == success_ref["memory_id"]
+    assert preference["preferred_execution_strategy"] == "reuse_verified_lark_neil_delivery_chain"
+    assert preference["preferred_work_order_chain"] == ["open_lark", "send_lark_message", "verify_delivery"]
+    assert work_orders[0].inputs["execution_order_advice"]["matched_step"] == "open_lark"
+    assert work_orders[-1].inputs["execution_order_advice"]["matched_step"] == "send_lark_message"
+    assert work_orders[-1].inputs["execution_order_advice"]["mode"] == "non_destructive"
+
+
+def test_arbiter_selects_reliable_candidate_tool_over_degraded_first_candidate(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.arbiter import arbitrate_review_summary, build_work_orders_from_decision
+    from l3_node.cognitive_kernel.contracts import ReviewSummary, RiskLevel
+
+    degraded_ref = {
+        "memory_id": "memory_growth:playbook:success-lark-legacy",
+        "memory_type": "tool_habit",
+        "source": "Memory Growth Playbooks",
+        "confidence": 0.96,
+        "preview": (
+            "tool=mcp:windows_lark_send_message_legacy; "
+            "success_strategy=reuse_legacy_lark_path; artifact_success_rate=0.10; "
+            "artifact_use_count=12; artifact_failure_count=10; artifact_last_failure_reason=post_send_verification_missing"
+        ),
+        "relevance_reason": "legacy lark send path is degraded",
+    }
+    reliable_ref = {
+        "memory_id": "memory_growth:playbook:success-lark-stable",
+        "memory_type": "tool_habit",
+        "source": "Memory Growth Playbooks",
+        "confidence": 0.78,
+        "preview": (
+            "tool=mcp:windows_lark_send_message_stable; "
+            "success_strategy=reuse_verified_lark_path; artifact_success_rate=0.90; "
+            "artifact_use_count=9; artifact_failure_count=1"
+        ),
+        "relevance_reason": "stable lark send path is reliable",
+    }
+    summary = ReviewSummary(
+        review_session_id="review-tool-reliability",
+        turn_id="turn-tool-reliability",
+        top_intent="message_send",
+        task_type="message_delivery",
+        target={"app": "Lark", "recipients": ["Neil"], "message": "hello"},
+        selected_roles=["AppControlExecutorAgent", "MessageExecutorAgent"],
+        candidate_tools=["mcp:windows_lark_send_message_legacy", "mcp:windows_lark_send_message_stable"],
+        risk_level=RiskLevel.LOW,
+        confidence=0.9,
+        reviews=[
+            type(
+                "FakeReview",
+                (),
+                {
+                    "evidence": [{"memory_growth_refs": [degraded_ref, reliable_ref]}],
+                },
+            )()
+        ],
+    )
+
+    contract = arbitrate_review_summary(summary, goal="send Lark message to Neil")
+    work_orders = build_work_orders_from_decision(contract, summary)
+
+    assert contract.tool_policy.allowed_tools == ["mcp:windows_lark_send_message_stable"]
+    reliability = work_orders[-1].inputs["candidate_tool_reliability"]
+    assert reliability[0]["tool"] == "mcp:windows_lark_send_message_stable"
+    assert reliability[0]["health"] == "reliable"
+    assert reliability[1]["tool"] == "mcp:windows_lark_send_message_legacy"
+    assert reliability[1]["health"] == "degraded"
+    assert any("Memory Growth reliability" in line for line in contract.rationale)
+
+
+def test_dispatcher_evidence_includes_candidate_tool_reliability(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    import asyncio
+
+    from l3_node.cognitive_kernel.contracts import DecisionContract, RiskLevel, ToolPolicy, WorkOrder
+    from l3_node.cognitive_kernel.dispatcher import dispatch_existing_work_order
+
+    reliability = [
+        {
+            "tool": "mcp:stable_lark_send",
+            "rank": 1,
+            "selected": True,
+            "health": "reliable",
+            "success_rate": 0.9,
+            "use_count": 9,
+            "failure_count": 1,
+        },
+        {
+            "tool": "mcp:legacy_lark_send",
+            "rank": 2,
+            "selected": False,
+            "health": "degraded",
+            "success_rate": 0.1,
+            "use_count": 12,
+            "failure_count": 10,
+        },
+    ]
+    contract = DecisionContract(
+        decision_id="decision-dispatch-tool-reliability",
+        turn_id="turn-dispatch-tool-reliability",
+        task_type="message_delivery",
+        goal="send message",
+        selected_roles=["ToolExecutionAgent"],
+        risk_level=RiskLevel.LOW,
+        tool_policy=ToolPolicy(allowed_tools=["mcp:stable_lark_send"], risk_level=RiskLevel.LOW),
+        execution_allowed=True,
+    )
+    work = WorkOrder(
+        work_order_id="work-dispatch-tool-reliability",
+        decision_id=contract.decision_id,
+        role_agent="ToolExecutionAgent",
+        task="send message",
+        inputs={
+            "tool": "mcp:stable_lark_send",
+            "work_order_input": '{"message":"hello"}',
+            "candidate_tool_reliability": reliability,
+        },
+        tool_policy=contract.tool_policy,
+    )
+
+    async def fake_executor(_work_order):
+        return json.dumps({"ok": True, "detail": "sent"}, ensure_ascii=False)
+
+    async def _run():
+        return await dispatch_existing_work_order(contract=contract, work_order=work, executor=fake_executor)
+
+    result = asyncio.run(_run())
+    role_evidence = next(item for item in result.verification.evidence if item.get("type") == "role_execution")
+    assert role_evidence["selected_tool_reliability"]["tool"] == "mcp:stable_lark_send"
+    assert role_evidence["selected_tool_reliability"]["health"] == "reliable"
+    assert role_evidence["candidate_tool_reliability"][1]["health"] == "degraded"
+
+
+def test_candidate_tool_reliability_end_to_end_feedback_and_switch(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+    monkeypatch.setenv("JACHIN_OS_EVIDENCE_GOVERNANCE_INDEX", str(tmp_path / "missing_governance.json"))
+
+    import asyncio
+
+    from l3_node.cognitive_kernel.arbiter import arbitrate_review_summary, build_work_orders_from_decision
+    from l3_node.cognitive_kernel.contracts import ReviewSummary, RiskLevel
+    from l3_node.cognitive_kernel.dispatcher import dispatch_existing_work_order
+    from l3_node.cognitive_kernel.memory_growth import ensure_memory_growth_scaffold, memory_growth_dir
+    from l3_node.cognitive_kernel.runtime import close_turn
+    from l3_node.memory_growth_http import apply_memory_growth_governance, memory_growth_status
+
+    ensure_memory_growth_scaffold()
+    root = memory_growth_dir()
+    stable_path = root / "playbooks" / "learned_success" / "success-stable-tool-path.md"
+    alternate_path = root / "playbooks" / "learned_success" / "success-alternate-tool-path.md"
+    stable_path.parent.mkdir(parents=True, exist_ok=True)
+    stable_path.write_text(
+        """---
+id: "playbook:success-stable-tool-path"
+type: "success_playbook"
+summary: "Stable tool path"
+confidence: 0.82
+memory_use_count: 3
+memory_success_count: 3
+memory_failure_count: 0
+memory_success_rate: 1.0
+---
+
+# Stable tool path
+""",
+        encoding="utf-8",
+    )
+    alternate_path.write_text(
+        """---
+id: "playbook:success-alternate-tool-path"
+type: "success_playbook"
+summary: "Alternate tool path"
+confidence: 0.76
+memory_use_count: 4
+memory_success_count: 3
+memory_failure_count: 1
+memory_success_rate: 0.75
+---
+
+# Alternate tool path
+""",
+        encoding="utf-8",
+    )
+
+    stable_ref = {
+        "bucket": "success_playbooks",
+        "memory_id": "memory_growth:playbook:success-stable-tool-path",
+        "source": "Memory Growth Playbooks",
+        "confidence": 0.82,
+        "artifact_path": str(stable_path),
+        "preview": (
+            "tool=mcp:stable_tool_path; success_strategy=reuse_stable_tool_path; "
+            "artifact_success_rate=1.0; artifact_use_count=3; artifact_failure_count=0"
+        ),
+    }
+    alternate_ref = {
+        "bucket": "success_playbooks",
+        "memory_id": "memory_growth:playbook:success-alternate-tool-path",
+        "source": "Memory Growth Playbooks",
+        "confidence": 0.76,
+        "artifact_path": str(alternate_path),
+        "preview": (
+            "tool=mcp:alternate_tool_path; success_strategy=reuse_alternate_tool_path; "
+            "artifact_success_rate=0.75; artifact_use_count=4; artifact_failure_count=1"
+        ),
+    }
+
+    def make_summary(turn_id: str, stable: dict, alternate: dict) -> ReviewSummary:
+        return ReviewSummary(
+            review_session_id=f"review-{turn_id}",
+            turn_id=turn_id,
+            top_intent="run_reliable_tool",
+            task_type="tool_execution",
+            target={"name": "reliable tool path", "payload": "hello"},
+            selected_roles=["ToolExecutionAgent"],
+            candidate_tools=["mcp:degraded_tool_path", "mcp:stable_tool_path", "mcp:alternate_tool_path"],
+            risk_level=RiskLevel.LOW,
+            confidence=0.9,
+            reviews=[
+                type(
+                    "FakeReview",
+                    (),
+                    {
+                        "evidence": [
+                            {
+                                "memory_growth_refs": [
+                                    {
+                                        "bucket": "success_playbooks",
+                                        "memory_id": "memory_growth:playbook:success-degraded-tool-path",
+                                        "source": "Memory Growth Playbooks",
+                                        "confidence": 0.94,
+                                        "preview": (
+                                            "tool=mcp:degraded_tool_path; success_strategy=reuse_degraded_tool_path; "
+                                            "artifact_success_rate=0.10; artifact_use_count=12; artifact_failure_count=10; "
+                                            "artifact_last_failure_reason=verification_missing"
+                                        ),
+                                    },
+                                    stable,
+                                    alternate,
+                                ]
+                            }
+                        ],
+                    },
+                )()
+            ],
+        )
+
+    summary = make_summary("turn-tool-switch-1", stable_ref, alternate_ref)
+    contract = arbitrate_review_summary(summary, goal="run reliable tool path")
+    work = build_work_orders_from_decision(contract, summary)[-1]
+    assert contract.tool_policy.allowed_tools == ["mcp:stable_tool_path"]
+    assert work.inputs["candidate_tool_reliability"][0]["tool"] == "mcp:stable_tool_path"
+
+    async def fake_executor(_work_order):
+        return json.dumps(
+            {
+                "ok": True,
+                "detail": "tool_completed_and_verified",
+                "result_id": "result-stable-1",
+                "verified": True,
+            },
+            ensure_ascii=False,
+        )
+
+    result = asyncio.run(dispatch_existing_work_order(contract=contract, work_order=work, executor=fake_executor))
+    assert result.verification.ok is True
+    close_turn(
+        turn_id=contract.turn_id,
+        final_text="sent",
+        executed_work_orders=[work.work_order_id],
+        verification_reports=[result.verification],
+        memory_context_refs=[stable_ref],
+    )
+    stable_row = next(row for row in memory_growth_status()["monitoring"]["artifact_usage"] if row["path"] == "playbooks/learned_success/success-stable-tool-path.md")
+    assert stable_row["memory_success_count"] == 4
+
+    degraded_stable_ref = {
+        **stable_ref,
+        "preview": (
+            "tool=mcp:stable_tool_path; success_strategy=reuse_stable_tool_path; "
+            "artifact_success_rate=0.25; artifact_use_count=12; artifact_failure_count=9; "
+            "artifact_last_failure_reason=verification_missing"
+        ),
+    }
+    healthier_alternate_ref = {
+        **alternate_ref,
+        "preview": (
+            "tool=mcp:alternate_tool_path; success_strategy=reuse_alternate_tool_path; "
+            "artifact_success_rate=0.82; artifact_use_count=9; artifact_failure_count=1"
+        ),
+    }
+    second_summary = make_summary("turn-tool-switch-2", degraded_stable_ref, healthier_alternate_ref)
+    second_contract = arbitrate_review_summary(second_summary, goal="run reliable tool path")
+    second_work = build_work_orders_from_decision(second_contract, second_summary)[-1]
+    assert second_contract.tool_policy.allowed_tools == ["mcp:alternate_tool_path"]
+    assert second_work.inputs["candidate_tool_reliability"][0]["tool"] == "mcp:alternate_tool_path"
+    stable_candidate = next(item for item in second_work.inputs["candidate_tool_reliability"] if item["tool"] == "mcp:stable_tool_path")
+    assert stable_candidate["health"] == "degraded"
+
+
+def test_role_execution_evidence_includes_success_execution_preference():
+    from l3_node.cognitive_kernel.contracts import RiskLevel, ToolPolicy, WorkOrder
+    from l3_node.cognitive_kernel.role_executors import RoleExecutionAdapter, RoleExecutionContext
+
+    preference = {
+        "source": "memory_growth_success_playbook",
+        "selection_reason": "highest_confidence_verified_success_path",
+        "selected_memory_id": "memory_growth:playbook:success-message-delivery-lark-neil",
+        "selected_confidence": 0.93,
+        "selected_success_rate": 0.91,
+        "preferred_execution_strategy": "reuse_verified_lark_neil_delivery_chain",
+        "preferred_work_order_chain": ["open_lark", "send_lark_message", "verify_delivery"],
+        "candidate_count": 2,
+    }
+    work_order = WorkOrder(
+        work_order_id="work-success-evidence",
+        decision_id="decision-success-evidence",
+        role_agent="ToolExecutionAgent",
+        task="send Lark message",
+        inputs={"tool": "mcp:windows_lark_send_message", "execution_preference": preference},
+        tool_policy=ToolPolicy(allowed_tools=["mcp:windows_lark_send_message"], risk_level=RiskLevel.LOW),
+    )
+    context = RoleExecutionContext(
+        turn_id="turn-success-evidence",
+        goal="send Lark message",
+        tool="mcp:windows_lark_send_message",
+        role_id="ToolExecutionAgent",
+        metadata={"execution_preference": preference},
+    )
+    evidence = RoleExecutionAdapter().describe_evidence(work_order, context)
+    assert evidence["execution_preference"]["selected_memory_id"] == preference["selected_memory_id"]
+    assert evidence["execution_preference"]["preferred_execution_strategy"] == "reuse_verified_lark_neil_delivery_chain"
+
+
+def test_turn_closure_writes_success_playbook_usage_feedback(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.contracts import VerificationReport
+    from l3_node.cognitive_kernel.memory_growth import ensure_memory_growth_scaffold, memory_growth_dir
+    from l3_node.cognitive_kernel.runtime import close_turn
+
+    ensure_memory_growth_scaffold()
+    root = memory_growth_dir()
+    playbook_path = root / "playbooks" / "learned_success" / "success-message-delivery-lark-neil.md"
+    playbook_path.parent.mkdir(parents=True, exist_ok=True)
+    playbook_path.write_text(
+        """---
+id: "playbook:success-message-delivery-lark-neil"
+type: "success_playbook"
+summary: "Verified Lark message delivery to Neil"
+confidence: 0.93
+memory_use_count: 1
+memory_success_count: 1
+memory_failure_count: 0
+memory_success_rate: 1.0
+---
+
+# Verified Lark message delivery to Neil
+""",
+        encoding="utf-8",
+    )
+    refs = [
+        {
+            "bucket": "success_playbooks",
+            "memory_id": "memory_growth:playbook:success-message-delivery-lark-neil",
+            "source": "Memory Growth Playbooks",
+            "artifact_path": str(playbook_path),
+            "preview": "playbook path=" + str(playbook_path) + "; success_strategy=reuse_verified_lark_neil_delivery_chain; artifact_success_rate=1.0",
+        }
+    ]
+
+    close_turn(
+        turn_id="turn-success-playbook-feedback",
+        final_text="sent",
+        executed_work_orders=["work-open-lark", "work-send-lark"],
+        verification_reports=[VerificationReport(verification_id="verify-send", work_order_id="work-send-lark", ok=True)],
+        memory_context_refs=refs,
+    )
+
+    text = playbook_path.read_text(encoding="utf-8")
+    assert "memory_use_count: 2" in text
+    assert "memory_success_count: 2" in text
+    assert "memory_failure_count: 0" in text
+    assert "memory_success_rate: 1.0" in text
+    usage_index = json.loads((root / "indexes" / "artifact_usage.json").read_text(encoding="utf-8"))
+    row = next(item for item in usage_index["artifacts"] if item["path"] == "playbooks/learned_success/success-message-delivery-lark-neil.md")
+    assert row["memory_success_rate"] == 1.0
+
+
+def test_recovery_planner_live_recalls_learned_playbook_without_contract_refs(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.contracts import DecisionContract, RiskLevel, ToolPolicy, VerificationReport, WorkOrder
+    from l3_node.cognitive_kernel.daily_review import run_daily_review
+    from l3_node.cognitive_kernel.memory_growth import append_raw_event
+    from l3_node.cognitive_kernel.recovery_planner import RecoveryPlanner
+
+    append_raw_event(
+        category="evidence",
+        source="unit_test_failure_learning",
+        stream="failure_learning",
+        payload={
+            "turn_id": "turn-live-recall-recovery",
+            "failure_learning": {
+                "failure_id": "failure-live-recall-recovery",
+                "task_type": "app_control",
+                "tool": "mcp:windows_window_switch",
+                "role_agent": "AppControlExecutorAgent",
+                "failure_reason": "timeout waiting for foreground window",
+                "failure_class": "timeout_or_connection",
+                "attempt_count": 1,
+                "next_strategy": "retry_with_longer_timeout_or_offline_path",
+                "rationale": ["window focus timeout should retry with longer timeout before reporting failure"],
+            },
+        },
+        review={"review_candidate": True, "promotion_targets": ["playbooks"], "priority": "high"},
+    )
+    run_daily_review()
+
+    contract = DecisionContract(
+        decision_id="decision-live-recall-recovery",
+        turn_id="turn-live-recall-recovery-query",
+        task_type="app_control",
+        goal="open browser and focus foreground window",
+        selected_roles=["AppControlExecutorAgent"],
+        risk_level=RiskLevel.LOW,
+        tool_policy=ToolPolicy(allowed_tools=["mcp:windows_window_switch"], risk_level=RiskLevel.LOW),
+        execution_allowed=True,
+        memory_context_refs=[],
+    )
+    work = WorkOrder(
+        work_order_id="work-live-recall-recovery",
+        decision_id=contract.decision_id,
+        role_agent="AppControlExecutorAgent",
+        task="app_control",
+        inputs={"tool": "mcp:windows_window_switch", "work_order_input": '{"window_title":"Chrome"}'},
+        tool_policy=contract.tool_policy,
+    )
+    verification = VerificationReport(
+        verification_id="verify-live-recall-recovery",
+        work_order_id=work.work_order_id,
+        ok=False,
+        failure_reason="timeout waiting for foreground window",
+    )
+    planner = RecoveryPlanner(max_attempts=3, registry=type("EmptyRegistry", (), {
+        "max_attempts_for": lambda self, **kwargs: kwargs.get("default", 3),
+        "select_next": lambda self, **kwargs: None,
+        "candidate_snapshot": lambda self, **kwargs: [],
+    })())
+
+    attempt = planner.next_attempt(
+        contract=contract,
+        failed_work_order=work,
+        verification=verification,
+        attempt_records=[],
+    )
+
+    assert attempt is not None
+    assert attempt.strategy == "retry_with_longer_timeout_or_offline_path"
+    assert attempt.candidate_path["metadata"]["source"] == "memory_growth"
+    assert attempt.candidate_path["metadata"]["memory_growth_lookup"]["learned_next_strategy"] == "retry_with_longer_timeout_or_offline_path"
+    assert attempt.candidate_path["metadata"]["memory_growth_lookup"]["ref_count"] >= 1
+    patched = json.loads(attempt.work_order.inputs["work_order_input"])
+    assert patched["timeout"] == 12.0
+    assert patched["recovery_strategy"] == "retry_with_longer_timeout_or_offline_path"
+
+
+def test_recovery_planner_downranks_degraded_learned_playbook(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.contracts import DecisionContract, RiskLevel, ToolPolicy, VerificationReport, WorkOrder
+    from l3_node.cognitive_kernel.recovery_planner import RecoveryPlanner
+
+    degraded_ref = {
+        "bucket": "tool_habits",
+        "memory_id": "memory_growth:playbook:degraded-window-focus",
+        "source": "Memory Growth Playbooks",
+        "preview": (
+            "next_strategy=retry_with_longer_timeout_or_offline_path; "
+            "artifact_success_rate=0.10; artifact_use_count=10; "
+            "artifact_failure_count=9; artifact_last_failure_reason=window_focus_timeout"
+        ),
+        "relevance_reason": "artifact_success_rate=0.10; artifact_failure_count=9",
+    }
+    contract = DecisionContract(
+        decision_id="decision-degraded-playbook",
+        turn_id="turn-degraded-playbook",
+        task_type="app_control",
+        goal="switch to browser window",
+        selected_roles=["AppControlExecutorAgent"],
+        risk_level=RiskLevel.LOW,
+        tool_policy=ToolPolicy(allowed_tools=["mcp:windows_window_switch"], risk_level=RiskLevel.LOW),
+        execution_allowed=True,
+        memory_context_refs=[degraded_ref],
+    )
+    work = WorkOrder(
+        work_order_id="work-degraded-playbook",
+        decision_id=contract.decision_id,
+        role_agent="AppControlExecutorAgent",
+        task="app_control",
+        inputs={"tool": "mcp:windows_window_switch", "work_order_input": '{"window_title":"Chrome"}'},
+        tool_policy=contract.tool_policy,
+    )
+    verification = VerificationReport(
+        verification_id="verify-degraded-playbook",
+        work_order_id=work.work_order_id,
+        ok=False,
+        failure_reason="window_focus_timeout",
+    )
+    planner = RecoveryPlanner(max_attempts=3, registry=type("EmptyRegistry", (), {
+        "max_attempts_for": lambda self, **kwargs: kwargs.get("default", 3),
+        "select_next": lambda self, **kwargs: None,
+        "candidate_snapshot": lambda self, **kwargs: [],
+    })())
+
+    attempt = planner.next_attempt(
+        contract=contract,
+        failed_work_order=work,
+        verification=verification,
+        attempt_records=[],
+    )
+
+    assert attempt is not None
+    metadata = attempt.candidate_path["metadata"]
+    assert metadata["artifact_usage_multiplier"] < 1.0
+    assert metadata["artifact_usage_health"]["degraded"] is True
+    assert "memory_growth:playbook:degraded-window-focus" in metadata["artifact_usage_health"]["degraded_refs"]
+    assert attempt.candidate_path["priority"] < 80
 
 
 def test_concept_curator_promotes_stable_candidates_and_quarantines_weak_ones(tmp_path, monkeypatch):
@@ -890,7 +1979,7 @@ def test_memory_growth_http_status_includes_quality_monitoring(tmp_path, monkeyp
     from l3_node.cognitive_kernel.contracts import MemoryWriteRequest
     from l3_node.cognitive_kernel.memory_lifecycle import record_lifecycle_memory_feedback, write_lifecycle_memory
     from l3_node.cognitive_kernel.memory_growth import append_raw_event, ensure_memory_growth_scaffold, memory_growth_dir
-    from l3_node.memory_growth_http import memory_growth_status
+    from l3_node.memory_growth_http import apply_memory_growth_governance, memory_growth_status
 
     ensure_memory_growth_scaffold()
     root = memory_growth_dir()
@@ -1450,6 +2539,701 @@ last_verified: "2026-07-10T00:00:00Z"
     assert row["memory_last_failure_reason"] == "window_focus_timeout"
     status_row = next(item for item in memory_growth_status()["monitoring"]["artifact_usage"] if item["path"] == "playbooks/browser-open-focus.md")
     assert status_row["memory_use_count"] == 2
+
+
+def test_memory_growth_status_reports_success_path_health(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.memory_growth import ensure_memory_growth_scaffold, memory_growth_dir
+    from l3_node.memory_growth_http import memory_growth_status
+
+    ensure_memory_growth_scaffold()
+    root = memory_growth_dir()
+    index_dir = root / "indexes"
+    index_dir.mkdir(parents=True, exist_ok=True)
+    (index_dir / "artifact_usage.json").write_text(
+        json.dumps(
+            {
+                "artifacts": [
+                    {
+                        "path": "playbooks/learned_success/success-lark-neil.md",
+                        "id": "playbook:success-lark-neil",
+                        "type": "success_playbook",
+                        "summary": "Reliable Lark delivery to Neil",
+                        "memory_use_count": 5,
+                        "memory_success_count": 5,
+                        "memory_failure_count": 0,
+                        "memory_success_rate": 1.0,
+                    },
+                    {
+                        "path": "playbooks/learned_success/success-window-focus.md",
+                        "id": "playbook:success-window-focus",
+                        "type": "success_playbook",
+                        "summary": "Degraded window focus path",
+                        "memory_use_count": 6,
+                        "memory_success_count": 1,
+                        "memory_failure_count": 5,
+                        "memory_success_rate": 0.166,
+                        "memory_last_failure_reason": "window_focus_timeout",
+                    },
+                    {
+                        "path": "playbooks/recovery/generic-timeout.md",
+                        "id": "playbook:generic-timeout",
+                        "type": "playbook",
+                        "summary": "Generic timeout playbook",
+                        "memory_use_count": 8,
+                        "memory_success_count": 8,
+                        "memory_failure_count": 0,
+                        "memory_success_rate": 1.0,
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    monitoring = memory_growth_status()["monitoring"]
+    health = monitoring["success_path_health"]
+    assert health["summary"]["total_paths"] == 2
+    assert health["summary"]["reliable_count"] == 1
+    assert health["summary"]["degraded_count"] == 1
+    assert monitoring["health"]["success_path_reliable_count"] == 1
+    assert monitoring["health"]["success_path_degraded_count"] == 1
+    assert health["reliable_paths"][0]["path"] == "playbooks/learned_success/success-lark-neil.md"
+    assert health["degraded_paths"][0]["memory_last_failure_reason"] == "window_focus_timeout"
+
+
+def test_memory_growth_status_reports_memory_trust_summary(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.contracts import MemoryWriteRequest
+    from l3_node.cognitive_kernel.memory_growth import ensure_memory_growth_scaffold
+    from l3_node.cognitive_kernel.memory_lifecycle import write_lifecycle_memory
+    from l3_node.memory_growth_http import memory_growth_status
+
+    ensure_memory_growth_scaffold()
+    write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="trust-1",
+            source_event="user_confirmed_alias",
+            memory_type="alias",
+            content="Neil uses Lark for messages.",
+            trust_state="confirmed",
+            confidence=0.9,
+        )
+    )
+    write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="trust-2",
+            source_event="system_inferred_alias",
+            memory_type="alias",
+            content="Maybe Lock means Lark.",
+            confidence=0.5,
+        )
+    )
+    write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="trust-3",
+            source_event="user_rejected_alias",
+            memory_type="alias",
+            content="Lock means Lark.",
+            confidence=0.8,
+        )
+    )
+    write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="trust-4",
+            source_event="conflict_requires_user_confirmation",
+            memory_type="correction",
+            content="Conflicting alias needs confirmation.",
+            requires_user_confirmation=True,
+            trust_state="conflicted",
+            confidence=0.6,
+        )
+    )
+
+    trust = memory_growth_status()["monitoring"]["memory_trust"]
+
+    assert trust["summary"]["confirmed_count"] == 1
+    assert trust["summary"]["floating_count"] == 1
+    assert trust["summary"]["rejected_count"] == 1
+    assert trust["summary"]["conflicted_count"] == 1
+    assert trust["summary"]["recall_blocked_count"] == 1
+    assert trust["requires_confirmation"][0]["trust_state"] == "conflicted"
+    assert trust["review_queue"][0]["trust_state"] == "conflicted"
+    assert trust["review_queue"][0]["review_priority"] == 100
+    assert any(row["trust_state"] == "floating" for row in trust["review_queue"])
+    assert any(row["trust_state"] == "rejected" for row in trust["review_queue"])
+    assert trust["recent_floating"][0]["content"] == "Maybe Lock means Lark."
+    assert trust["recent_rejected"][0]["recall_allowed"] is False
+
+
+def test_memory_growth_status_reports_memory_trust_analytics(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.contracts import MemoryWriteRequest
+    from l3_node.cognitive_kernel.memory_growth import ensure_memory_growth_scaffold
+    from l3_node.cognitive_kernel.memory_lifecycle import govern_lifecycle_memory, write_lifecycle_memory
+    from l3_node.cognitive_kernel.weekly_review import run_weekly_review
+    from l3_node.memory_growth_http import apply_memory_growth_governance, memory_growth_status
+
+    ensure_memory_growth_scaffold()
+
+    rejected_a = write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="trust-analytics-reject-1",
+            source_event="system_inferred_alias",
+            memory_type="alias",
+            content="Lock means Lark in voice input.",
+            confidence=0.62,
+        )
+    )
+    rejected_b = write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="trust-analytics-reject-2",
+            source_event="system_inferred_alias",
+            memory_type="alias",
+            content="Lock means Lark from voice command.",
+            confidence=0.64,
+        )
+    )
+    govern_lifecycle_memory(memory_id=rejected_a.memory_id, action="reject", note="wrong alias")
+    govern_lifecycle_memory(memory_id=rejected_b.memory_id, action="reject", note="wrong alias")
+
+    confirmed_a = write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="trust-follow-up-confirm-1",
+            source_event="user_confirmed_preference",
+            memory_type="user_preference",
+            content="Neil Lark updates are preferred.",
+            trust_state="confirmed",
+            confidence=0.87,
+        )
+    )
+    confirmed_b = write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="trust-follow-up-confirm-2",
+            source_event="user_confirmed_preference",
+            memory_type="user_preference",
+            content="Neil Lark updates are confirmed.",
+            trust_state="confirmed",
+            confidence=0.89,
+        )
+    )
+    govern_lifecycle_memory(memory_id=confirmed_a.memory_id, action="confirm", note="stable preference")
+    govern_lifecycle_memory(memory_id=confirmed_b.memory_id, action="confirm", note="stable preference")
+
+    confirmed_a = write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="trust-analytics-confirm-1",
+            source_event="user_confirmed_preference",
+            memory_type="user_preference",
+            content="Neil Lark updates are preferred.",
+            trust_state="confirmed",
+            confidence=0.86,
+        )
+    )
+    confirmed_b = write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="trust-analytics-confirm-2",
+            source_event="user_confirmed_preference",
+            memory_type="user_preference",
+            content="Neil Lark updates are confirmed.",
+            trust_state="confirmed",
+            confidence=0.88,
+        )
+    )
+    govern_lifecycle_memory(memory_id=confirmed_a.memory_id, action="confirm", note="stable preference")
+    govern_lifecycle_memory(memory_id=confirmed_b.memory_id, action="confirm", note="stable preference")
+
+    analytics = memory_growth_status()["monitoring"]["memory_trust"]["analytics"]
+
+    assert analytics["summary"]["rejected_pattern_count"] >= 1
+    assert analytics["summary"]["promotion_candidate_count"] >= 1
+    assert analytics["rejected_patterns"][0]["rejected_count"] >= 2
+    assert analytics["promotion_candidates"][0]["confirmed_count"] >= 2
+
+    recommendations = memory_growth_status()["monitoring"]["governance_recommendations"]
+    actions = {row["action"] for row in recommendations}
+    assert "review_rejected_memory_pattern" in actions
+    assert "promote_memory_pattern" in actions
+
+    rejected_rec = next(row for row in recommendations if row["action"] == "review_rejected_memory_pattern")
+    rejected_result = apply_memory_growth_governance(
+        action=rejected_rec["action"],
+        item=rejected_rec["item"],
+        note="unit reviews rejected pattern",
+    )
+    assert rejected_result["side_effects"][0]["type"] == "memory_trust_rejected_pattern_review_written"
+
+    promote_rec = next(row for row in recommendations if row["action"] == "promote_memory_pattern")
+    promote_result = apply_memory_growth_governance(
+        action=promote_rec["action"],
+        item=promote_rec["item"],
+        note="unit promotes stable pattern",
+    )
+    assert promote_result["side_effects"][0]["type"] == "memory_trust_method_memory_proposal_written"
+
+    stale_result = apply_memory_growth_governance(
+        action="revalidate_confirmed_memory",
+        item={"memory_id": confirmed_a.memory_id, "sample": confirmed_a.content, "age_days": 45},
+        note="unit revalidates stale confirmed memory",
+    )
+    assert stale_result["side_effects"][0]["type"] == "memory_trust_revalidation_request_written"
+
+    review = memory_growth_status()["monitoring"]["trust_governance_review"]
+    assert review["summary"]["executed_count"] >= 3
+    assert review["summary"]["converted_count"] >= 3
+    assert review["summary"]["conversion_rate"] == 1.0
+    assert review["summary"]["follow_up_count"] == 0
+    assert review["summary"]["next_action_count"] == 0
+    conversion_types = {row["conversion_type"] for row in review["converted"]}
+    assert "memory_trust_rejected_pattern_review_written" in conversion_types
+    assert "memory_trust_method_memory_proposal_written" in conversion_types
+    assert "memory_trust_revalidation_request_written" in conversion_types
+
+    monitoring = memory_growth_status()["monitoring"]
+    effectiveness = monitoring["governance_effectiveness"]
+    assert effectiveness["trust_conversion_rate"] == 1.0
+    assert effectiveness["trust_converted_count"] >= 3
+    assert "trust_governance_converted" in effectiveness["signals"]
+    assert monitoring["health"]["trust_governance_conversion_rate"] == 1.0
+
+    weekly = run_weekly_review(week_start="2026-07-13", stale_after_days=30)
+    weekly_payload = json.loads(weekly.report_path.read_text(encoding="utf-8"))
+    assert weekly_payload["summary"]["trust_governance_conversion_rate"] == 1.0
+    assert weekly_payload["summary"]["trust_governance_next_action_count"] == 0
+    assert weekly_payload["governance_effectiveness"]["trust_conversion_rate"] == 1.0
+    index = json.loads((weekly.report_path.parents[2] / "indexes" / "governance_effectiveness.json").read_text(encoding="utf-8"))
+    assert index["latest"]["trust_conversion_rate"] == 1.0
+    assert index["history"][0]["trust_conversion_rate"] == 1.0
+
+
+def test_memory_growth_trust_governance_follow_up_actions(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.contracts import MemoryWriteRequest
+    from l3_node.cognitive_kernel.memory_growth import ensure_memory_growth_scaffold
+    from l3_node.cognitive_kernel.memory_lifecycle import govern_lifecycle_memory, write_lifecycle_memory
+    from l3_node.cognitive_kernel.weekly_review import run_weekly_review
+    from l3_node.memory_growth_http import apply_memory_growth_auto_governance, memory_growth_status
+
+    root = ensure_memory_growth_scaffold()
+    rejected_a = write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="trust-follow-up-reject-1",
+            source_event="system_inferred_alias",
+            memory_type="alias",
+            content="Lock means Lark in speech.",
+            confidence=0.61,
+        )
+    )
+    rejected_b = write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="trust-follow-up-reject-2",
+            source_event="system_inferred_alias",
+            memory_type="alias",
+            content="Lock means Lark command.",
+            confidence=0.63,
+        )
+    )
+    govern_lifecycle_memory(memory_id=rejected_a.memory_id, action="reject", note="wrong alias")
+    govern_lifecycle_memory(memory_id=rejected_b.memory_id, action="reject", note="wrong alias")
+
+    confirmed_a = write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="trust-follow-up-confirm-a",
+            source_event="user_confirmed_preference",
+            memory_type="user_preference",
+            content="Neil Lark updates are preferred.",
+            trust_state="confirmed",
+            confidence=0.87,
+        )
+    )
+    confirmed_b = write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="trust-follow-up-confirm-b",
+            source_event="user_confirmed_preference",
+            memory_type="user_preference",
+            content="Neil Lark updates are confirmed.",
+            trust_state="confirmed",
+            confidence=0.89,
+        )
+    )
+    govern_lifecycle_memory(memory_id=confirmed_a.memory_id, action="confirm", note="stable preference")
+    govern_lifecycle_memory(memory_id=confirmed_b.memory_id, action="confirm", note="stable preference")
+
+    failed_dir = root / "reviews" / "governance"
+    failed_dir.mkdir(parents=True, exist_ok=True)
+    failed_report = {
+        "governance_id": "failed-trust-conversion",
+        "action": "review_rejected_memory_pattern",
+        "created_at": "2026-07-17T00:00:00Z",
+        "item": {"pattern_key": "lock lark", "sample": "Lock means Lark", "rejected_count": 2},
+        "side_effects": [],
+        "error": "write_failed",
+    }
+    (failed_dir / "failed-trust-conversion.json").write_text(json.dumps(failed_report, ensure_ascii=False), encoding="utf-8")
+
+    monitoring = memory_growth_status()["monitoring"]
+    review = monitoring["trust_governance_review"]
+    assert review["summary"]["pending_count"] >= 1
+    assert review["summary"]["failed_count"] >= 1
+    assert review["summary"]["follow_up_count"] >= 2
+    assert review["summary"]["next_action_count"] >= 2
+    assert review["follow_up_queue"][0]["priority_score"] >= review["follow_up_queue"][-1]["priority_score"]
+    assert any(row["kind"] == "failed_trust_conversion" for row in review["follow_up_queue"])
+    assert any(row["source"] == "trust_governance_pending" for row in review["next_actions"])
+    assert any(row["source"] == "trust_governance_failed" for row in review["next_actions"])
+
+    effectiveness = monitoring["governance_effectiveness"]
+    assert "trust_governance_pending" in effectiveness["signals"]
+    assert "trust_governance_failed" in effectiveness["signals"]
+    assert any("Trust-governance recommendations are pending" in item for item in effectiveness["recommendations"])
+
+    weekly = run_weekly_review(week_start="2026-07-13", stale_after_days=30)
+    payload = json.loads(weekly.report_path.read_text(encoding="utf-8"))
+    assert payload["summary"]["trust_governance_next_action_count"] >= 2
+    assert payload["memory_governance_next_actions"]
+    assert any("memory governance next-action" in item for item in payload["recommendations"])
+
+    first_auto = apply_memory_growth_auto_governance(source="unit", max_items=5)
+    assert first_auto["executed_count"] >= 1
+    assert first_auto["report_path"].endswith(".auto.json")
+    assert first_auto["raw_event_path"]
+    assert any(
+        row.get("kind") == "failed_trust_conversion" and row.get("ok")
+        for row in first_auto["results"]
+        if isinstance(row, dict)
+    )
+
+    second_auto = apply_memory_growth_auto_governance(source="unit", max_items=5)
+    assert any(
+        row.get("reason") == "auto_retry_limit_reached"
+        for row in second_auto["skipped"]
+        if isinstance(row, dict)
+    )
+
+
+def test_daily_review_runs_memory_governance_auto_policy(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.contracts import MemoryWriteRequest
+    from l3_node.cognitive_kernel.daily_review import run_daily_review
+    from l3_node.cognitive_kernel.memory_growth import ensure_memory_growth_scaffold
+    from l3_node.cognitive_kernel.memory_lifecycle import govern_lifecycle_memory, write_lifecycle_memory
+
+    ensure_memory_growth_scaffold()
+    first = write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="daily-auto-confirm-1",
+            source_event="user_confirmed_preference",
+            memory_type="user_preference",
+            content="Neil Lark summaries should include concise source links.",
+            trust_state="confirmed",
+            confidence=0.88,
+        )
+    )
+    second = write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="daily-auto-confirm-2",
+            source_event="user_confirmed_preference",
+            memory_type="user_preference",
+            content="Neil Lark summaries should include compact source links.",
+            trust_state="confirmed",
+            confidence=0.9,
+        )
+    )
+    govern_lifecycle_memory(memory_id=first.memory_id, action="confirm", note="stable delivery preference")
+    govern_lifecycle_memory(memory_id=second.memory_id, action="confirm", note="stable delivery preference")
+
+    result = run_daily_review(date="2026-07-17")
+    patch = json.loads(result.patch_path.read_text(encoding="utf-8"))
+    auto = patch["memory_governance_auto_policy"]
+    assert auto["source"] == "daily_review"
+    assert auto["executed_count"] >= 1
+    assert auto["failed_count"] == 0
+    assert any(row["action"] == "promote_memory_pattern" for row in auto["results"])
+    assert patch["memory_governance_auto_recommendation"]["recommended_mode"] == "safe_auto"
+    history = patch["memory_governance_auto_history"]
+    assert history["entry_id"]
+    assert history["summary"]["last_30_records"] >= 1
+    assert Path(history["index_path"]).exists()
+    review_text = result.review_path.read_text(encoding="utf-8")
+    assert "Memory Governance Auto Policy" in review_text
+    assert "Memory Governance Mode Recommendation" in review_text
+    assert "Memory Governance Auto History" in review_text
+
+
+def test_memory_governance_auto_policy_can_disable_daily_auto_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.contracts import MemoryWriteRequest
+    from l3_node.cognitive_kernel.daily_review import run_daily_review
+    from l3_node.cognitive_kernel.memory_growth import ensure_memory_growth_scaffold
+    from l3_node.cognitive_kernel.memory_lifecycle import govern_lifecycle_memory, write_lifecycle_memory
+    from l3_node.cognitive_kernel.weekly_review import run_weekly_review
+    from l3_node.memory_growth_http import memory_growth_status, save_memory_growth_auto_governance_policy
+
+    ensure_memory_growth_scaffold()
+    first = write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="daily-auto-off-confirm-1",
+            source_event="user_confirmed_preference",
+            memory_type="user_preference",
+            content="Neil Lark summaries should be short.",
+            trust_state="confirmed",
+            confidence=0.88,
+        )
+    )
+    second = write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="daily-auto-off-confirm-2",
+            source_event="user_confirmed_preference",
+            memory_type="user_preference",
+            content="Neil Lark summaries should be concise.",
+            trust_state="confirmed",
+            confidence=0.9,
+        )
+    )
+    govern_lifecycle_memory(memory_id=first.memory_id, action="confirm", note="stable delivery preference")
+    govern_lifecycle_memory(memory_id=second.memory_id, action="confirm", note="stable delivery preference")
+
+    policy = save_memory_growth_auto_governance_policy(mode="off", max_items=3)
+    assert policy["mode"] == "off"
+    assert policy["max_items"] == 3
+
+    result = run_daily_review(date="2026-07-17")
+    patch = json.loads(result.patch_path.read_text(encoding="utf-8"))
+    auto = patch["memory_governance_auto_policy"]
+    assert auto["mode"] == "off"
+    assert auto["executed_count"] == 0
+    assert auto["skipped"][0]["reason"] == "auto_governance_disabled"
+
+    monitoring = memory_growth_status()["monitoring"]
+    assert monitoring["memory_governance_auto_policy"]["mode"] == "off"
+    assert monitoring["memory_governance_auto_latest"]["mode"] == "off"
+    assert monitoring["memory_governance_auto_trends"]["days_7"][-1]["runs"] >= 1
+    assert monitoring["memory_governance_auto_trends"]["days_7"][-1]["skipped"] >= 1
+    assert monitoring["memory_governance_auto_mode_history"]["summary"]["last_30_records"] >= 1
+    assert monitoring["memory_governance_auto_mode_history"]["summary"]["last_30_change_recommended"] >= 1
+    recommendation = monitoring["memory_governance_auto_recommendation"]
+    assert recommendation["current_mode"] == "off"
+    assert recommendation["recommended_mode"] == "manual"
+    assert recommendation["should_change"] is True
+
+    weekly = run_weekly_review(week_start="2026-07-13", stale_after_days=30)
+    weekly_payload = json.loads(weekly.report_path.read_text(encoding="utf-8"))
+    assert weekly_payload["summary"]["memory_governance_auto_current_mode"] == "off"
+    assert weekly_payload["summary"]["memory_governance_auto_recommended_mode"] == "manual"
+    assert weekly_payload["summary"]["memory_governance_auto_should_change"] is True
+    assert weekly_payload["summary"]["memory_governance_auto_history_risk"] in {"watch", "noisy", "stable", "unknown"}
+    assert weekly_payload["memory_governance_auto"]["recommendation"]["recommended_mode"] == "manual"
+    assert weekly_payload["memory_governance_auto_history"]["summary"]["last_30_records"] >= 2
+    assert any("Memory governance auto mode should be reviewed" in item for item in weekly_payload["recommendations"])
+    assert "Memory Governance Auto Recommendation" in weekly.markdown_path.read_text(encoding="utf-8")
+    assert "Memory Governance Auto History" in weekly.markdown_path.read_text(encoding="utf-8")
+
+
+def test_memory_governance_auto_recommends_manual_after_repeated_failures(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.memory_growth import ensure_memory_growth_scaffold
+    from l3_node.memory_growth_http import memory_growth_status, save_memory_growth_auto_governance_policy
+
+    root = ensure_memory_growth_scaffold()
+    save_memory_growth_auto_governance_policy(mode="safe_auto", max_items=5)
+    reports = root / "reviews" / "governance"
+    reports.mkdir(parents=True, exist_ok=True)
+    for index in range(2):
+        payload = {
+            "schema_version": 1,
+            "auto_governance_id": f"auto-failed-{index}",
+            "created_at": "2026-07-17T00:00:00Z",
+            "source": "unit",
+            "mode": "safe_auto",
+            "requested_count": 3,
+            "selected_count": 1,
+            "executed_count": 0,
+            "failed_count": 1,
+            "skipped": [{"reason": "auto_retry_limit_reached"}],
+            "results": [{"ok": False, "error": "write_failed"}],
+        }
+        (reports / f"auto-failed-{index}.auto.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    recommendation = memory_growth_status()["monitoring"]["memory_governance_auto_recommendation"]
+    assert recommendation["current_mode"] == "safe_auto"
+    assert recommendation["recommended_mode"] == "manual"
+    assert recommendation["should_change"] is True
+    assert "recent_auto_governance_failures_or_retry_limits" in recommendation["reasons"]
+
+
+def test_memory_governance_auto_recommends_keep_safe_auto_when_clean(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.contracts import MemoryWriteRequest
+    from l3_node.cognitive_kernel.memory_growth import ensure_memory_growth_scaffold
+    from l3_node.cognitive_kernel.memory_lifecycle import govern_lifecycle_memory, write_lifecycle_memory
+    from l3_node.memory_growth_http import apply_memory_growth_auto_governance, memory_growth_status, save_memory_growth_auto_governance_policy
+
+    ensure_memory_growth_scaffold()
+    save_memory_growth_auto_governance_policy(mode="safe_auto", max_items=5)
+    first = write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="auto-healthy-confirm-1",
+            source_event="user_confirmed_preference",
+            memory_type="user_preference",
+            content="Neil Lark summaries should include concise source links.",
+            trust_state="confirmed",
+            confidence=0.89,
+        )
+    )
+    second = write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="auto-healthy-confirm-2",
+            source_event="user_confirmed_preference",
+            memory_type="user_preference",
+            content="Neil Lark summaries should include compact source links.",
+            trust_state="confirmed",
+            confidence=0.9,
+        )
+    )
+    govern_lifecycle_memory(memory_id=first.memory_id, action="confirm", note="stable preference")
+    govern_lifecycle_memory(memory_id=second.memory_id, action="confirm", note="stable preference")
+    assert apply_memory_growth_auto_governance(source="unit")["executed_count"] >= 1
+
+    recommendation = memory_growth_status()["monitoring"]["memory_governance_auto_recommendation"]
+    assert recommendation["current_mode"] == "safe_auto"
+    assert recommendation["recommended_mode"] == "safe_auto"
+    assert recommendation["should_change"] is False
+    assert "safe_auto_is_converting_cleanly" in recommendation["reasons"]
+
+
+def test_memory_growth_governance_updates_memory_trust(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.contracts import MemoryWriteRequest
+    from l3_node.cognitive_kernel.memory_growth import ensure_memory_growth_scaffold
+    from l3_node.cognitive_kernel.memory_lifecycle import recall_lifecycle_memories, write_lifecycle_memory
+    from l3_node.memory_growth_http import apply_memory_growth_governance, memory_growth_status
+
+    ensure_memory_growth_scaffold()
+    record = write_lifecycle_memory(
+        MemoryWriteRequest(
+            turn_id="trust-governance-1",
+            source_event="system_inferred_alias",
+            memory_type="alias",
+            content="Maybe Lock means Lark.",
+            confidence=0.5,
+        )
+    )
+
+    confirmed = apply_memory_growth_governance(
+        action="confirm_memory",
+        item={"memory_id": record.memory_id},
+        note="unit confirms the alias",
+    )
+    assert confirmed["side_effects"][0]["type"] == "memory_trust_governed"
+    assert confirmed["side_effects"][0]["trust_state"] == "confirmed"
+    assert memory_growth_status()["monitoring"]["memory_trust"]["summary"]["confirmed_count"] == 1
+    assert recall_lifecycle_memories("Lock Lark", limit=3)
+
+    rejected = apply_memory_growth_governance(
+        action="reject_memory",
+        item={"memory_id": record.memory_id},
+        note="unit rejects the alias",
+    )
+    assert rejected["side_effects"][0]["trust_state"] == "rejected"
+    trust = memory_growth_status()["monitoring"]["memory_trust"]
+    assert trust["summary"]["rejected_count"] == 1
+    assert trust["summary"]["recall_blocked_count"] == 1
+    assert recall_lifecycle_memories("Lock Lark", limit=3) == []
+
+    corrected = apply_memory_growth_governance(
+        action="correct_memory",
+        item={"memory_id": record.memory_id, "corrected_content": "Lock in voice input usually means Lark."},
+        note="unit corrects the alias",
+    )
+    assert corrected["side_effects"][0]["trust_state"] == "confirmed"
+    evidence = recall_lifecycle_memories("voice input Lark", limit=3)
+    assert evidence
+    assert "usually means Lark" in evidence[0].content
+
+
+def test_success_path_health_changes_after_multi_round_feedback(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
+
+    from l3_node.cognitive_kernel.contracts import VerificationReport
+    from l3_node.cognitive_kernel.memory_growth import ensure_memory_growth_scaffold, memory_growth_dir
+    from l3_node.cognitive_kernel.runtime import close_turn
+    from l3_node.memory_growth_http import memory_growth_status
+
+    ensure_memory_growth_scaffold()
+    root = memory_growth_dir()
+    playbook_path = root / "playbooks" / "learned_success" / "success-window-focus.md"
+    playbook_path.parent.mkdir(parents=True, exist_ok=True)
+    playbook_path.write_text(
+        """---
+id: "playbook:success-window-focus"
+type: "success_playbook"
+summary: "Verified window focus path"
+confidence: 0.88
+memory_use_count: 0
+memory_success_count: 0
+memory_failure_count: 0
+memory_success_rate: 0.0
+---
+
+# Verified window focus path
+""",
+        encoding="utf-8",
+    )
+    refs = [
+        {
+            "bucket": "success_playbooks",
+            "memory_id": "memory_growth:playbook:success-window-focus",
+            "source": "Memory Growth Playbooks",
+            "artifact_path": str(playbook_path),
+            "preview": "success_strategy=reuse_window_focus_chain; artifact_success_rate=0.0",
+        }
+    ]
+    for index in range(3):
+        close_turn(
+            turn_id=f"success-window-focus-{index}",
+            final_text="ok",
+            executed_work_orders=[f"work-success-{index}"],
+            verification_reports=[VerificationReport(verification_id=f"verify-success-{index}", work_order_id=f"work-success-{index}", ok=True)],
+            memory_context_refs=refs,
+        )
+
+    health = memory_growth_status()["monitoring"]["success_path_health"]
+    assert health["summary"]["reliable_count"] == 1
+    assert health["summary"]["degraded_count"] == 0
+    assert health["reliable_paths"][0]["path"] == "playbooks/learned_success/success-window-focus.md"
+
+    for index in range(4):
+        close_turn(
+            turn_id=f"failure-window-focus-{index}",
+            final_text="failed",
+            executed_work_orders=[f"work-failure-{index}"],
+            verification_reports=[
+                VerificationReport(
+                    verification_id=f"verify-failure-{index}",
+                    work_order_id=f"work-failure-{index}",
+                    ok=False,
+                    failure_reason="window_focus_timeout",
+                )
+            ],
+            aborted=True,
+            memory_context_refs=refs,
+        )
+
+    health = memory_growth_status()["monitoring"]["success_path_health"]
+    assert health["summary"]["reliable_count"] == 0
+    assert health["summary"]["degraded_count"] == 1
+    assert health["degraded_paths"][0]["memory_success_rate"] < 0.5
+    assert health["degraded_paths"][0]["memory_last_failure_reason"] == "window_focus_timeout"
 
 
 def test_weekly_review_indexes_artifact_usage_trends_and_recommendations(tmp_path, monkeypatch):

@@ -3024,6 +3024,26 @@ async def run_agent(
         {"lark_chat_id": _lark_cid, "lark_reply_chat_id": _lark_cid} if _lark_cid else {}
     )
     _turn_dbg: dict[str, Any] = {}
+    _original_user_input = user_input or ""
+    try:
+        from l3_node.cognitive_kernel.input_adapter import adapt_input_for_cognitive_kernel
+
+        _input_adaptation = adapt_input_for_cognitive_kernel(
+            turn_id=run_id,
+            user_input=user_input or "",
+            session_id=_lark_cid or "",
+            channel=_bg_channel or "",
+            desktop_companion_context=_desktop_companion_ctx,
+            implicit_attribution=implicit_attribution if isinstance(implicit_attribution, dict) else None,
+        )
+        _desktop_companion_ctx.update(_input_adaptation.desktop_companion_context)
+        if _input_adaptation.source.value == "voice" and _input_adaptation.normalized_text:
+            user_input = _input_adaptation.normalized_text
+            _desktop_companion_ctx["voice_language_raw_input"] = _original_user_input
+            _desktop_companion_ctx["voice_language_normalized_text"] = _input_adaptation.normalized_text
+            _desktop_companion_ctx["voice_language_changed"] = _input_adaptation.changed
+    except Exception as _input_adapter_ex:
+        logger.debug("[InputAdapter] skipped: %s", _input_adapter_ex)
     try:
         from l3_node.terminal_turn_debug_log import ensure_turn_started
 

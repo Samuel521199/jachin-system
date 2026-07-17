@@ -32,5 +32,80 @@
     "local-model",
     "examples",
     "gguf"
-  ]
+  ],
+  "recovery_playbook": {
+    "targets": [
+      {
+        "id": "english_example_generator_quality",
+        "role_agent": "ToolExecutionAgent",
+        "tools": [
+          "*english_generate_example_card*",
+          "*english_example_model_status*"
+        ],
+        "max_attempts": 5,
+        "steps": [
+          {
+            "strategy": "check_example_model_status",
+            "tool": "english_example_model_status",
+            "when": {
+              "failure_any": [
+                "model_not_ready",
+                "model_missing",
+                "runtime_missing",
+                "timeout",
+                "generation_failed"
+              ]
+            },
+            "action_patch": {
+              "include_paths": true,
+              "recovery_strategy": "check_example_model_status"
+            },
+            "rationale": "if example generation fails, first verify model/runtime readiness and report exact missing assets",
+            "priority": 10
+          },
+          {
+            "strategy": "regenerate_with_scene_constraints",
+            "tool": "english_generate_example_card",
+            "when": {
+              "failure_any": [
+                "template_like",
+                "scene_mismatch",
+                "bad_example",
+                "logic_error",
+                "translation_mismatch"
+              ]
+            },
+            "action_patch": {
+              "strict_scene_fit": true,
+              "avoid_templates": true,
+              "require_chinese_translation": true,
+              "recovery_strategy": "regenerate_with_scene_constraints"
+            },
+            "rationale": "regenerate examples with stricter scene and translation constraints when quality gates fail",
+            "priority": 20
+          },
+          {
+            "strategy": "retry_short_example_generation",
+            "tool": "$same",
+            "when": {
+              "failure_any": [
+                "timeout",
+                "busy",
+                "temporarily",
+                "unverified"
+              ],
+              "after_attempt": 2
+            },
+            "action_patch": {
+              "max_words": 12,
+              "timeout": 12.0,
+              "recovery_strategy": "retry_short_example_generation"
+            },
+            "rationale": "retry with shorter output constraints after readiness checks",
+            "priority": 50
+          }
+        ]
+      }
+    ]
+  }
 }

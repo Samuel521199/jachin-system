@@ -87,5 +87,77 @@
     }
   ],
   "type": "MCP",
-  "version": "1.0.2"
+  "version": "1.0.2",
+  "recovery_playbook": {
+    "targets": [
+      {
+        "id": "english_tutor_lookup_and_examples",
+        "role_agent": "ToolExecutionAgent",
+        "tools": [
+          "*english_translate*",
+          "*english_explain_word*",
+          "*english_make_examples*",
+          "*english_quiz*",
+          "*english_correct*"
+        ],
+        "max_attempts": 5,
+        "steps": [
+          {
+            "strategy": "fallback_to_word_explanation",
+            "tool": "english_explain_word",
+            "when": {
+              "failure_any": [
+                "meaning_missing",
+                "dictionary_missing",
+                "word_not_found",
+                "definition",
+                "unverified"
+              ]
+            },
+            "action_patch": {
+              "recovery_strategy": "fallback_to_word_explanation"
+            },
+            "rationale": "when direct translation lacks a useful meaning, switch to the word explanation tool",
+            "priority": 15
+          },
+          {
+            "strategy": "fallback_to_examples",
+            "tool": "english_make_examples",
+            "when": {
+              "failure_any": [
+                "example_missing",
+                "example_bad_quality",
+                "template_like",
+                "scene_mismatch"
+              ]
+            },
+            "action_patch": {
+              "count": 3,
+              "level": "daily",
+              "recovery_strategy": "fallback_to_examples"
+            },
+            "rationale": "when examples fail quality checks, generate several simpler contextual examples",
+            "priority": 25
+          },
+          {
+            "strategy": "retry_rule_engine_once",
+            "tool": "$same",
+            "when": {
+              "failure_any": [
+                "timeout",
+                "busy",
+                "temporarily",
+                "unverified"
+              ]
+            },
+            "action_patch": {
+              "recovery_strategy": "retry_rule_engine_once"
+            },
+            "rationale": "offline rule tools can recover from transient IO/cache state with one bounded retry",
+            "priority": 45
+          }
+        ]
+      }
+    ]
+  }
 }

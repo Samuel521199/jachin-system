@@ -184,6 +184,12 @@ async def _execute_verified_work_order(
     mark_work_order_running(work_order, contract.turn_id)
     tool = str(work_order.inputs.get("tool") or (contract.tool_policy.allowed_tools[0] if contract.tool_policy.allowed_tools else ""))
     work_order_input = _work_order_input_from_work_order(work_order)
+    execution_preference = work_order.inputs.get("execution_preference")
+    if not isinstance(execution_preference, dict):
+        execution_preference = {}
+    candidate_tool_reliability = work_order.inputs.get("candidate_tool_reliability")
+    if not isinstance(candidate_tool_reliability, list):
+        candidate_tool_reliability = []
     role_context = RoleExecutionContext(
         turn_id=contract.turn_id,
         goal=goal,
@@ -198,6 +204,11 @@ async def _execute_verified_work_order(
             "mainline": mainline,
             "recovery_attempt": recovery_attempt,
             "recovery_strategy": recovery_strategy,
+            "execution_preference": execution_preference,
+            "preferred_execution_strategy": execution_preference.get("preferred_execution_strategy") or "",
+            "preferred_work_order_chain": execution_preference.get("preferred_work_order_chain") or [],
+            "candidate_tool_reliability": candidate_tool_reliability,
+            "selected_tool_reliability": _selected_tool_reliability(tool, candidate_tool_reliability),
         },
     )
     role_result = None
@@ -222,6 +233,9 @@ async def _execute_verified_work_order(
                 "mainline": mainline,
                 "recovery_attempt": recovery_attempt,
                 "recovery_strategy": recovery_strategy,
+                "execution_preference": execution_preference,
+                "candidate_tool_reliability": candidate_tool_reliability,
+                "selected_tool_reliability": _selected_tool_reliability(tool, candidate_tool_reliability),
             }
         ],
     )
@@ -452,6 +466,13 @@ def _record_failure_learning(
                 "error": f"{type(exc).__name__}: {exc}",
             },
         )
+
+
+def _selected_tool_reliability(tool: str, rows: list[dict]) -> dict:
+    for row in rows or []:
+        if isinstance(row, dict) and str(row.get("tool") or "") == tool:
+            return dict(row)
+    return {}
 
 
 def _recovery_budget() -> int:

@@ -159,9 +159,11 @@ def _check_web_summary_quality(
         "st0",
         "function(",
         "undefined",
+        "viewbox",
+        "xmlns",
     )
     low = message.lower()
-    if any(marker in low for marker in noisy_markers):
+    if any(marker in low for marker in noisy_markers) or re.search(r"<[a-z][^>]{0,120}>", low):
         issues.append("summary_contains_web_noise")
     markdown_artifact_markers = (
         "]([http",
@@ -191,6 +193,20 @@ def _check_web_summary_quality(
     if incomplete:
         issues.append("summary_incomplete_sentence")
         evidence["incomplete_bullet_preview"] = incomplete[0][:180]
+    source_lines = [
+        line.strip()
+        for line in message.splitlines()
+        if re.match(r"^(来源|链接|参考)[:：]", line.strip()) or re.match(r"^\s+来源[:：]", line)
+    ]
+    evidence["source_line_count"] = len(source_lines)
+    if bullet_lines and (len(source_lines) < len(bullet_lines) or evidence["source_url_count"] < len(bullet_lines)):
+        issues.append("summary_source_line_missing")
+    if any("[http" in line.lower() or "](" in line for line in source_lines):
+        issues.append("summary_source_line_markdown_artifact")
+    bad_sentence_endings = [line for line in bullet_lines if line.rstrip().endswith(("，", ",", "：", ":", "；", ";", "、"))]
+    if bad_sentence_endings:
+        issues.append("summary_sentence_fragment")
+        evidence["sentence_fragment_preview"] = bad_sentence_endings[0][:180]
 
 
 def _summary_text(raw_text: str, obj: dict[str, Any] | None) -> str:
@@ -211,11 +227,15 @@ def _check_message_send_quality(
     role_evidence = next((item for item in extra_evidence if item.get("type") == "role_execution"), {})
     adapter = role_evidence.get("adapter_evidence") if isinstance(role_evidence.get("adapter_evidence"), dict) else {}
     evidence["post_send_verified"] = adapter.get("post_send_verified")
+    evidence["dry_run_preview_verified"] = adapter.get("dry_run_preview_verified")
+    evidence["delivery_mode"] = adapter.get("delivery_mode")
     evidence["adapter_ok"] = role_evidence.get("adapter_ok")
     if adapter.get("duplicate_skipped") is True:
         issues.append("message_duplicate_skipped")
     if role_evidence and role_evidence.get("adapter_ok") is not True:
         issues.append("message_adapter_failed")
+    if role_evidence and adapter.get("dry_run_preview_verified") is True:
+        return
     if role_evidence and adapter.get("post_send_verified") is not True:
         issues.append("message_post_send_unverified")
     if isinstance(obj, dict) and not any(str(obj.get(key) or "").strip() for key in ("message_id", "screenshot", "detail")):
@@ -243,6 +263,9 @@ def _score_from_issues(issues: list[str]) -> float:
         "summary_contains_markdown_artifact",
         "summary_has_ellipsis_truncation",
         "summary_incomplete_sentence",
+        "summary_source_line_missing",
+        "summary_source_line_markdown_artifact",
+        "summary_sentence_fragment",
         "search_result_titles_missing",
         "message_duplicate_skipped",
     }
@@ -280,6 +303,9 @@ def _blocks_execution(tool: str, issues: list[str]) -> bool:
             "summary_contains_markdown_artifact",
             "summary_has_ellipsis_truncation",
             "summary_incomplete_sentence",
+            "summary_source_line_missing",
+            "summary_source_line_markdown_artifact",
+            "summary_sentence_fragment",
         },
     }
     if tool in blocking_by_tool and any(issue in blocking_by_tool[tool] for issue in issues):

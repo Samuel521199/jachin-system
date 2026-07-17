@@ -15,7 +15,8 @@ from typing import Any
 
 from .capability_recovery_registry import CapabilityRecoveryRegistry, RecoveryCandidate
 from .capability_governance_policy import governance_policy_from_work_order
-from .contracts import DecisionContract, RecoveryPlan, RiskLevel, VerificationReport, WorkOrder
+from .contracts import AgentInputEnvelope, DecisionContract, InputSource, MemoryRecallRequest, RecoveryPlan, RiskLevel, VerificationReport, WorkOrder
+from .memory_growth_recall import recall_memory_growth
 from .runtime import build_recovery_plan
 
 DEFAULT_MAX_RECOVERY_ATTEMPTS = 5
@@ -177,13 +178,36 @@ class RecoveryPlanner:
         for item in attempt_records:
             key = item.failure_reason or "unknown"
             failure_counts[key] = failure_counts.get(key, 0) + 1
+        exhausted_tools = sorted({str(item.tool or "") for item in attempt_records if item.tool})
+        exhausted_strategies = sorted({str(item.strategy or "") for item in attempt_records if item.strategy})
+        failure_timeline = [
+            {
+                "attempt_no": item.attempt_no,
+                "tool": item.tool,
+                "strategy": item.strategy,
+                "failure_class": _failure_class(item.failure_reason),
+                "failure_reason": item.failure_reason or "unknown",
+                "elapsed_ms": item.elapsed_ms,
+            }
+            for item in attempt_records
+        ]
+        stopped_reason = _stopped_reason(
+            max_attempts=self.max_attempts,
+            attempt_records=attempt_records,
+            last_verification=last_verification,
+        )
         return {
             "task_type": contract.task_type,
             "goal": contract.goal,
             "max_attempts": self.max_attempts,
             "attempt_count": len(attempt_records),
             "final_failure_reason": last_verification.failure_reason or "verification_failed",
+            "stopped_reason": stopped_reason,
+            "recovery_quality_score": _recovery_quality_score(attempt_records, stopped_reason),
             "failure_counts": failure_counts,
+            "failure_timeline": failure_timeline,
+            "exhausted_tools": exhausted_tools,
+            "exhausted_strategies": exhausted_strategies,
             "attempts": [x.to_dict() for x in attempt_records],
             "recommended_next_steps": _recommend_next_steps(contract, last_verification, attempt_records),
             "memory_context_refs": list(getattr(contract, "memory_context_refs", []) or []),
@@ -317,6 +341,52 @@ def _recommend_next_steps(
     return steps
 
 
+def _failure_class(reason: str) -> str:
+    text = str(reason or "").lower()
+    if "tool_quality" in text or "summary" in text or "fetch" in text:
+        return "tool_quality"
+    if "window" in text or "focus" in text:
+        return "window_state"
+    if "path" in text or "not found" in text:
+        return "target_not_found"
+    if "permission" in text or "not allowed" in text or "confirm" in text:
+        return "permission_or_confirmation"
+    if "timeout" in text or "connection" in text or "busy" in text:
+        return "transport_or_timeout"
+    return "unknown"
+
+
+def _stopped_reason(
+    *,
+    max_attempts: int,
+    attempt_records: list[RecoveryAttemptRecord],
+    last_verification: VerificationReport,
+) -> str:
+    reason = (last_verification.failure_reason or "").lower()
+    if any(token in reason for token in ("permission", "not allowed", "requires_confirmation", "confirm")):
+        return "needs_user_confirmation_or_permission"
+    if len(attempt_records) >= max_attempts:
+        return "max_attempts_reached"
+    return "no_eligible_recovery_path"
+
+
+def _recovery_quality_score(attempt_records: list[RecoveryAttemptRecord], stopped_reason: str) -> int:
+    if not attempt_records:
+        return 0
+    score = 40
+    unique_fingerprints = {(item.tool, item.strategy) for item in attempt_records}
+    unique_failure_classes = {_failure_class(item.failure_reason) for item in attempt_records}
+    if len(unique_fingerprints) >= min(3, len(attempt_records)):
+        score += 25
+    if len(unique_failure_classes) >= 2:
+        score += 15
+    if any(item.strategy not in {"initial", "retry_same_path", "retry_with_backoff_hint"} for item in attempt_records):
+        score += 15
+    if stopped_reason in {"max_attempts_reached", "needs_user_confirmation_or_permission"}:
+        score += 5
+    return max(0, min(100, score))
+
+
 def _inline_recovery_registry_for(work_order: WorkOrder) -> CapabilityRecoveryRegistry | None:
     manifest = _inline_recovery_manifest(work_order)
     if not manifest:
@@ -418,15 +488,11 @@ def _memory_growth_recovery_candidate(
     verification: VerificationReport,
     attempt_records: list[RecoveryAttemptRecord],
 ) -> RecoveryCandidate | None:
-    refs = [
-        ref
-        for ref in list(getattr(contract, "memory_context_refs", []) or [])
-        if isinstance(ref, dict)
-        and (
-            "playbook" in str(ref.get("memory_id") or "").lower()
-            or ref.get("bucket") in {"tool_habits", "failure_hints"}
-        )
-    ]
+    refs = _memory_growth_recovery_refs(
+        contract=contract,
+        failed_work_order=failed_work_order,
+        verification=verification,
+    )
     if not refs:
         return None
     tool = str(failed_work_order.inputs.get("tool") or "")
@@ -435,6 +501,7 @@ def _memory_growth_recovery_candidate(
     reason = (verification.failure_reason or "").lower()
     preview = " ".join(str(ref.get("preview") or "") for ref in refs).lower()
     strategy_weight, strategy_mode, requires_more_evidence = _memory_growth_ref_strategy(refs)
+    usage_multiplier, usage_health = _memory_growth_ref_usage_health(refs)
     if strategy_mode == "manual_review" or requires_more_evidence:
         return None
     used = {str(item.strategy or "") for item in attempt_records}
@@ -444,7 +511,21 @@ def _memory_growth_recovery_candidate(
     combined = f"{reason} {preview}"
     raw_input = str(failed_work_order.inputs.get("work_order_input") or "")
 
-    if "memory_growth_longer_timeout" not in used and any(x in combined for x in ("timeout", "slow", "longer timeout")):
+    learned_strategy = _learned_next_strategy(refs)
+
+    if learned_strategy and learned_strategy not in used and _can_auto_apply_learned_strategy(learned_strategy):
+        strategy = learned_strategy
+        patch = {"recovery_strategy": strategy}
+        if any(x in learned_strategy for x in ("timeout", "longer")) or any(x in combined for x in ("timeout", "slow", "longer timeout")):
+            patch["timeout"] = 12.0
+        if "evidence" in learned_strategy or "verification" in learned_strategy:
+            patch["require_verification_evidence"] = True
+        if "resolve_target" in learned_strategy:
+            patch["resolve_target_from_memory"] = True
+        if "higher_quality" in learned_strategy or "regenerate" in learned_strategy:
+            patch["quality_gate"] = "strict"
+        work_order_input = _patch_json_input(raw_input, patch)
+    elif "memory_growth_longer_timeout" not in used and any(x in combined for x in ("timeout", "slow", "longer timeout")):
         strategy = "memory_growth_longer_timeout"
         work_order_input = _patch_json_input(raw_input, {"timeout": 12.0, "recovery_strategy": strategy})
     elif "memory_growth_retry_same_path" not in used and any(x in combined for x in ("retry", "focus", "window", "foreground")):
@@ -463,17 +544,134 @@ def _memory_growth_recovery_candidate(
             "Selected from Memory Growth playbook evidence after considering "
             f"failure_reason={verification.failure_reason or 'unknown'} history={history or 'none'}"
         ),
-        priority=max(20, min(100, int(80 * strategy_weight))),
+        priority=max(10, min(100, int(80 * strategy_weight * usage_multiplier))),
         metadata={
             "source": "memory_growth",
             "memory_context_refs": refs[:5],
+            "memory_growth_lookup": {
+                "live_recall_used": any(ref.get("source") == "Memory Growth Playbooks" for ref in refs),
+                "learned_next_strategy": learned_strategy,
+                "ref_count": len(refs),
+            },
             "failure_reason": verification.failure_reason,
             "attempt_history": [item.to_dict() for item in attempt_records],
             "governance_strategy_weight": strategy_weight,
             "governance_execution_mode": strategy_mode,
             "governance_requires_more_evidence": requires_more_evidence,
+            "artifact_usage_multiplier": usage_multiplier,
+            "artifact_usage_health": usage_health,
         },
     )
+
+
+def _memory_growth_recovery_refs(
+    *,
+    contract: DecisionContract,
+    failed_work_order: WorkOrder,
+    verification: VerificationReport,
+) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for ref in list(getattr(contract, "memory_context_refs", []) or []):
+        if not isinstance(ref, dict):
+            continue
+        if "playbook" in str(ref.get("memory_id") or "").lower() or ref.get("bucket") in {"tool_habits", "failure_hints"}:
+            refs.append(ref)
+    refs.extend(_live_memory_growth_recovery_refs(contract=contract, failed_work_order=failed_work_order, verification=verification))
+    return _dedupe_memory_refs(refs)
+
+
+def _live_memory_growth_recovery_refs(
+    *,
+    contract: DecisionContract,
+    failed_work_order: WorkOrder,
+    verification: VerificationReport,
+) -> list[dict[str, Any]]:
+    tool = str(failed_work_order.inputs.get("tool") or "")
+    raw_text = " ".join(
+        part
+        for part in (
+            contract.goal,
+            contract.task_type,
+            failed_work_order.task,
+            failed_work_order.role_agent,
+            tool,
+            verification.failure_reason,
+        )
+        if part
+    )
+    if not raw_text.strip():
+        return []
+    try:
+        envelope = AgentInputEnvelope(
+            turn_id=contract.turn_id,
+            source=InputSource.SYSTEM,
+            raw_text=raw_text,
+            normalized_text=raw_text,
+        )
+        memories, _gaps = recall_memory_growth(
+            MemoryRecallRequest(
+                turn_id=contract.turn_id,
+                input_envelope=envelope,
+                candidate_intents=[contract.task_type, failed_work_order.task],
+                candidate_task_domains=[failed_work_order.role_agent, tool],
+                candidate_entities=[tool, failed_work_order.role_agent],
+                multi_queries={
+                    "goal": contract.goal,
+                    "failure": verification.failure_reason,
+                    "tool": tool,
+                },
+                retrieval_channels=["memory_growth_playbook_memory"],
+                retrieval_purpose=["recovery_planning", "learned_playbook_lookup"],
+                max_results_per_channel=5,
+            ),
+            limit=5,
+        )
+    except Exception:
+        return []
+    refs: list[dict[str, Any]] = []
+    for memory in memories:
+        if "playbook" not in str(memory.memory_id or "").lower() and memory.memory_type not in {"failure_hint", "tool_habit"}:
+            continue
+        refs.append(
+            {
+                "bucket": "failure_hints" if memory.memory_type == "failure_hint" else "tool_habits",
+                "memory_id": memory.memory_id,
+                "source": memory.source,
+                "confidence": memory.confidence,
+                "preview": memory.content,
+                "relevance_reason": memory.relevance_reason,
+                "lookup": "live_memory_growth_recall",
+            }
+        )
+    return refs
+
+
+def _dedupe_memory_refs(refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for ref in refs:
+        key = str(ref.get("memory_id") or json.dumps(ref, sort_keys=True, ensure_ascii=False, default=str))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(ref)
+    return out
+
+
+def _learned_next_strategy(refs: list[dict[str, Any]]) -> str:
+    for ref in refs:
+        hay = f"{ref.get('preview') or ''} {ref.get('relevance_reason') or ''}"
+        value = _extract_strategy_value(hay.lower(), "next_strategy")
+        if value:
+            return value
+    return ""
+
+
+def _can_auto_apply_learned_strategy(strategy: str) -> bool:
+    low = strategy.lower()
+    if any(token in low for token in ("ask_user", "manual", "permission", "confirm")):
+        return False
+    return True
 
 
 def _memory_growth_ref_strategy(refs: list[dict[str, Any]]) -> tuple[float, str, bool]:
@@ -496,6 +694,74 @@ def _memory_growth_ref_strategy(refs: list[dict[str, Any]]) -> tuple[float, str,
     weight = max(weights) if weights else 1.0
     mode = "manual_review" if "manual_review" in modes else "batch_ok" if "batch_ok" in modes else "normal"
     return max(0.25, min(1.8, weight)), mode, requires
+
+
+def _memory_growth_ref_usage_health(refs: list[dict[str, Any]]) -> tuple[float, dict[str, Any]]:
+    rates: list[float] = []
+    use_counts: list[int] = []
+    failure_counts: list[int] = []
+    last_failures: list[str] = []
+    degraded_refs: list[str] = []
+    reliable_refs: list[str] = []
+    for ref in refs:
+        hay = f"{ref.get('preview') or ''} {ref.get('relevance_reason') or ''}".lower()
+        rate = _extract_float_value(hay, "artifact_success_rate")
+        if rate is None:
+            rate = _extract_float_value(hay, "memory_success_rate")
+        use_count = _extract_int_value(hay, "artifact_use_count")
+        failure_count = _extract_int_value(hay, "artifact_failure_count")
+        last_failure = _extract_strategy_value(hay, "artifact_last_failure_reason")
+        if rate is not None:
+            rates.append(rate)
+            if use_count >= 2 and rate < 0.5:
+                degraded_refs.append(str(ref.get("memory_id") or ref.get("artifact_path") or "unknown"))
+            if use_count >= 2 and rate >= 0.75:
+                reliable_refs.append(str(ref.get("memory_id") or ref.get("artifact_path") or "unknown"))
+        if use_count:
+            use_counts.append(use_count)
+        if failure_count:
+            failure_counts.append(failure_count)
+        if last_failure:
+            last_failures.append(last_failure)
+
+    multiplier = 1.0
+    if degraded_refs:
+        multiplier -= min(0.45, 0.18 * len(degraded_refs))
+    if sum(failure_counts) >= 3:
+        multiplier -= 0.12
+    if reliable_refs and not degraded_refs:
+        multiplier += min(0.2, 0.08 * len(reliable_refs))
+    multiplier = max(0.35, min(1.25, multiplier))
+    return multiplier, {
+        "rates": rates[:5],
+        "use_count": sum(use_counts),
+        "failure_count": sum(failure_counts),
+        "degraded_refs": degraded_refs[:5],
+        "reliable_refs": reliable_refs[:5],
+        "last_failure_reasons": last_failures[:5],
+        "degraded": bool(degraded_refs),
+        "multiplier": round(multiplier, 3),
+    }
+
+
+def _extract_float_value(text: str, key: str) -> float | None:
+    raw = _extract_strategy_value(text, key)
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except Exception:
+        return None
+
+
+def _extract_int_value(text: str, key: str) -> int:
+    raw = _extract_strategy_value(text, key)
+    if not raw:
+        return 0
+    try:
+        return int(float(raw))
+    except Exception:
+        return 0
 
 
 def _extract_strategy_value(text: str, key: str) -> str:

@@ -120,6 +120,12 @@ def record_confirmed_entity_correction_from_work_order(*, work_order: Any, turn_
         )
     store["app_corrections"] = records
     _write_store(store)
+    try:
+        from l3_node.voice_entity_correction import teach_alias
+
+        teach_alias("app", app_name, heard_as, source="entity_correction_confirmed")
+    except Exception:
+        pass
     memory_record = write_lifecycle_memory(
         MemoryWriteRequest(
             turn_id=turn_id or "entity-correction",

@@ -72,29 +72,16 @@ class CapabilityRecoveryRegistry:
         verification: VerificationReport,
         attempt_records: list[Any],
     ) -> RecoveryCandidate | None:
-        role_agent = failed_work_order.role_agent
-        tool = str(failed_work_order.inputs.get("tool") or "")
-        candidates = self._candidates(
+        ranked = self.ranked_candidates(
             contract=contract,
             failed_work_order=failed_work_order,
             verification=verification,
             attempt_records=attempt_records,
         )
-        tried = {_fingerprint(r.tool, r.strategy) for r in attempt_records}
-        candidates = [c for c in candidates if _fingerprint(c.tool, c.strategy) not in tried]
-        if not candidates:
+        eligible = [row for row in ranked if row.get("eligible")]
+        if not eligible:
             return None
-        for candidate in candidates:
-            candidate.metadata = dict(candidate.metadata)
-            candidate.metadata["adaptive_scorecard"] = _candidate_scorecard(
-                candidate,
-                verification,
-                attempt_records,
-                role_agent=role_agent,
-                tool=tool,
-            )
-        candidates.sort(key=lambda c: (int(c.metadata.get("adaptive_scorecard", {}).get("score") or 0), -int(c.priority)), reverse=True)
-        return candidates[0]
+        return eligible[0]["candidate"]
 
     def candidate_snapshot(
         self,
@@ -105,14 +92,62 @@ class CapabilityRecoveryRegistry:
         attempt_records: list[Any],
     ) -> list[dict[str, Any]]:
         return [
-            c.to_dict()
-            for c in self._candidates(
+            _public_ranked_candidate(row)
+            for row in self.ranked_candidates(
                 contract=contract,
                 failed_work_order=failed_work_order,
                 verification=verification,
                 attempt_records=attempt_records,
             )
         ]
+
+    def ranked_candidates(
+        self,
+        *,
+        contract: DecisionContract,
+        failed_work_order: WorkOrder,
+        verification: VerificationReport,
+        attempt_records: list[Any],
+    ) -> list[dict[str, Any]]:
+        role_agent = failed_work_order.role_agent
+        tool = str(failed_work_order.inputs.get("tool") or "")
+        tried = {_fingerprint(getattr(r, "tool", ""), getattr(r, "strategy", "")) for r in attempt_records}
+        rows: list[dict[str, Any]] = []
+        for candidate in self._candidates(
+            contract=contract,
+            failed_work_order=failed_work_order,
+            verification=verification,
+            attempt_records=attempt_records,
+        ):
+            candidate.metadata = dict(candidate.metadata)
+            scorecard = _candidate_scorecard(
+                candidate,
+                verification,
+                attempt_records,
+                role_agent=role_agent,
+                tool=tool,
+            )
+            fingerprint = _fingerprint(candidate.tool, candidate.strategy)
+            eligible = fingerprint not in tried and int(scorecard.get("score") or 0) > -100
+            reject_reason = ""
+            if fingerprint in tried:
+                reject_reason = "same_tool_and_strategy_already_failed"
+            elif int(scorecard.get("score") or 0) <= -100:
+                reject_reason = "score_below_recovery_threshold"
+            scorecard["eligible"] = eligible
+            scorecard["reject_reason"] = reject_reason
+            candidate.metadata["adaptive_scorecard"] = scorecard
+            rows.append(
+                {
+                    "candidate": candidate,
+                    "eligible": eligible,
+                    "reject_reason": reject_reason,
+                    "score": int(scorecard.get("score") or 0),
+                    "priority": int(candidate.priority),
+                }
+            )
+        rows.sort(key=lambda row: (1 if row["eligible"] else 0, int(row["score"]), -int(row["priority"])), reverse=True)
+        return rows
 
     def _candidates(
         self,
@@ -274,6 +309,7 @@ def _candidate_from_step(
             "manifest_path": step.get("_manifest_path"),
             "failure_reason": verification.failure_reason,
             "history_len": len(attempt_records),
+            "when": step.get("when") if isinstance(step.get("when"), dict) else {},
             "governance_policy": work_order.inputs.get("governance_policy") if isinstance(work_order.inputs.get("governance_policy"), dict) else {},
         },
     )
@@ -340,9 +376,34 @@ def _candidate_scorecard(
     reasons = [f"base_priority_score={score}"]
     current_class = _failure_signature(reason)
     history_classes = [_failure_signature(str(x.failure_reason or "").lower()) for x in attempt_records]
+    used_strategies = {str(getattr(x, "strategy", "") or "").lower() for x in attempt_records}
+    used_tools = {str(getattr(x, "tool", "") or "").lower() for x in attempt_records}
+    failed_fingerprints = {_fingerprint(getattr(x, "tool", ""), getattr(x, "strategy", "")) for x in attempt_records}
+    last_attempt = attempt_records[-1] if attempt_records else None
+    last_tool = str(getattr(last_attempt, "tool", "") or "").lower() if last_attempt else ""
+    last_strategy = str(getattr(last_attempt, "strategy", "") or "").lower() if last_attempt else ""
+    last_class = history_classes[-1] if history_classes else ""
+    candidate_tool = str(candidate.tool or "").lower()
+    recovery_attempt_count = sum(1 for item in attempt_records if str(getattr(item, "strategy", "") or "").lower() != "initial")
+    candidate_when = candidate.metadata.get("when") if isinstance(candidate.metadata, dict) else {}
+    if isinstance(candidate_when, dict):
+        history_needles = [str(x).lower() for x in (candidate_when.get("failure_any") or [])]
+        history_hits = [needle for needle in history_needles if needle and (needle in reason or needle in history_reasons)]
+        if history_hits:
+            bonus = min(45, 15 * len(set(history_hits)))
+            score += bonus
+            reasons.append(f"history_failure_match_bonus={bonus}")
     if strategy == "retry_same_path" and len(attempt_records) == 1:
         score += 40
         reasons.append("first_retry_same_path_bonus=40")
+    if strategy == "retry_same_path" and not attempt_records:
+        score += 75
+        reasons.append("first_controlled_retry_bonus=75")
+    if strategy == "retry_same_path" and attempt_records:
+        first_strategy = str(getattr(attempt_records[0], "strategy", "") or "").lower()
+        if first_strategy == "initial":
+            score += 15
+            reasons.append("one_controlled_retry_after_initial_bonus=15")
     if "window" in reason and "switch" in strategy:
         score += 60
         reasons.append("window_failure_switch_bonus=60")
@@ -385,20 +446,48 @@ def _candidate_scorecard(
     if len(attempt_records) >= 2 and "retry_same_path" in strategy:
         score -= 80
         reasons.append("late_same_path_penalty=-80")
-    if candidate.strategy in {x.strategy for x in attempt_records}:
+    if strategy in used_strategies:
         score -= 100
         reasons.append("strategy_already_failed_penalty=-100")
+    if _fingerprint(candidate.tool, candidate.strategy) in failed_fingerprints:
+        score -= 250
+        reasons.append("same_tool_and_strategy_already_failed_penalty=-250")
+    if recovery_attempt_count >= 1 and last_class and current_class == last_class and candidate_tool == last_tool and "retry" in strategy:
+        score -= 70
+        reasons.append("same_failure_same_tool_retry_penalty=-70")
+    if len(attempt_records) >= 2 and candidate_tool and candidate_tool in used_tools and "switch" not in strategy:
+        score -= 35
+        reasons.append("same_tool_after_repeated_failures_penalty=-35")
+    if len(attempt_records) >= 2 and candidate_tool and candidate_tool not in used_tools:
+        score += 35
+        reasons.append("new_tool_after_repeated_failures_bonus=35")
+    if len(attempt_records) >= 1 and candidate_tool and candidate_tool != last_tool:
+        if any(token in strategy for token in ("switch", "open", "fetch", "search", "regenerate", "normalize", "reveal")):
+            score += 20
+            reasons.append("changed_path_after_last_failure_bonus=20")
+    if last_strategy and last_strategy != "initial" and strategy != last_strategy:
+        score += 15
+        reasons.append("strategy_shift_after_failure_bonus=15")
     if history_reasons and any(x in history_reasons for x in ("timeout", "busy", "connection")) and "backoff" in strategy:
         score += 30
         reasons.append("history_transport_backoff_bonus=30")
     repeated_current_class_count = history_classes.count(current_class) + (1 if current_class != "unknown" else 0)
-    if repeated_current_class_count >= 2 and current_class != "unknown":
+    if recovery_attempt_count >= 1 and repeated_current_class_count >= 2 and current_class != "unknown":
         if current_class == "tool_quality" and any(token in strategy for token in ("regenerate", "quality", "clean")):
             score += 30
             reasons.append("repeated_tool_quality_escalation_bonus=30")
+        elif current_class == "tool_quality" and any(token in strategy for token in ("source", "fetch", "search")):
+            score += 20
+            reasons.append("repeated_tool_quality_source_refresh_bonus=20")
         elif "retry_same_path" in strategy:
             score -= 60
             reasons.append("repeated_same_failure_retry_penalty=-60")
+    if len(attempt_records) >= 3 and any(token in strategy for token in ("ask", "confirm", "manual", "review")):
+        score += 65
+        reasons.append("exhausted_auto_paths_manual_review_bonus=65")
+    if len(attempt_records) >= 4 and not any(token in strategy for token in ("ask", "confirm", "manual", "review", "abort")):
+        score -= 45
+        reasons.append("near_attempt_limit_auto_path_penalty=-45")
     governance = candidate.metadata.get("governance_policy") if isinstance(candidate.metadata, dict) else {}
     if isinstance(governance, dict):
         governance_mode = str(governance.get("execution_mode") or "").lower()
@@ -408,8 +497,8 @@ def _candidate_scorecard(
                 score += 35
                 reasons.append("governance_low_health_alternate_path_bonus=35")
             if "retry_same_path" in strategy:
-                score -= 55
-                reasons.append("governance_low_health_same_path_penalty=-55")
+                score -= 120
+                reasons.append("governance_low_health_same_path_penalty=-120")
         if governance_mode == "manual_review" or governance_score < 50:
             if any(token in strategy for token in ("ask", "confirm", "manual", "review")):
                 score += 80
@@ -419,15 +508,29 @@ def _candidate_scorecard(
         "score": score,
         "current_failure_class": current_class,
         "history_failure_classes": history_classes,
+        "last_failure_class": last_class,
         "current_failure_reason": verification.failure_reason,
         "history_failure_reasons": [str(getattr(x, "failure_reason", "") or "") for x in attempt_records],
         "role_agent": role_agent,
         "failed_tool": tool,
+        "last_tool": last_tool,
+        "last_strategy": last_strategy,
         "candidate_tool": candidate.tool,
         "candidate_strategy": candidate.strategy,
         "governance_policy": governance if isinstance(governance, dict) else {},
         "rationale": reasons,
     }
+
+
+def _public_ranked_candidate(row: dict[str, Any]) -> dict[str, Any]:
+    candidate = row.get("candidate")
+    if not isinstance(candidate, RecoveryCandidate):
+        return {}
+    payload = candidate.to_dict()
+    payload["eligible"] = bool(row.get("eligible"))
+    payload["reject_reason"] = str(row.get("reject_reason") or "")
+    payload["rank_score"] = int(row.get("score") or 0)
+    return payload
 
 
 def _safe_int(value: Any, default: int) -> int:

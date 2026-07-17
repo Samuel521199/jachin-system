@@ -65,5 +65,78 @@
     "english-vocab-10k",
     "completion-cache",
     "example-pack"
-  ]
+  ],
+  "recovery_playbook": {
+    "targets": [
+      {
+        "id": "local_translate_runtime",
+        "role_agent": "ToolExecutionAgent",
+        "tools": [
+          "*local_translate*",
+          "*english_example_pack_status*"
+        ],
+        "max_attempts": 5,
+        "steps": [
+          {
+            "strategy": "warmup_translation_model",
+            "tool": "local_translate_warmup",
+            "when": {
+              "failure_any": [
+                "model_not_ready",
+                "model_missing",
+                "cold_start",
+                "timeout",
+                "not initialized",
+                "unverified"
+              ]
+            },
+            "action_patch": {
+              "direction": "en-zh",
+              "recovery_strategy": "warmup_translation_model"
+            },
+            "rationale": "translation failed because the local model was not warm; warm it before retrying text translation",
+            "priority": 10
+          },
+          {
+            "strategy": "check_model_status",
+            "tool": "local_translate_model_status",
+            "when": {
+              "failure_any": [
+                "model_missing",
+                "model_not_found",
+                "runtime_missing",
+                "not installed"
+              ]
+            },
+            "action_patch": {
+              "include_paths": true,
+              "recovery_strategy": "check_model_status"
+            },
+            "rationale": "surface the exact missing local model/runtime paths instead of repeating a doomed translation call",
+            "priority": 20
+          },
+          {
+            "strategy": "retry_same_text_after_warmup",
+            "tool": "$same",
+            "when": {
+              "failure_any": [
+                "timeout",
+                "busy",
+                "connection",
+                "temporarily",
+                "unverified"
+              ],
+              "after_attempt": 2
+            },
+            "action_patch": {
+              "timeout": 12.0,
+              "recovery_strategy": "retry_same_text_after_warmup"
+            },
+            "rationale": "after warmup/status check, retry the original translation with a longer local-service window",
+            "priority": 55
+          }
+        ]
+      }
+    ]
+  }
 }

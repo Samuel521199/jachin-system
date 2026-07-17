@@ -15,7 +15,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .experience_playbook_builder import build_experience_playbooks
 from .memory_growth import ensure_memory_growth_scaffold, memory_growth_dir
+from .memory_governance_auto_index import append_auto_governance_mode_history
 
 
 @dataclass(slots=True)
@@ -32,6 +34,10 @@ class DailyReviewResult:
     output_candidate_count: int
     review_path: Path
     patch_path: Path
+    learned_playbook_created_count: int = 0
+    learned_playbook_updated_count: int = 0
+    learned_success_playbook_created_count: int = 0
+    learned_success_playbook_updated_count: int = 0
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -46,6 +52,10 @@ class DailyReviewResult:
             "concept_candidate_count": self.concept_candidate_count,
             "playbook_candidate_count": self.playbook_candidate_count,
             "output_candidate_count": self.output_candidate_count,
+            "learned_playbook_created_count": self.learned_playbook_created_count,
+            "learned_playbook_updated_count": self.learned_playbook_updated_count,
+            "learned_success_playbook_created_count": self.learned_success_playbook_created_count,
+            "learned_success_playbook_updated_count": self.learned_success_playbook_updated_count,
             "review_path": str(self.review_path),
             "patch_path": str(self.patch_path),
             "warnings": list(self.warnings),
@@ -60,6 +70,13 @@ def run_daily_review(date: str | None = None) -> DailyReviewResult:
     raw_events = _load_raw_events_for_day(date_iso)
     grouped = _group_by_turn(raw_events)
     patch = _build_patch(date_iso=date_iso, raw_events=raw_events, grouped=grouped)
+    experience_growth = build_experience_playbooks(date_iso=date_iso, raw_events=raw_events)
+    patch["experience_playbook_growth"] = experience_growth
+    auto_governance = _run_memory_governance_auto_policy()
+    patch["memory_governance_auto_policy"] = auto_governance
+    patch["memory_governance_auto_recommendation"] = _memory_governance_auto_recommendation_snapshot()
+    if int(auto_governance.get("failed_count") or 0):
+        patch["warnings"].append(f"{auto_governance.get('failed_count')} memory governance auto actions failed")
 
     reviews_dir = memory_growth_dir() / "reviews"
     patches_dir = reviews_dir / "patches"
@@ -68,6 +85,14 @@ def run_daily_review(date: str | None = None) -> DailyReviewResult:
 
     review_path = reviews_dir / f"{date_iso}.md"
     patch_path = patches_dir / f"{date_iso}.daily_review.patch.json"
+    patch["memory_governance_auto_history"] = append_auto_governance_mode_history(
+        source="daily_review",
+        date=date_iso,
+        recommendation=patch.get("memory_governance_auto_recommendation") if isinstance(patch.get("memory_governance_auto_recommendation"), dict) else {},
+        auto_policy=patch.get("memory_governance_auto_policy") if isinstance(patch.get("memory_governance_auto_policy"), dict) else {},
+        auto_result=patch.get("memory_governance_auto_policy") if isinstance(patch.get("memory_governance_auto_policy"), dict) else {},
+        report_path=str(patch_path),
+    )
     review_path.write_text(_render_review_markdown(patch), encoding="utf-8")
     patch_path.write_text(json.dumps(patch, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
 
@@ -85,8 +110,40 @@ def run_daily_review(date: str | None = None) -> DailyReviewResult:
         output_candidate_count=len(patch["output_candidates"]),
         review_path=review_path,
         patch_path=patch_path,
+        learned_playbook_created_count=int(experience_growth.get("created_count") or 0),
+        learned_playbook_updated_count=int(experience_growth.get("updated_count") or 0),
+        learned_success_playbook_created_count=int(experience_growth.get("success_created_count") or 0),
+        learned_success_playbook_updated_count=int(experience_growth.get("success_updated_count") or 0),
         warnings=patch["warnings"],
     )
+
+
+def _run_memory_governance_auto_policy() -> dict[str, Any]:
+    try:
+        from l3_node.memory_growth_http import apply_memory_growth_auto_governance
+
+        return apply_memory_growth_auto_governance(source="daily_review", max_items=5)
+    except Exception as exc:
+        return {
+            "schema_version": 1,
+            "source": "daily_review",
+            "executed_count": 0,
+            "failed_count": 0,
+            "skipped": [],
+            "results": [],
+            "error": f"{exc.__class__.__name__}: {exc}",
+        }
+
+
+def _memory_governance_auto_recommendation_snapshot() -> dict[str, Any]:
+    try:
+        from l3_node.memory_growth_http import memory_growth_status
+
+        monitoring = memory_growth_status().get("monitoring")
+        recommendation = monitoring.get("memory_governance_auto_recommendation") if isinstance(monitoring, dict) else {}
+        return recommendation if isinstance(recommendation, dict) else {}
+    except Exception as exc:
+        return {"error": f"{exc.__class__.__name__}: {exc}"}
 
 
 def _load_raw_events_for_day(date_iso: str) -> list[dict[str, Any]]:
@@ -187,6 +244,12 @@ def _build_patch(
     concept_candidates = _dedupe_candidates(concept_candidates)
     playbook_candidates = _dedupe_candidates(playbook_candidates)
     output_candidates = _dedupe_candidates(output_candidates)
+    memory_trust_analytics = _memory_trust_review_snapshot()
+    trust_summary = (memory_trust_analytics.get("summary") or {}) if isinstance(memory_trust_analytics, dict) else {}
+    if int(trust_summary.get("rejected_pattern_count") or 0):
+        warnings.append(f"{trust_summary.get('rejected_pattern_count')} rejected memory trust patterns need review")
+    if int(trust_summary.get("stale_confirmed_count") or 0):
+        warnings.append(f"{trust_summary.get('stale_confirmed_count')} confirmed memories may be stale")
 
     return {
         "schema_version": 1,
@@ -206,8 +269,20 @@ def _build_patch(
         "concept_candidates": concept_candidates,
         "playbook_candidates": playbook_candidates,
         "output_candidates": output_candidates,
+        "memory_trust_analytics": memory_trust_analytics,
         "warnings": warnings,
     }
+
+
+def _memory_trust_review_snapshot() -> dict[str, Any]:
+    try:
+        from l3_node.memory_growth_http import _memory_trust_summary  # type: ignore
+
+        trust = _memory_trust_summary()
+        analytics = trust.get("analytics") if isinstance(trust, dict) else {}
+        return analytics if isinstance(analytics, dict) else {}
+    except Exception as exc:
+        return {"summary": {}, "error": f"{exc.__class__.__name__}: {exc}"}
 
 
 def _summarize_task(turn_id: str, events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -376,6 +451,13 @@ def _render_review_markdown(patch: dict[str, Any]) -> str:
         f"- Concept candidates: {len(patch['concept_candidates'])}",
         f"- Playbook candidates: {len(patch['playbook_candidates'])}",
         f"- Output candidates: {len(patch['output_candidates'])}",
+        f"- Learned playbooks created: {int((patch.get('experience_playbook_growth') or {}).get('created_count') or 0)}",
+        f"- Learned playbooks updated: {int((patch.get('experience_playbook_growth') or {}).get('updated_count') or 0)}",
+        f"- Learned success playbooks created: {int((patch.get('experience_playbook_growth') or {}).get('success_created_count') or 0)}",
+        f"- Learned success playbooks updated: {int((patch.get('experience_playbook_growth') or {}).get('success_updated_count') or 0)}",
+        f"- Memory governance auto executed: {int((patch.get('memory_governance_auto_policy') or {}).get('executed_count') or 0)}",
+        f"- Memory governance auto failed: {int((patch.get('memory_governance_auto_policy') or {}).get('failed_count') or 0)}",
+        f"- Memory governance auto recommended mode: {(patch.get('memory_governance_auto_recommendation') or {}).get('recommended_mode') or '-'}",
         "",
         "## Tasks",
         "",
@@ -392,6 +474,81 @@ def _render_review_markdown(patch: dict[str, Any]) -> str:
                 "",
             ]
         )
+    growth = patch.get("experience_playbook_growth") or {}
+    if growth.get("playbooks"):
+        lines.extend(["## Learned Recovery Playbooks", ""])
+        for item in growth.get("playbooks") or []:
+            lines.append(
+                f"- `{item.get('path')}`: {item.get('failure_class')} -> {item.get('next_strategy')} "
+                f"(support={item.get('source_event_count')}, confidence={item.get('confidence')})"
+            )
+        lines.append("")
+    if growth.get("success_playbooks"):
+        lines.extend(["## Learned Success Playbooks", ""])
+        for item in growth.get("success_playbooks") or []:
+            lines.append(
+                f"- `{item.get('path')}`: {item.get('task_type')} -> {item.get('success_strategy')} "
+                f"(support={item.get('source_event_count')}, confidence={item.get('confidence')})"
+            )
+        lines.append("")
+    trust = patch.get("memory_trust_analytics") or {}
+    trust_summary = trust.get("summary") if isinstance(trust, dict) else {}
+    if isinstance(trust_summary, dict) and any(int(trust_summary.get(key) or 0) for key in (
+        "rejected_pattern_count",
+        "promotion_candidate_count",
+        "conflict_cluster_count",
+        "floating_hotspot_count",
+        "stale_confirmed_count",
+    )):
+        lines.extend(["## Memory Trust Analytics", ""])
+        lines.append(f"- Rejected patterns: {int(trust_summary.get('rejected_pattern_count') or 0)}")
+        lines.append(f"- Promotion candidates: {int(trust_summary.get('promotion_candidate_count') or 0)}")
+        lines.append(f"- Conflict clusters: {int(trust_summary.get('conflict_cluster_count') or 0)}")
+        lines.append(f"- Floating hotspots: {int(trust_summary.get('floating_hotspot_count') or 0)}")
+        lines.append(f"- Stale confirmed: {int(trust_summary.get('stale_confirmed_count') or 0)}")
+        for item in (trust.get("rejected_patterns") or [])[:3]:
+            if isinstance(item, dict):
+                lines.append(f"- rejected: {item.get('sample')}")
+        for item in (trust.get("promotion_candidates") or [])[:3]:
+            if isinstance(item, dict):
+                lines.append(f"- promote: {item.get('sample')}")
+        lines.append("")
+    auto_governance = patch.get("memory_governance_auto_policy") or {}
+    if isinstance(auto_governance, dict) and (
+        int(auto_governance.get("executed_count") or 0)
+        or int(auto_governance.get("failed_count") or 0)
+        or auto_governance.get("skipped")
+        or auto_governance.get("error")
+    ):
+        lines.extend(["## Memory Governance Auto Policy", ""])
+        lines.append(f"- source: {auto_governance.get('source') or 'unknown'}")
+        lines.append(f"- executed: {int(auto_governance.get('executed_count') or 0)}")
+        lines.append(f"- failed: {int(auto_governance.get('failed_count') or 0)}")
+        lines.append(f"- skipped: {len(auto_governance.get('skipped') or [])}")
+        if auto_governance.get("error"):
+            lines.append(f"- error: {auto_governance.get('error')}")
+        for item in (auto_governance.get("results") or [])[:5]:
+            if isinstance(item, dict):
+                lines.append(f"- {item.get('action')}: {'ok' if item.get('ok') else 'failed'}")
+        lines.append("")
+    auto_recommendation = patch.get("memory_governance_auto_recommendation") or {}
+    if isinstance(auto_recommendation, dict) and auto_recommendation:
+        lines.extend(["## Memory Governance Mode Recommendation", ""])
+        lines.append(f"- current: {auto_recommendation.get('current_mode') or '-'}")
+        lines.append(f"- recommended: {auto_recommendation.get('recommended_mode') or '-'}")
+        lines.append(f"- should_change: {bool(auto_recommendation.get('should_change'))}")
+        for reason in (auto_recommendation.get("reasons") or [])[:5]:
+            lines.append(f"- reason: {reason}")
+        lines.append("")
+    auto_history = patch.get("memory_governance_auto_history") or {}
+    if isinstance(auto_history, dict) and auto_history:
+        summary = auto_history.get("summary") if isinstance(auto_history.get("summary"), dict) else {}
+        lines.extend(["## Memory Governance Auto History", ""])
+        lines.append(f"- index: {auto_history.get('index_path') or '-'}")
+        lines.append(f"- risk_direction: {summary.get('risk_direction') or '-'}")
+        lines.append(f"- last_30_records: {int(summary.get('last_30_records') or 0)}")
+        lines.append(f"- last_30_change_recommended: {int(summary.get('last_30_change_recommended') or 0)}")
+        lines.append("")
     if patch["warnings"]:
         lines.extend(["## Warnings", ""])
         lines.extend(f"- {warning}" for warning in patch["warnings"])

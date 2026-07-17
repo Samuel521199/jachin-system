@@ -8,6 +8,7 @@ from typing import Any
 
 from .contracts import DecisionContract, MemoryWriteRequest, VerificationReport, WorkOrder
 from .ledger import append_event
+from .memory_growth import append_raw_event
 
 
 @dataclass(slots=True)
@@ -147,4 +148,42 @@ def learn_from_failure(
         rationale=rationale,
     )
     append_event("failure_learning_recorded", turn_id, record.to_dict())
+    _append_failure_learning_raw(turn_id=turn_id, record=record)
     return record
+
+
+def _append_failure_learning_raw(*, turn_id: str, record: FailureLearningRecord) -> None:
+    try:
+        append_raw_event(
+            category="evidence",
+            source="failure_learning_loop",
+            stream="failure_learning",
+            payload={
+                "turn_id": turn_id,
+                "failure_learning": record.to_dict(),
+            },
+            source_refs=[
+                {
+                    "type": "cognitive_kernel_ledger",
+                    "event_type": "failure_learning_recorded",
+                    "turn_id": turn_id,
+                },
+                {
+                    "type": "failure_learning",
+                    "failure_id": record.failure_id,
+                    "turn_id": turn_id,
+                },
+            ],
+            review={
+                "review_candidate": True,
+                "promotion_targets": ["playbooks", "concepts"],
+                "priority": "high",
+                "reason": "failure_learning_to_experience_playbook",
+            },
+        )
+    except Exception:
+        append_event(
+            "failure_learning_raw_append_failed",
+            turn_id,
+            {"failure_id": record.failure_id, "task_type": record.task_type, "tool": record.tool},
+        )

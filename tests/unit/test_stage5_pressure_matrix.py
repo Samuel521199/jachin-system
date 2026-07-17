@@ -243,6 +243,171 @@ def test_stage5_quality_failures_flow_into_evidence_and_memory_write():
         assert expected_issue in json.dumps(record.memory_write, ensure_ascii=False)
 
 
+def test_stage5_web_research_summary_is_send_ready_and_source_grounded():
+    from l3_node.cognitive_kernel.role_executors import _web_research_summary_message
+    from l3_node.cognitive_kernel.runtime import verify_work_order
+
+    upstream = [
+        {
+            "observation": json.dumps(
+                {
+                    "ok": True,
+                    "pages": [
+                        {
+                            "ok": True,
+                            "title": "Qwen 模型能力更新",
+                            "url": "https://example.com/qwen-update",
+                            "text": "Qwen 发布新的模型能力更新，重点包括更稳定的工具调用、更长上下文和更强多模态理解。该更新面向开发者和企业应用场景。",
+                        },
+                        {
+                            "ok": True,
+                            "title": "AI 编程工具发布新版",
+                            "url": "https://example.com/ai-coding",
+                            "text": "AI 编程工具新版强化了代码审查、测试生成和多文件改动解释能力，适合团队在开发流程中使用。",
+                        },
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        }
+    ]
+    message = _web_research_summary_message(
+        query="最新AI模型相关的消息",
+        recipients=["Neil"],
+        upstream_observations=upstream,
+    )
+
+    assert "..." not in message
+    assert "](" not in message
+    assert "来源：" in message
+    assert "https://example.com/qwen-update" in message
+    assert "Qwen 发布新的模型能力更新" in message
+
+    report = verify_work_order(
+        turn_id="stage5-web-summary-send-ready",
+        work_order=_work("core:web_research_summarize"),
+        observation=json.dumps({"ok": True, "message": message}, ensure_ascii=False),
+    )
+    quality = next(item for item in report.evidence if item.get("type") == "tool_quality")
+    assert report.ok is True
+    assert quality["blocks_execution"] is False
+    assert quality["issues"] == []
+
+
+def test_stage5_web_research_summary_uses_page_model_and_final_composer(monkeypatch):
+    import l3_node.cognitive_kernel.role_executors as role_executors
+
+    monkeypatch.setenv("JACHIN_WEB_RESEARCH_USE_MODEL", "1")
+    monkeypatch.delenv("JACHIN_WEB_RESEARCH_MODEL", raising=False)
+    monkeypatch.delenv("JACHIN_WEB_RESEARCH_PAGE_MODEL", raising=False)
+    monkeypatch.setenv("JACHIN_WEB_RESEARCH_FINAL_MODEL", "qwen-max")
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_model(prompt: str, *, max_tokens: int, model: str | None = None):
+        calls.append((prompt, model))
+        if "单个网页内容" in prompt:
+            if "qwen-update" in prompt:
+                return {
+                    "summary": "Qwen 的新模型更新强化了工具调用、长上下文和多模态理解，适合企业把模型接入真实工作流。",
+                    "why_matters": "这会直接影响团队后续选择模型和设计 Agent 工作流的判断。",
+                }
+            return {
+                "summary": "AI 编程工具新版把代码审查、测试生成和多文件解释整合到研发流程里。",
+                "why_matters": "这类能力可以提升研发协作效率，也方便沉淀工程经验。",
+            }
+        return {
+            "conclusion": "AI 模型和 AI 编程工具都在向真实工作流落地，重点从单点能力转向工程闭环。",
+            "highlights": [
+                {
+                    "source_index": 1,
+                    "summary": "Qwen 更新更强调工具调用、长上下文和多模态能力，适合企业级 Agent 场景。",
+                    "why_matters": "这会影响模型选型和后续自动化工作流设计。",
+                },
+                {
+                    "source_index": 2,
+                    "summary": "AI 编程工具正在把审查、测试和多文件解释做成研发闭环。",
+                    "why_matters": "这说明 AI 编程正在从辅助补全走向团队流程工具。",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(role_executors, "_call_web_research_model", fake_model)
+    message = role_executors._web_research_summary_message(
+        query="最新AI模型相关的消息",
+        recipients=["Neil"],
+        upstream_observations=[
+            {
+                "observation": json.dumps(
+                    {
+                        "ok": True,
+                        "pages": [
+                            {
+                                "ok": True,
+                                "title": "Qwen 模型能力更新",
+                                "url": "https://example.com/qwen-update",
+                                "text": "Qwen 发布新的模型能力更新，重点包括工具调用、更长上下文和更强多模态理解。" * 8,
+                            },
+                            {
+                                "ok": True,
+                                "title": "AI 编程工具新版",
+                                "url": "https://example.com/ai-coding",
+                                "text": "AI 编程工具新版强化了代码审查、测试生成和多文件改动解释能力。" * 8,
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+            }
+        ],
+    )
+
+    assert len(calls) == 3
+    assert [model for _, model in calls] == ["qwen-plus", "qwen-plus", "qwen-max"]
+    assert "一句话结论：AI 模型和 AI 编程工具都在向真实工作流落地" in message
+    assert "为什么重要：这会影响模型选型和后续自动化工作流设计" in message
+    assert "链接：https://example.com/qwen-update" in message
+    assert "链接：https://example.com/ai-coding" in message
+    assert "核对依据：已读取并整理 2 个可引用来源" in message
+
+
+def test_stage5_web_research_model_defaults_prefer_strong_brief_model(monkeypatch):
+    import l3_node.cognitive_kernel.role_executors as role_executors
+
+    monkeypatch.delenv("JACHIN_WEB_RESEARCH_MODEL", raising=False)
+    monkeypatch.delenv("JACHIN_WEB_RESEARCH_PAGE_MODEL", raising=False)
+    monkeypatch.delenv("JACHIN_WEB_RESEARCH_FINAL_MODEL", raising=False)
+    monkeypatch.setenv("LLM_COMPLEX_MODEL", "qwen-max")
+
+    assert role_executors._web_research_page_model() == "qwen-plus"
+    assert role_executors._web_research_final_model() == "qwen-max"
+
+    monkeypatch.setenv("JACHIN_WEB_RESEARCH_PAGE_MODEL", "qwen-max")
+    monkeypatch.setenv("JACHIN_WEB_RESEARCH_FINAL_MODEL", "qwen-max-latest")
+    assert role_executors._web_research_page_model() == "qwen-max"
+    assert role_executors._web_research_final_model() == "qwen-max-latest"
+
+
+def test_stage5_web_research_summary_blocks_source_less_fragment():
+    from l3_node.cognitive_kernel.runtime import verify_work_order
+
+    report = verify_work_order(
+        turn_id="stage5-web-summary-source-less-fragment",
+        work_order=_work("core:web_research_summarize"),
+        observation=json.dumps(
+            {
+                "ok": True,
+                "message": "【AI消息】\n1. [### Qwen 新消息]([https://example.com/qwen]) 这个模型还有很多...\n2. AIBase%20--%3e%3cdefs%3e%3cstyle%3e fill: #061b40",
+            },
+            ensure_ascii=False,
+        ),
+    )
+    quality = next(item for item in report.evidence if item.get("type") == "tool_quality")
+    assert report.ok is False
+    assert quality["blocks_execution"] is True
+    assert "summary_contains_markdown_artifact" in quality["issues"]
+    assert "summary_has_ellipsis_truncation" in quality["issues"]
+
+
 def test_stage5_dry_run_dispatcher_dag_records_recovery_evidence_and_failure_memory(monkeypatch, tmp_path):
     monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path / "kernel"))
     monkeypatch.setenv("JACHIN_RECOVERY_MAX_ATTEMPTS", "3")
@@ -358,10 +523,10 @@ def test_stage5_dry_run_dispatcher_dag_records_recovery_evidence_and_failure_mem
         assert fetch.verification.ok is True
         assert summary.verification.ok is True
         assert [item["strategy"] for item in search.attempts] == ["initial", "retry_search_with_clean_query"]
-        assert [item["strategy"] for item in fetch.attempts] == ["initial", "refetch_sources_for_summary"]
+        assert [item["strategy"] for item in fetch.attempts] == ["initial", "mark_source_blocked_and_search_alternative", "regenerate_clean_summary"]
         assert [item["strategy"] for item in summary.attempts] == ["initial", "regenerate_clean_summary"]
         assert any(call["strategy"] == "retry_search_with_clean_query" for call in calls)
-        assert any(call["strategy"] == "refetch_sources_for_summary" for call in calls)
+        assert any(call["strategy"] == "mark_source_blocked_and_search_alternative" for call in calls)
         assert any(call["strategy"] == "regenerate_clean_summary" for call in calls)
 
     import asyncio

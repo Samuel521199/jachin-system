@@ -169,6 +169,36 @@ def _extract_constraints(text: str) -> dict[str, Any]:
     return constraints
 
 
+def _input_adapter_constraints(envelope: AgentInputEnvelope | dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    if not isinstance(envelope, AgentInputEnvelope):
+        return {}, []
+    evidence = envelope.modality_evidence or {}
+    adapter = evidence.get("input_adapter") if isinstance(evidence.get("input_adapter"), dict) else {}
+    voice_norm = evidence.get("voice_language_normalization") if isinstance(evidence.get("voice_language_normalization"), dict) else {}
+    constraints: dict[str, Any] = {"input_source": envelope.source.value}
+    rationale: list[str] = []
+    if adapter:
+        constraints["input_adapter"] = {
+            "source": adapter.get("source") or envelope.source.value,
+            "changed": bool(adapter.get("changed")),
+            "steps": adapter.get("steps") or [],
+        }
+        rationale.append(
+            f"InputAdapter source={adapter.get('source') or envelope.source.value} changed={bool(adapter.get('changed'))}."
+        )
+    if envelope.source.value == "voice":
+        constraints["voice_raw_text"] = envelope.raw_text
+        if voice_norm:
+            constraints["voice_language"] = {
+                "pending_confirmation_detected": bool(voice_norm.get("pending_confirmation_detected")),
+                "pending_cancellation_detected": bool(voice_norm.get("pending_cancellation_detected")),
+                "corrections": (voice_norm.get("correction") or {}).get("corrections") or [],
+                "suspect_tokens": (voice_norm.get("correction") or {}).get("suspect_tokens") or [],
+            }
+            rationale.append("Voice Input Adapter evidence attached to goal interpretation.")
+    return constraints, rationale
+
+
 def _missing_info(task_type: str, entities: dict[str, Any]) -> list[str]:
     missing: list[str] = []
     if task_type == "message_delivery":
@@ -217,6 +247,9 @@ def interpret_goal(
     task_type, rationale = _infer_task_type(text, capability_candidates)
     entities = _extract_entities(text, task_type)
     constraints = _extract_constraints(text)
+    input_constraints, input_rationale = _input_adapter_constraints(envelope)
+    constraints.update(input_constraints)
+    rationale.extend(input_rationale)
     if state_snapshot and task_type == "app_control" and entities.get("action") == "close" and not entities.get("app"):
         active = state_snapshot.active_window or {}
         inferred_app = active.get("app") or active.get("app_name") or active.get("process")

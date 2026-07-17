@@ -146,11 +146,14 @@ type EvidenceEntry = {
     tool_id?: string;
     task_type?: string;
   } | null;
+  input_adapters?: Array<Record<string, unknown>>;
   role_executions?: Array<Record<string, unknown>>;
   pending_decisions?: Array<Record<string, unknown>>;
   tool_quality_reports?: Array<Record<string, unknown>>;
   recovery_scorecards?: Array<Record<string, unknown>>;
   failure_learning_records?: Array<Record<string, unknown>>;
+  memory_trust_events?: Array<Record<string, unknown>>;
+  memory_write_events?: Array<Record<string, unknown>>;
   timeline: Array<{
     ts: string;
     stage: string;
@@ -170,6 +173,7 @@ type LaunchInput = {
   wait_seconds?: number;
   dry_run?: boolean;
   template_id?: string;
+  web_query?: string;
 };
 
 type LaunchResult = {
@@ -286,10 +290,36 @@ type EvidenceGovernanceIndex = {
   health?: BackendCapabilityHealth[];
 };
 
+type WebResearchSourceRow = {
+  title: string;
+  url: string;
+  domain: string;
+  source: string;
+  reliability?: number;
+  successCount?: number;
+  failureCount?: number;
+  qualityLevel: string;
+  issue: string;
+};
+
+type WebResearchReplay = {
+  sourceRows: WebResearchSourceRow[];
+  qualityReport?: Record<string, unknown>;
+  sendPreviewPolicy?: Record<string, unknown>;
+  delivery?: {
+    ok?: boolean;
+    verified?: boolean;
+    reason: string;
+    channel: string;
+  };
+  summaryPreview: string;
+};
+
 type GovernanceWindow = 7 | 14 | 30;
 
 const DEFAULT_PROJECT_NAME = "Jachin";
 const DEFAULT_PROJECT_PATH = "D:\\Projects\\jachi\\jachin-system-main";
+const DEFAULT_WEB_RESEARCH_QUERY = "最新 AI 模型相关消息";
 const DEMO_RECIPIENTS = ["Vivian", "Samuel", "测试备注冒烟草稿"];
 
 const TASK_TEMPLATES = [
@@ -322,6 +352,11 @@ const TASK_TEMPLATES = [
     id: "project_memory",
     title: "项目路径记忆管理",
     detail: "把项目名和本机路径写入 OS 助手记忆。",
+  },
+  {
+    id: "web_research_lark",
+    title: "Web Research -> Lark",
+    detail: "Search -> fetch -> page summaries -> final brief -> quality gate -> Lark preview/delivery.",
   },
 ];
 
@@ -562,6 +597,7 @@ export function OsEvidencePanel() {
   const [selectedRecipients, setSelectedRecipients] = useState<string[]>(["Vivian"]);
   const [waitSeconds, setWaitSeconds] = useState(120);
   const [dryRun, setDryRun] = useState(false);
+  const [webResearchQuery, setWebResearchQuery] = useState(DEFAULT_WEB_RESEARCH_QUERY);
   const [configLoaded, setConfigLoaded] = useState(false);
   const [activeRun, setActiveRun] = useState<ActiveRun | null>(() => {
     try {
@@ -698,8 +734,9 @@ export function OsEvidencePanel() {
       recipients: selectedRecipients,
       wait_seconds: waitSeconds,
       dry_run: dryRun,
+      web_query: webResearchQuery.trim() || DEFAULT_WEB_RESEARCH_QUERY,
     }),
-    [dryRun, projectName, projectPath, selectedRecipients, waitSeconds],
+    [dryRun, projectName, projectPath, selectedRecipients, waitSeconds, webResearchQuery],
   );
 
   const runStandardDemo = useCallback(async () => {
@@ -720,6 +757,23 @@ export function OsEvidencePanel() {
       setLaunching(null);
     }
   }, [baseInput, launch]);
+
+  const runWebResearchTemplate = useCallback(
+    async (liveRun: boolean) => {
+      const input: LaunchInput = {
+        ...baseInput,
+        template_id: "web_research_lark",
+        web_query: webResearchQuery.trim() || DEFAULT_WEB_RESEARCH_QUERY,
+        dry_run: !liveRun,
+      };
+      await launch(
+        "os_evidence_start_template",
+        input,
+        liveRun ? "Web Research Live-Run" : "Web Research Dry-Run",
+      );
+    },
+    [baseInput, launch, webResearchQuery],
+  );
 
   const stopActiveRun = useCallback(async () => {
     if (!activeRun?.pid) {
@@ -1026,6 +1080,43 @@ export function OsEvidencePanel() {
               />
               Dry-run：生成证据但不发送 Lark
             </label>
+            <div className="rounded-md border border-cyan-500/15 bg-slate-900/45 p-3">
+              <div className="mb-2 flex items-center gap-2 text-sm font-medium text-cyan-50">
+                <Search className="h-4 w-4 text-cyan-300" />
+                Web Research -&gt; Lark
+              </div>
+              <div className="grid gap-2">
+                <input
+                  value={webResearchQuery}
+                  onChange={(event) => setWebResearchQuery(event.target.value)}
+                  placeholder={DEFAULT_WEB_RESEARCH_QUERY}
+                  className="rounded-md border border-slate-800 bg-slate-950/70 px-3 py-2 text-sm text-slate-200 outline-none focus:border-cyan-500/50"
+                />
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={Boolean(launching) || selectedRecipients.length === 0}
+                    onClick={() => void runWebResearchTemplate(false)}
+                    className="inline-flex items-center gap-2 rounded-md border border-cyan-400/25 bg-cyan-400/10 px-3 py-2 text-sm text-cyan-100 transition hover:bg-cyan-400/15 disabled:opacity-45"
+                  >
+                    <Search className="h-4 w-4" />
+                    安全预览
+                  </button>
+                  <button
+                    type="button"
+                    disabled={Boolean(launching) || selectedRecipients.length === 0}
+                    onClick={() => void runWebResearchTemplate(true)}
+                    className="inline-flex items-center gap-2 rounded-md border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-sm text-amber-100 transition hover:bg-amber-400/15 disabled:opacity-45"
+                  >
+                    <Send className="h-4 w-4" />
+                    显式真实发送
+                  </button>
+                </div>
+                <div className="text-xs leading-5 text-slate-500">
+                  默认使用安全预览：会搜索、抓取、总结、质量门控并生成 Lark 预览，但不会真实发送。
+                </div>
+              </div>
+            </div>
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
@@ -1130,7 +1221,18 @@ export function OsEvidencePanel() {
                 key={template.id}
                 type="button"
                 disabled={Boolean(launching)}
-                onClick={() => void launch("os_evidence_start_template", { ...baseInput, template_id: template.id }, template.title)}
+                onClick={() =>
+                  void launch(
+                    "os_evidence_start_template",
+                    {
+                      ...baseInput,
+                      template_id: template.id,
+                      dry_run: template.id === "web_research_lark" ? true : baseInput.dry_run,
+                      web_query: webResearchQuery.trim() || DEFAULT_WEB_RESEARCH_QUERY,
+                    },
+                    template.title,
+                  )
+                }
                 className="min-h-[112px] rounded-md border border-slate-800 bg-slate-900/45 p-4 text-left transition hover:border-cyan-500/30 hover:bg-slate-900 disabled:opacity-45"
               >
                 <div className="flex items-center gap-2 text-sm font-medium text-slate-100">
@@ -1242,6 +1344,7 @@ function Metric({
 }
 
 function EvidenceDetail({ item }: { item: EvidenceEntry }) {
+  const webResearchReplay = buildWebResearchReplay(item);
   const actions = [
     { label: "打开面板", path: item.evidence_panel_path, icon: MonitorCheck },
     { label: "打开报告", path: item.report_path, icon: FileText },
@@ -1290,6 +1393,12 @@ function EvidenceDetail({ item }: { item: EvidenceEntry }) {
         </div>
       ) : null}
 
+      {item.input_adapters?.length ? (
+        <div className="px-5 pb-5">
+          <InputAdapterBlock rows={item.input_adapters} />
+        </div>
+      ) : null}
+
       {item.intent || item.route || item.clarification ? (
         <div className="px-5 pb-5">
           <MissionRouterBlock item={item} />
@@ -1308,6 +1417,12 @@ function EvidenceDetail({ item }: { item: EvidenceEntry }) {
         </div>
       ) : null}
 
+      {webResearchReplay ? (
+        <div className="px-5 pb-5">
+          <WebResearchReplayBlock replay={webResearchReplay} />
+        </div>
+      ) : null}
+
       {item.tool_quality_reports?.length ? (
         <div className="px-5 pb-5">
           <ToolQualityBlock rows={item.tool_quality_reports} />
@@ -1323,6 +1438,12 @@ function EvidenceDetail({ item }: { item: EvidenceEntry }) {
       {item.failure_learning_records?.length ? (
         <div className="px-5 pb-5">
           <FailureLearningBlock rows={item.failure_learning_records} />
+        </div>
+      ) : null}
+
+      {item.memory_trust_events?.length || item.memory_write_events?.length ? (
+        <div className="px-5 pb-5">
+          <MemoryTrustEvidenceBlock trustRows={item.memory_trust_events ?? []} writeRows={item.memory_write_events ?? []} />
         </div>
       ) : null}
 
@@ -1919,46 +2040,226 @@ function ToolQualityBlock({ rows }: { rows: Array<Record<string, unknown>> }) {
   );
 }
 
+function WebResearchReplayBlock({ replay }: { replay: WebResearchReplay }) {
+  const report = replay.qualityReport ?? {};
+  const policy = replay.sendPreviewPolicy ?? {};
+  const sendReady = booleanValue(report.send_ready);
+  const requiresPreview = booleanValue(policy.requires_preview ?? report.requires_preview);
+  const deliveryOk = replay.delivery?.verified ?? replay.delivery?.ok;
+  return (
+    <div className="rounded-lg border border-sky-400/20 bg-sky-400/[0.05] p-4">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <span className="text-sm font-medium text-sky-50">Web Research Replay</span>
+        <span className={cn("rounded px-2 py-0.5 text-xs", sendReady ? "bg-emerald-400/10 text-emerald-300" : "bg-rose-400/10 text-rose-300")}>
+          summary {sendReady ? "send-ready" : "blocked"}
+        </span>
+        <span className={cn("rounded px-2 py-0.5 text-xs", requiresPreview ? "bg-amber-400/10 text-amber-200" : "bg-cyan-400/10 text-cyan-200")}>
+          preview {requiresPreview ? "required" : "auto"}
+        </span>
+        {typeof deliveryOk === "boolean" ? (
+          <span className={cn("rounded px-2 py-0.5 text-xs", deliveryOk ? "bg-emerald-400/10 text-emerald-300" : "bg-rose-400/10 text-rose-300")}>
+            delivery {deliveryOk ? "verified" : "needs-check"}
+          </span>
+        ) : null}
+      </div>
+
+      <div className="grid gap-3 xl:grid-cols-4">
+        <div className="rounded-md border border-slate-800 bg-slate-950/45 p-3">
+          <div className="mb-2 text-xs font-semibold text-sky-100">1. Source Quality</div>
+          <div className="text-[11px] text-slate-500">sources: {replay.sourceRows.length}</div>
+          <div className="mt-2 space-y-2">
+            {replay.sourceRows.slice(0, 5).map((source, index) => (
+              <div key={`${source.url}-${index}`} className="rounded bg-slate-900 px-2 py-2 text-[11px] leading-5">
+                <div className="truncate font-medium text-slate-300" title={source.title || source.url}>
+                  {source.title || source.domain || source.url}
+                </div>
+                <div className="truncate text-slate-600" title={source.url}>{source.domain || source.url}</div>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {typeof source.reliability === "number" ? (
+                    <span className="rounded bg-cyan-400/10 px-2 py-0.5 text-cyan-200">rel {source.reliability.toFixed(2)}</span>
+                  ) : null}
+                  {source.qualityLevel ? <span className={cn("rounded px-2 py-0.5", qualityTone(source.qualityLevel))}>{source.qualityLevel}</span> : null}
+                  {source.issue ? <span className="rounded bg-amber-400/10 px-2 py-0.5 text-amber-200">{source.issue}</span> : null}
+                </div>
+              </div>
+            ))}
+            {replay.sourceRows.length === 0 ? <div className="text-xs text-slate-600">No source quality evidence.</div> : null}
+          </div>
+        </div>
+
+        <div className="rounded-md border border-slate-800 bg-slate-950/45 p-3">
+          <div className="mb-2 text-xs font-semibold text-sky-100">2. Summary Quality</div>
+          <div className="grid gap-2 text-[11px] text-slate-400">
+            <div>level: {textValue(report.quality_level) || "-"}</div>
+            <div>score: {typeof numberValue(report.score) === "number" ? numberValue(report.score)?.toFixed(2) : "-"}</div>
+            <div>source_count: {String(report.source_count ?? "-")}</div>
+            <div>message_length: {String(report.message_length ?? "-")}</div>
+          </div>
+          {coerceStringArray(report.issues).length ? (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {coerceStringArray(report.issues).slice(0, 8).map((issue) => (
+                <span key={issue} className="rounded bg-amber-400/10 px-2 py-0.5 text-[11px] text-amber-200">{issue}</span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="rounded-md border border-slate-800 bg-slate-950/45 p-3">
+          <div className="mb-2 text-xs font-semibold text-sky-100">3. Send Preview Policy</div>
+          <div className="grid gap-2 text-[11px] text-slate-400">
+            <div>applies: {String(policy.applies ?? Boolean(Object.keys(policy).length))}</div>
+            <div>requires_preview: {String(policy.requires_preview ?? report.requires_preview ?? "-")}</div>
+            <div>reason: {textValue(policy.reason) || textValue(report.primary_issue) || "-"}</div>
+          </div>
+          {replay.summaryPreview ? (
+            <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap rounded bg-slate-900 p-2 text-[11px] leading-5 text-slate-500">
+              {replay.summaryPreview}
+            </pre>
+          ) : null}
+        </div>
+
+        <div className="rounded-md border border-slate-800 bg-slate-950/45 p-3">
+          <div className="mb-2 text-xs font-semibold text-sky-100">4. Delivery Verification</div>
+          <div className="grid gap-2 text-[11px] text-slate-400">
+            <div>channel: {replay.delivery?.channel || "-"}</div>
+            <div>ok: {typeof replay.delivery?.ok === "boolean" ? String(replay.delivery.ok) : "-"}</div>
+            <div>verified: {typeof replay.delivery?.verified === "boolean" ? String(replay.delivery.verified) : "-"}</div>
+            <div>reason: {replay.delivery?.reason || "-"}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type RecoveryMemoryRefDetail = {
+  id: string;
+  trustState: string;
+  trustReason: string;
+  trustWeight?: number;
+  recallAllowed?: boolean;
+};
+
+type RecoveryDecisionRow = {
+  score?: number;
+  rankScore?: number;
+  eligible?: boolean;
+  rejectReason: string;
+  source: string;
+  sourceLabel: string;
+  capabilityId: string;
+  targetId: string;
+  currentClass: string;
+  candidateStrategy: string;
+  candidateTool: string;
+  failedTool: string;
+  historyClasses: string[];
+  rationale: string[];
+  currentReason: string;
+  manifestPath: string;
+  learnedNextStrategy: string;
+  learnedRefCount?: number;
+  memoryRefs: string[];
+  memoryRefDetails: RecoveryMemoryRefDetail[];
+};
+
 function RecoveryScorecardBlock({ rows }: { rows: Array<Record<string, unknown>> }) {
   const normalized = rows
-    .map((row) => {
-      const payload = isRecord(row.payload) ? row.payload : row;
-      const score = typeof payload.score === "number" ? payload.score : Number(payload.score ?? NaN);
-      return {
-        score: Number.isFinite(score) ? score : undefined,
-        currentClass: String(payload.current_failure_class || ""),
-        candidateStrategy: String(payload.candidate_strategy || ""),
-        candidateTool: String(payload.candidate_tool || ""),
-        failedTool: String(payload.failed_tool || ""),
-        historyClasses: stringArray(payload.history_failure_classes),
-        rationale: stringArray(payload.rationale),
-        currentReason: String(payload.current_failure_reason || ""),
-      };
-    })
-    .filter((row) => row.candidateStrategy || row.currentClass || typeof row.score === "number");
+    .map(normalizeRecoveryDecisionRow)
+    .filter((row) => row.candidateStrategy || row.currentClass || typeof row.score === "number" || row.rejectReason);
   if (!normalized.length) return null;
+  const learnedCount = normalized.filter((row) => row.sourceLabel === "learned playbook").length;
+  const manifestCount = normalized.filter((row) => row.sourceLabel === "manifest playbook").length;
+  const rejectedCount = normalized.filter((row) => row.eligible === false || row.rejectReason).length;
   return (
     <div className="rounded-lg border border-rose-400/20 bg-rose-400/[0.05] p-4">
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <span className="text-sm font-medium text-rose-50">Adaptive Recovery Scorecard</span>
-        <span className="rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-300">{normalized.length} candidates scored</span>
+        <span className="text-sm font-medium text-rose-50">Recovery Decision Intelligence</span>
+        <span className="rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-300">{normalized.length} paths</span>
+        {learnedCount ? <span className="rounded bg-emerald-400/10 px-2 py-0.5 text-xs text-emerald-300">learned {learnedCount}</span> : null}
+        {manifestCount ? <span className="rounded bg-cyan-400/10 px-2 py-0.5 text-xs text-cyan-200">manifest {manifestCount}</span> : null}
+        {rejectedCount ? <span className="rounded bg-rose-400/10 px-2 py-0.5 text-xs text-rose-300">rejected {rejectedCount}</span> : null}
       </div>
       <div className="space-y-2">
-        {normalized.slice(0, 10).map((row, index) => (
+        {normalized.slice(0, 12).map((row, index) => (
           <div key={`${row.candidateStrategy}-${index}`} className="rounded-md border border-slate-800 bg-slate-950/45 p-3 text-xs">
             <div className="flex flex-wrap items-center gap-2">
-              {typeof row.score === "number" ? <span className="rounded bg-rose-400/10 px-2 py-0.5 text-rose-200">score {row.score}</span> : null}
+              {typeof row.score === "number" ? <span className="rounded bg-rose-400/10 px-2 py-0.5 text-rose-200">score {row.score.toFixed(2)}</span> : null}
+              {typeof row.rankScore === "number" && row.rankScore !== row.score ? (
+                <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-300">rank {row.rankScore.toFixed(2)}</span>
+              ) : null}
+              <span
+                className={cn(
+                  "rounded px-2 py-0.5",
+                  row.eligible === false || row.rejectReason ? "bg-rose-400/10 text-rose-300" : "bg-emerald-400/10 text-emerald-300",
+                )}
+              >
+                {row.eligible === false || row.rejectReason ? "not selected" : "eligible"}
+              </span>
+              <span
+                className={cn(
+                  "rounded px-2 py-0.5",
+                  row.sourceLabel === "learned playbook"
+                    ? "bg-emerald-400/10 text-emerald-300"
+                    : row.sourceLabel === "manifest playbook"
+                      ? "bg-cyan-400/10 text-cyan-200"
+                      : "bg-slate-800 text-slate-300",
+                )}
+              >
+                {row.sourceLabel}
+              </span>
               {row.currentClass ? <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-300">{row.currentClass}</span> : null}
               {row.candidateStrategy ? <span className="rounded bg-cyan-400/10 px-2 py-0.5 text-cyan-200">{row.candidateStrategy}</span> : null}
               {row.candidateTool ? <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-400">{row.candidateTool}</span> : null}
             </div>
+            {row.rejectReason ? <div className="mt-2 text-[11px] text-rose-300">rejected: {row.rejectReason}</div> : null}
             {row.currentReason ? <div className="mt-2 text-[11px] text-slate-500">failure: {row.currentReason}</div> : null}
             {row.failedTool ? <div className="mt-1 text-[11px] text-slate-600">failed tool: {row.failedTool}</div> : null}
+            {row.capabilityId || row.targetId ? (
+              <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-600">
+                {row.capabilityId ? <span>capability: {row.capabilityId}</span> : null}
+                {row.targetId ? <span>target: {row.targetId}</span> : null}
+              </div>
+            ) : null}
+            {row.learnedNextStrategy || typeof row.learnedRefCount === "number" ? (
+              <div className="mt-2 rounded bg-emerald-400/[0.06] px-2 py-1 text-[11px] text-emerald-200">
+                learned: {row.learnedNextStrategy || "referenced local playbook"}
+                {typeof row.learnedRefCount === "number" ? ` · refs ${row.learnedRefCount}` : ""}
+              </div>
+            ) : null}
+            {row.manifestPath ? (
+              <div className="mt-2 truncate rounded bg-cyan-400/[0.06] px-2 py-1 text-[11px] text-cyan-100" title={row.manifestPath}>
+                manifest: {row.manifestPath}
+              </div>
+            ) : null}
             {row.historyClasses.length ? (
               <div className="mt-2 flex flex-wrap gap-1">
                 {row.historyClasses.slice(0, 8).map((item, i) => (
                   <span key={`${item}-${i}`} className="rounded bg-slate-900 px-2 py-0.5 text-[11px] text-slate-400">
                     history: {item}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {row.memoryRefs.length ? (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {(row.memoryRefDetails.length ? row.memoryRefDetails : row.memoryRefs.map((id): RecoveryMemoryRefDetail => ({ id, trustState: "", trustReason: "" }))).slice(0, 6).map((item, i) => (
+                  <span
+                    key={`${item.id}-${i}`}
+                    className={cn(
+                      "rounded px-2 py-0.5 text-[11px]",
+                      item.trustState === "confirmed"
+                        ? "bg-emerald-400/[0.08] text-emerald-200"
+                        : item.trustState === "rejected"
+                          ? "bg-rose-400/[0.08] text-rose-200"
+                          : item.trustState === "conflicted"
+                            ? "bg-amber-400/[0.08] text-amber-200"
+                            : "bg-slate-800 text-slate-300",
+                    )}
+                    title={[item.id, item.trustReason, typeof item.trustWeight === "number" ? `weight ${item.trustWeight}` : ""].filter(Boolean).join(" | ")}
+                  >
+                    memory: {item.id}
+                    {item.trustState ? ` · ${item.trustState}` : ""}
                   </span>
                 ))}
               </div>
@@ -1977,6 +2278,91 @@ function RecoveryScorecardBlock({ rows }: { rows: Array<Record<string, unknown>>
       </div>
     </div>
   );
+}
+
+function normalizeRecoveryDecisionRow(row: Record<string, unknown>): RecoveryDecisionRow {
+  const payload = isRecord(row.payload) ? row.payload : row;
+  const metadata = isRecord(payload.metadata) ? payload.metadata : {};
+  const scorecard = isRecord(payload.adaptive_scorecard)
+    ? payload.adaptive_scorecard
+    : isRecord(metadata.adaptive_scorecard)
+      ? metadata.adaptive_scorecard
+      : {};
+  const memoryGrowthLookup = isRecord(payload.memory_growth_lookup)
+    ? payload.memory_growth_lookup
+    : isRecord(metadata.memory_growth_lookup)
+      ? metadata.memory_growth_lookup
+      : {};
+  const memoryRefsValue = Array.isArray(payload.memory_context_refs)
+    ? payload.memory_context_refs
+    : Array.isArray(metadata.memory_context_refs)
+      ? metadata.memory_context_refs
+      : [];
+  const memoryRefDetails = memoryRefsValue
+    .map((item) => {
+      if (!isRecord(item)) {
+        const id = textValue(item);
+        return id ? { id, trustState: "", trustReason: "" } : null;
+      }
+      const id = textValue(item.memory_id) || textValue(item.id) || textValue(item.path) || JSON.stringify(item);
+      return {
+        id,
+        trustState: textValue(item.memory_trust_state ?? item.trust_state),
+        trustReason: textValue(item.memory_trust_reason ?? item.trust_reason),
+        trustWeight: numberValue(item.memory_trust_weight ?? item.trust_weight),
+        recallAllowed: typeof item.memory_recall_allowed === "boolean"
+          ? item.memory_recall_allowed
+          : typeof item.recall_allowed === "boolean"
+            ? item.recall_allowed
+            : undefined,
+      };
+    })
+    .filter((item): item is RecoveryMemoryRefDetail => Boolean(item?.id));
+  const score = numberValue(payload.score ?? payload.rank_score ?? scorecard.score);
+  const rankScore = numberValue(payload.rank_score);
+  const learnedNextStrategy = textValue(memoryGrowthLookup.learned_next_strategy);
+  const manifestPath = textValue(payload.manifest_path) || textValue(metadata.manifest_path);
+  const source = textValue(payload.source) || textValue(metadata.source);
+  return {
+    score,
+    rankScore,
+    eligible: typeof payload.eligible === "boolean" ? payload.eligible : undefined,
+    rejectReason: textValue(payload.reject_reason),
+    source,
+    sourceLabel: recoverySourceLabel({ source, manifestPath, learnedNextStrategy, memoryGrowthLookup }),
+    capabilityId: textValue(payload.capability_id),
+    targetId: textValue(payload.target_id),
+    currentClass: textValue(payload.current_failure_class) || textValue(scorecard.current_failure_class),
+    candidateStrategy: textValue(payload.candidate_strategy) || textValue(scorecard.candidate_strategy),
+    candidateTool: textValue(payload.candidate_tool) || textValue(scorecard.candidate_tool),
+    failedTool: textValue(payload.failed_tool) || textValue(scorecard.failed_tool),
+    historyClasses: coerceStringArray(payload.history_failure_classes ?? scorecard.history_failure_classes),
+    rationale: coerceStringArray(payload.rationale ?? scorecard.rationale),
+    currentReason: textValue(payload.current_failure_reason) || textValue(scorecard.current_failure_reason),
+    manifestPath,
+    learnedNextStrategy,
+    learnedRefCount: numberValue(memoryGrowthLookup.ref_count),
+    memoryRefs: memoryRefDetails.map((item) => item.id).filter(Boolean),
+    memoryRefDetails,
+  };
+}
+
+function recoverySourceLabel({
+  source,
+  manifestPath,
+  learnedNextStrategy,
+  memoryGrowthLookup,
+}: {
+  source: string;
+  manifestPath: string;
+  learnedNextStrategy: string;
+  memoryGrowthLookup: Record<string, unknown>;
+}) {
+  const normalized = source.toLowerCase();
+  if (normalized.includes("memory") || learnedNextStrategy || Object.keys(memoryGrowthLookup).length) return "learned playbook";
+  if (normalized.includes("manifest") || manifestPath) return "manifest playbook";
+  if (normalized.includes("inline")) return "inline capability";
+  return source || "runtime candidate";
 }
 
 function FailureLearningBlock({ rows }: { rows: Array<Record<string, unknown>> }) {
@@ -2064,11 +2450,176 @@ function FailureLearningBlock({ rows }: { rows: Array<Record<string, unknown>> }
   );
 }
 
+function MemoryTrustEvidenceBlock({
+  trustRows,
+  writeRows,
+}: {
+  trustRows: Array<Record<string, unknown>>;
+  writeRows: Array<Record<string, unknown>>;
+}) {
+  const governanceRows = trustRows
+    .map(normalizeMemoryTrustEvent)
+    .filter((row): row is NonNullable<ReturnType<typeof normalizeMemoryTrustEvent>> => Boolean(row))
+    .slice(0, 10);
+  const priorRows = writeRows
+    .map(normalizeMemoryWriteEvent)
+    .filter((row): row is NonNullable<ReturnType<typeof normalizeMemoryWriteEvent>> => Boolean(row))
+    .slice(0, 10);
+
+  if (!governanceRows.length && !priorRows.length) return null;
+
+  return (
+    <div className="rounded-lg border border-emerald-400/20 bg-emerald-400/[0.05] p-4">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <span className="text-sm font-medium text-emerald-50">Memory Trust Evidence</span>
+        {governanceRows.length ? (
+          <span className="rounded bg-emerald-400/10 px-2 py-0.5 text-xs text-emerald-200">
+            governance {governanceRows.length}
+          </span>
+        ) : null}
+        {priorRows.length ? (
+          <span className="rounded bg-cyan-400/10 px-2 py-0.5 text-xs text-cyan-200">
+            write prior {priorRows.length}
+          </span>
+        ) : null}
+      </div>
+
+      {governanceRows.length ? (
+        <div className="mb-3 space-y-2">
+          <div className="text-xs font-medium text-emerald-100">Trust governance</div>
+          {governanceRows.map((row, index) => (
+            <div key={`${row.memoryId}-${row.action}-${index}`} className="rounded-md border border-slate-800 bg-slate-950/45 p-3 text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                {row.action ? <span className="rounded bg-emerald-400/10 px-2 py-0.5 text-emerald-200">{row.action}</span> : null}
+                {row.trustState ? (
+                  <span className={cn("rounded px-2 py-0.5", memoryTrustTone(row.trustState))}>{row.trustState}</span>
+                ) : null}
+                {row.recallAllowed !== undefined ? (
+                  <span className={cn(
+                    "rounded px-2 py-0.5",
+                    row.recallAllowed ? "bg-cyan-400/10 text-cyan-200" : "bg-rose-400/10 text-rose-200"
+                  )}>
+                    recall {row.recallAllowed ? "allowed" : "blocked"}
+                  </span>
+                ) : null}
+                {row.source ? <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-400">{row.source}</span> : null}
+                {row.memoryId ? <span className="ml-auto truncate text-slate-500">{row.memoryId}</span> : null}
+              </div>
+              {row.reason ? <div className="mt-2 text-[11px] leading-5 text-slate-400">{row.reason}</div> : null}
+              {row.content ? <div className="mt-2 truncate rounded bg-slate-900 px-2 py-1 text-[11px] text-slate-500">{row.content}</div> : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {priorRows.length ? (
+        <div className="space-y-2">
+          <div className="text-xs font-medium text-cyan-100">Write-time trust prior</div>
+          {priorRows.map((row, index) => (
+            <div key={`${row.memoryId}-${row.reason}-${index}`} className="rounded-md border border-slate-800 bg-slate-950/45 p-3 text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                {row.recommendedState ? (
+                  <span className={cn("rounded px-2 py-0.5", memoryTrustTone(row.recommendedState))}>
+                    recommended {row.recommendedState}
+                  </span>
+                ) : null}
+                {row.trustState ? <span className={cn("rounded px-2 py-0.5", memoryTrustTone(row.trustState))}>{row.trustState}</span> : null}
+                {Number.isFinite(row.confidenceDelta) ? (
+                  <span className={cn(
+                    "rounded px-2 py-0.5",
+                    row.confidenceDelta >= 0 ? "bg-emerald-400/10 text-emerald-200" : "bg-amber-400/10 text-amber-200"
+                  )}>
+                    confidence {row.confidenceDelta >= 0 ? "+" : ""}{row.confidenceDelta.toFixed(2)}
+                  </span>
+                ) : null}
+                {row.matchedCount ? <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-300">matched {row.matchedCount}</span> : null}
+                {row.memoryType ? <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-400">{row.memoryType}</span> : null}
+              </div>
+              {row.reason ? <div className="mt-2 text-[11px] leading-5 text-slate-400">{row.reason}</div> : null}
+              {row.signals.length ? (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {row.signals.map((signal) => (
+                    <span key={signal} className="rounded bg-slate-900 px-2 py-0.5 text-[11px] text-slate-500">
+                      {signal}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function normalizeMemoryTrustEvent(row: Record<string, unknown>) {
+  const payload = isRecord(row.payload) ? row.payload : row;
+  const governance = isRecord(payload.memory_trust_governance) ? payload.memory_trust_governance : payload;
+  const after = isRecord(governance.after) ? governance.after : governance;
+  const before = isRecord(governance.before) ? governance.before : {};
+  const memoryId = textValue(after.memory_id) || textValue(governance.memory_id) || textValue(payload.memory_id);
+  const action = textValue(governance.action) || textValue(payload.action) || textValue(row.event_type) || textValue(payload.type);
+  const trustState = textValue(after.trust_state) || textValue(payload.trust_state) || textValue(before.trust_state);
+  const reason = textValue(after.trust_reason) || textValue(payload.trust_reason) || textValue(governance.reason) || textValue(payload.reason);
+  const recallValue = after.recall_allowed ?? payload.recall_allowed;
+  const recallAllowed = typeof recallValue === "boolean" ? recallValue : undefined;
+  const source = textValue(payload.source) || textValue(governance.source) || textValue(row.event_type);
+  const content = textValue(after.content) || textValue(payload.content) || textValue(payload.content_preview);
+  if (!memoryId && !action && !trustState && !reason && recallAllowed === undefined) return undefined;
+  return { memoryId, action, trustState, reason, recallAllowed, source, content };
+}
+
+function normalizeMemoryWriteEvent(row: Record<string, unknown>) {
+  const payload = isRecord(row.payload) ? row.payload : row;
+  const memoryWrite = isRecord(payload.memory_write) ? payload.memory_write : {};
+  const prior = isRecord(payload.trust_prior)
+    ? payload.trust_prior
+    : isRecord(payload.memory_trust_prior)
+      ? payload.memory_trust_prior
+      : payload.type === "memory_trust_prior"
+        ? payload
+        : {};
+  const evidence = Array.isArray(memoryWrite.evidence) ? memoryWrite.evidence : [];
+  const priorEvidence = evidence.find((item) => isRecord(item) && item.type === "memory_trust_prior");
+  const priorRecord = Object.keys(prior).length ? prior : isRecord(priorEvidence) ? priorEvidence : {};
+  const matchedCount = numberValue(priorRecord.matched_count) ?? 0;
+  const confidenceDelta = numberValue(priorRecord.confidence_delta) ?? numberValue(payload.confidence_delta) ?? 0;
+  const recommendedState = textValue(priorRecord.recommended_state) || textValue(payload.recommended_state);
+  const trustState = textValue(memoryWrite.trust_state) || textValue(payload.trust_state);
+  const reason = textValue(priorRecord.reason) || textValue(memoryWrite.trust_reason) || textValue(payload.trust_reason) || textValue(payload.reason);
+  const memoryType = textValue(memoryWrite.memory_type) || textValue(payload.memory_type);
+  const memoryId = textValue(memoryWrite.memory_id) || textValue(payload.memory_id);
+  const confirmed = numberValue(priorRecord.confirmed_strength) ?? 0;
+  const rejected = numberValue(priorRecord.rejected_strength) ?? 0;
+  const conflicted = numberValue(priorRecord.conflicted_strength) ?? 0;
+  const signals = [
+    confirmed ? `confirmed ${confirmed}` : "",
+    rejected ? `rejected ${rejected}` : "",
+    conflicted ? `conflicted ${conflicted}` : "",
+  ].filter(Boolean);
+  if (!matchedCount && !recommendedState && !trustState && !reason) return undefined;
+  return { memoryId, memoryType, matchedCount, confidenceDelta, recommendedState, trustState, reason, signals };
+}
+
+function memoryTrustTone(state: string): string {
+  const normalized = state.toLowerCase();
+  if (normalized.includes("confirmed")) return "bg-emerald-400/10 text-emerald-200";
+  if (normalized.includes("rejected")) return "bg-rose-400/10 text-rose-200";
+  if (normalized.includes("conflict")) return "bg-amber-400/10 text-amber-200";
+  if (normalized.includes("floating")) return "bg-cyan-400/10 text-cyan-200";
+  return "bg-slate-800 text-slate-300";
+}
+
 function RoleExecutionBlock({ rows }: { rows: Array<Record<string, unknown>> }) {
   const normalized = rows
     .map((row) => {
       const payload = isRecord(row.payload) ? row.payload : row;
       const evidence = isRecord(payload.evidence) ? payload.evidence : isRecord(payload.adapter_evidence) ? payload.adapter_evidence : {};
+      const executionPreference = isRecord(evidence.execution_preference) ? evidence.execution_preference : undefined;
+      const executionOrderAdvice = executionPreference && isRecord(executionPreference.execution_order_advice)
+        ? executionPreference.execution_order_advice
+        : undefined;
       return {
         eventType: String(row.event_type || payload.type || "role_execution"),
         roleId: String(payload.role_id || ""),
@@ -2077,6 +2628,8 @@ function RoleExecutionBlock({ rows }: { rows: Array<Record<string, unknown>> }) 
         ok: typeof payload.ok === "boolean" ? payload.ok : undefined,
         elapsed: typeof payload.elapsed_ms === "number" ? payload.elapsed_ms : typeof payload.adapter_elapsed_ms === "number" ? payload.adapter_elapsed_ms : undefined,
         governance: isRecord(evidence.governance_policy) ? evidence.governance_policy : undefined,
+        executionPreference,
+        executionOrderAdvice,
         evidence,
       };
     })
@@ -2103,6 +2656,21 @@ function RoleExecutionBlock({ rows }: { rows: Array<Record<string, unknown>> }) 
                   governance {String(row.governance.score ?? "-")} · {String(row.governance.execution_mode || row.governance.level || "normal")}
                 </span>
               ) : null}
+              {row.executionPreference ? (
+                <span className="rounded bg-emerald-400/10 px-2 py-0.5 text-emerald-200">
+                  success path {String(row.executionPreference.selected_success_rate ?? "-")}
+                </span>
+              ) : null}
+              {row.executionOrderAdvice ? (
+                <span className={cn(
+                  "rounded px-2 py-0.5",
+                  Boolean(row.executionOrderAdvice.matched)
+                    ? "bg-cyan-400/10 text-cyan-200"
+                    : "bg-amber-400/10 text-amber-200"
+                )}>
+                  chain {Boolean(row.executionOrderAdvice.matched) ? `#${Number(row.executionOrderAdvice.matched_index ?? -1) + 1}` : "unmatched"}
+                </span>
+              ) : null}
               {typeof row.ok === "boolean" ? (
                 <span className={cn("rounded px-2 py-0.5", row.ok ? "bg-emerald-400/10 text-emerald-300" : "bg-amber-400/10 text-amber-300")}>
                   {row.ok ? "OK" : "CHECK"}
@@ -2111,8 +2679,87 @@ function RoleExecutionBlock({ rows }: { rows: Array<Record<string, unknown>> }) 
               {typeof row.elapsed === "number" ? <span className="ml-auto text-slate-500">{msText(row.elapsed)}</span> : null}
             </div>
             {Object.keys(row.evidence).length ? (
-              <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-slate-900 p-2 text-[11px] leading-5 text-slate-500">
-                {JSON.stringify(row.evidence, null, 2)}
+              <>
+                {row.executionPreference ? (
+                  <div className="mt-2 rounded border border-emerald-400/10 bg-emerald-400/[0.04] px-2 py-2 text-[11px] leading-5 text-emerald-100">
+                    <div className="font-medium text-emerald-200">Learned Success Preference</div>
+                    <div>strategy: {String(row.executionPreference.preferred_execution_strategy || "-")}</div>
+                    <div>memory: {String(row.executionPreference.selected_memory_id || "-")}</div>
+                    {row.executionOrderAdvice ? (
+                      <div>
+                        chain: {Boolean(row.executionOrderAdvice.matched)
+                          ? `${String(row.executionOrderAdvice.matched_step || "-")} (${Number(row.executionOrderAdvice.matched_index ?? -1) + 1}/${String(row.executionOrderAdvice.chain_length || "-")})`
+                          : String(row.executionOrderAdvice.reason || "not matched")}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+                <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-slate-900 p-2 text-[11px] leading-5 text-slate-500">
+                  {JSON.stringify(row.evidence, null, 2)}
+                </pre>
+              </>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function InputAdapterBlock({ rows }: { rows: Array<Record<string, unknown>> }) {
+  const normalized = rows
+    .map((row) => {
+      const payload = isRecord(row.payload) ? row.payload : row;
+      const adapter = isRecord(payload.adapter_evidence)
+        ? payload.adapter_evidence
+        : isRecord(payload.modality_evidence) && isRecord(payload.modality_evidence.input_adapter)
+          ? payload.modality_evidence.input_adapter
+          : payload;
+      const voiceNorm = isRecord(payload.modality_evidence) && isRecord(payload.modality_evidence.voice_language_normalization)
+        ? payload.modality_evidence.voice_language_normalization
+        : isRecord(payload.voice_language_normalization)
+          ? payload.voice_language_normalization
+          : {};
+      return {
+        eventType: String(row.event_type || "input_adapter_finished"),
+        source: String(adapter.source || payload.source || ""),
+        channel: String(adapter.channel || payload.channel || ""),
+        rawText: String(adapter.raw_text || payload.raw_text || ""),
+        normalizedText: String(adapter.normalized_text || payload.normalized_text || ""),
+        changed: Boolean(adapter.changed || payload.changed),
+        confidence: typeof payload.confidence === "number" ? payload.confidence : undefined,
+        steps: Array.isArray(adapter.steps) ? adapter.steps : [],
+        voiceNorm,
+        payload,
+      };
+    })
+    .filter((row) => row.source || row.rawText || row.normalizedText);
+  return (
+    <div className="rounded-lg border border-violet-400/20 bg-violet-400/[0.05] p-4">
+      <div className="mb-3 text-sm font-medium text-violet-50">Input Adapter / Voice Evidence</div>
+      <div className="space-y-2">
+        {normalized.slice(0, 6).map((row, index) => (
+          <div key={`${row.eventType}-${index}`} className="rounded-md border border-slate-800 bg-slate-950/45 p-3 text-xs">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              {row.source ? <span className="rounded bg-violet-400/10 px-2 py-0.5 text-violet-200">{row.source}</span> : null}
+              {row.channel ? <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-300">{row.channel}</span> : null}
+              <span className={cn("rounded px-2 py-0.5", row.changed ? "bg-amber-400/10 text-amber-200" : "bg-emerald-400/10 text-emerald-200")}>
+                {row.changed ? "normalized" : "unchanged"}
+              </span>
+              {typeof row.confidence === "number" ? <span className="ml-auto text-slate-500">confidence {row.confidence.toFixed(2)}</span> : null}
+            </div>
+            <div className="grid gap-2 md:grid-cols-2">
+              <InfoMini title="raw" items={[row.rawText || "-"]} />
+              <InfoMini title="normalized" items={[row.normalizedText || "-"]} />
+            </div>
+            {row.steps.length ? (
+              <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-slate-900 p-2 text-[11px] leading-5 text-slate-500">
+                {JSON.stringify(row.steps, null, 2)}
+              </pre>
+            ) : null}
+            {Object.keys(row.voiceNorm).length ? (
+              <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-slate-900 p-2 text-[11px] leading-5 text-slate-500">
+                {JSON.stringify(row.voiceNorm, null, 2)}
               </pre>
             ) : null}
           </div>
@@ -2165,6 +2812,143 @@ function PendingDecisionBlock({ rows }: { rows: Array<Record<string, unknown>> }
   );
 }
 
+function buildWebResearchReplay(item: EvidenceEntry): WebResearchReplay | null {
+  const records: Record<string, unknown>[] = [];
+  collectNestedRecords(
+    {
+      role_executions: item.role_executions ?? [],
+      tool_quality_reports: item.tool_quality_reports ?? [],
+      tool_result: item.tool_result ?? null,
+    },
+    records,
+  );
+  const qualityReport = firstRecordField(records, ["web_research_quality_report", "quality_report"], isWebResearchQualityReport);
+  const sendPreviewPolicy = firstRecordField(records, ["send_preview_policy"], isRecord);
+  const sourceRows = extractWebResearchSourceRows(records);
+  const delivery = extractWebResearchDelivery(records);
+  const summaryPreview = firstTextField(records, ["summary_preview", "send_preview", "message", "summary"]) || item.message_preview || "";
+  const looksLikeWebResearch =
+    Boolean(qualityReport) ||
+    Boolean(sendPreviewPolicy) ||
+    sourceRows.length > 0 ||
+    itemCapabilityLabel(item).toLowerCase().includes("web_research") ||
+    item.task.toLowerCase().includes("web research");
+  if (!looksLikeWebResearch) return null;
+  return {
+    sourceRows,
+    qualityReport,
+    sendPreviewPolicy,
+    delivery,
+    summaryPreview: summaryPreview.slice(0, 1200),
+  };
+}
+
+function collectNestedRecords(value: unknown, out: Record<string, unknown>[], depth = 0) {
+  if (depth > 7 || out.length > 240) return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectNestedRecords(item, out, depth + 1);
+    return;
+  }
+  if (!isRecord(value)) return;
+  out.push(value);
+  for (const child of Object.values(value)) {
+    collectNestedRecords(child, out, depth + 1);
+  }
+}
+
+function firstRecordField(
+  records: Record<string, unknown>[],
+  keys: string[],
+  guard: (value: unknown) => value is Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  for (const record of records) {
+    for (const key of keys) {
+      const value = record[key];
+      if (guard(value)) return value;
+    }
+  }
+  return undefined;
+}
+
+function firstTextField(records: Record<string, unknown>[], keys: string[]): string {
+  for (const record of records) {
+    for (const key of keys) {
+      const value = textValue(record[key]);
+      if (value) return value;
+    }
+  }
+  return "";
+}
+
+function isWebResearchQualityReport(value: unknown): value is Record<string, unknown> {
+  return (
+    isRecord(value) &&
+    ("send_ready" in value || "quality_level" in value || "source_count" in value || "readable_finding_count" in value)
+  );
+}
+
+function extractWebResearchSourceRows(records: Record<string, unknown>[]): WebResearchSourceRow[] {
+  const rows: WebResearchSourceRow[] = [];
+  const seen = new Set<string>();
+  for (const record of records) {
+    const rawSources = Array.isArray(record.source_quality)
+      ? record.source_quality
+      : Array.isArray(record.sources)
+        ? record.sources
+        : [];
+    for (const item of rawSources) {
+      if (!isRecord(item)) continue;
+      const url = textValue(item.url);
+      if (!url || seen.has(url)) continue;
+      seen.add(url);
+      rows.push({
+        title: textValue(item.title),
+        url,
+        domain: textValue(item.domain) || domainFromUrl(url),
+        source: textValue(item.source),
+        reliability: numberValue(item.reliability),
+        successCount: numberValue(item.success_count),
+        failureCount: numberValue(item.failure_count),
+        qualityLevel: textValue(item.last_quality_level) || textValue(item.quality_level),
+        issue: textValue(item.last_primary_issue) || textValue(item.primary_issue),
+      });
+      if (rows.length >= 12) return rows;
+    }
+  }
+  return rows;
+}
+
+function extractWebResearchDelivery(records: Record<string, unknown>[]): WebResearchReplay["delivery"] | undefined {
+  for (const record of records) {
+    const sendResult = isRecord(record.send_result) ? record.send_result : undefined;
+    const hasDeliveryFields = sendResult || typeof record.post_send_verified === "boolean" || typeof record.duplicate_skipped === "boolean";
+    if (!hasDeliveryFields) continue;
+    const ok = typeof sendResult?.ok === "boolean" ? sendResult.ok : undefined;
+    const verified = typeof record.post_send_verified === "boolean" ? record.post_send_verified : ok;
+    return {
+      ok,
+      verified,
+      reason: textValue(sendResult?.reason) || textValue(sendResult?.detail) || textValue(record.error),
+      channel: textValue(sendResult?.channel) || textValue(record.channel) || textValue(record.adapter_kind) || "MessageExecutorAgent",
+    };
+  }
+  return undefined;
+}
+
+function domainFromUrl(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+function booleanValue(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+  return false;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -2172,6 +2956,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((item) => String(item || "").trim()).filter(Boolean);
+}
+
+function coerceStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
+  if (typeof value === "string" && value.trim()) return [value.trim()];
+  return [];
+}
+
+function textValue(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function numberValue(value: unknown): number | undefined {
+  const parsed = typeof value === "number" ? value : Number(value ?? NaN);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function qualityTone(level: string): string {
@@ -2239,6 +3038,7 @@ function ScreenshotStrip({ paths }: { paths: string[] }) {
 }
 
 function cognitiveStageLabel(stage: string): string {
+  if (stage === "input_adapter_finished") return "InputAdapter";
   if (stage === "review_board_summary") return "ReviewBoard";
   if (stage === "decision_contract" || stage === "arbiter_decision") return "Arbiter";
   if (stage === "confirmation_pending_saved") return "Pending";

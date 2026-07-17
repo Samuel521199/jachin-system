@@ -7,6 +7,7 @@ read-only text, and exposes suspect tokens for downstream risk gates.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from dataclasses import asdict, dataclass, field
@@ -67,7 +68,7 @@ _BUILTIN_ENTITIES: tuple[LexiconEntity, ...] = (
     LexiconEntity("app", "VS Code", ("vs code", "vscode", "visual studio code", "ws code", "w s code")),
     LexiconEntity("app", "Codex", ("codex", "code x", "\u6263\u5f97\u514b\u65af")),
     LexiconEntity("contact", "Vivian", ("vivian", "vivi", "viian", "vivan", "vivien", "\u8587\u8587\u5b89", "\u5fae\u5fae\u5b89", "v\u8587m", "v\u8587 m", "v \u8587 m", "V\u8587")),
-    LexiconEntity("contact", "Neil", ("neil", "neal", "niel")),
+    LexiconEntity("contact", "Neil", ("neil", "neal", "niel", "kneel")),
     LexiconEntity("contact", "Ethan", ("ethan", "eason", "e than")),
     LexiconEntity("project", "Jachin", ("jachin", "jacking", "\u52a0\u52e4", "\u5609\u94a6")),
 )
@@ -94,11 +95,21 @@ def _repo_root() -> Path:
 
 def _lexicon_paths() -> list[Path]:
     root = _repo_root()
-    return [
+    paths = [
         root / "data" / "voice" / "domain_lexicon.json",
+        _user_aliases_path(),
         root / "data" / "voice" / "user_aliases.json",
         root / "config" / "voice_domain_lexicon.json",
     ]
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in paths:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
 
 
 def _clean_word(raw: Any) -> str:
@@ -194,7 +205,16 @@ def teach_alias(kind: EntityKind, canonical: str, alias: str, *, source: str = "
 
 
 def _user_aliases_path() -> Path:
-    return _repo_root() / "data" / "voice" / "user_aliases.json"
+    override = os.environ.get("JACHIN_VOICE_USER_ALIASES_PATH", "").strip()
+    if override:
+        return Path(override).expanduser()
+    kernel_home = os.environ.get("JACHIN_COGNITIVE_KERNEL_HOME", "").strip()
+    if kernel_home:
+        return Path(kernel_home).expanduser() / "state" / "voice_user_aliases.json"
+    jachin_home = os.environ.get("JACHIN_HOME", "").strip()
+    if jachin_home:
+        return Path(jachin_home).expanduser() / "voice" / "user_aliases.json"
+    return Path.home() / ".jachin" / "memory" / "voice_user_aliases.json"
 
 
 def list_user_aliases() -> dict[str, Any]:

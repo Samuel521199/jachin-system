@@ -55,11 +55,14 @@ pub struct OsEvidenceEntry {
     pub attempts: Vec<Value>,
     pub retry: Option<Value>,
     pub metrics: Option<Value>,
+    pub input_adapters: Vec<Value>,
     pub role_executions: Vec<Value>,
     pub pending_decisions: Vec<Value>,
     pub tool_quality_reports: Vec<Value>,
     pub recovery_scorecards: Vec<Value>,
     pub failure_learning_records: Vec<Value>,
+    pub memory_trust_events: Vec<Value>,
+    pub memory_write_events: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,6 +73,7 @@ pub struct OsEvidenceLaunchInput {
     pub wait_seconds: Option<u64>,
     pub dry_run: Option<bool>,
     pub template_id: Option<String>,
+    pub web_query: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -501,6 +505,39 @@ fn collect_role_executions(value: &Value, out: &mut Vec<Value>) {
     }
 }
 
+fn collect_input_adapters(value: &Value, out: &mut Vec<Value>) {
+    match value {
+        Value::Object(map) => {
+            let event_type = map.get("event_type").and_then(|v| v.as_str()).unwrap_or("");
+            if event_type == "input_adapter_finished" {
+                out.push(value.clone());
+                for (key, item) in map {
+                    if key != "payload" {
+                        collect_input_adapters(item, out);
+                    }
+                }
+                return;
+            }
+            if let Some(payload) = map.get("payload").and_then(|v| v.as_object()) {
+                if payload.get("adapter_evidence").is_some()
+                    || payload.get("modality_evidence").and_then(|v| v.get("input_adapter")).is_some()
+                {
+                    out.push(value.clone());
+                }
+            }
+            for item in map.values() {
+                collect_input_adapters(item, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_input_adapters(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn collect_pending_decisions(value: &Value, out: &mut Vec<Value>) {
     match value {
         Value::Object(map) => {
@@ -564,16 +601,29 @@ fn collect_tool_quality_reports(value: &Value, out: &mut Vec<Value>) {
 fn collect_recovery_scorecards(value: &Value, out: &mut Vec<Value>) {
     match value {
         Value::Object(map) => {
-            if let Some(scorecard) = map.get("adaptive_scorecard") {
-                out.push(scorecard.clone());
+            if let Some(candidate_path) = map.get("candidate_path") {
+                if looks_like_recovery_candidate(candidate_path) {
+                    out.push(recovery_candidate_view(candidate_path));
+                }
+            }
+            if looks_like_recovery_candidate(value) {
+                out.push(recovery_candidate_view(value));
+                return;
             }
             if map.get("current_failure_class").is_some()
                 && map.get("candidate_strategy").is_some()
                 && map.get("score").is_some()
             {
                 out.push(value.clone());
+                return;
             }
-            for item in map.values() {
+            if let Some(scorecard) = map.get("adaptive_scorecard") {
+                out.push(scorecard.clone());
+            }
+            for (key, item) in map {
+                if key == "candidate_path" {
+                    continue;
+                }
                 collect_recovery_scorecards(item, out);
             }
         }
@@ -584,6 +634,94 @@ fn collect_recovery_scorecards(value: &Value, out: &mut Vec<Value>) {
         }
         _ => {}
     }
+}
+
+fn looks_like_recovery_candidate(value: &Value) -> bool {
+    let Some(map) = value.as_object() else {
+        return false;
+    };
+    let metadata = map.get("metadata").and_then(|v| v.as_object());
+    let has_candidate_identity = map.get("strategy").is_some()
+        || map.get("tool").is_some()
+        || map.get("rank_score").is_some()
+        || map.get("eligible").is_some()
+        || map.get("reject_reason").is_some();
+    let has_recovery_metadata = metadata
+        .map(|m| {
+            m.get("adaptive_scorecard").is_some()
+                || m.get("memory_growth_lookup").is_some()
+                || m.get("manifest_path").is_some()
+                || m.get("source").is_some()
+        })
+        .unwrap_or(false);
+    has_candidate_identity
+        && (map.get("capability_id").is_some()
+            || map.get("target_id").is_some()
+            || has_recovery_metadata)
+}
+
+fn recovery_candidate_view(candidate: &Value) -> Value {
+    let metadata = candidate.get("metadata").cloned().unwrap_or(Value::Null);
+    let scorecard = candidate
+        .get("adaptive_scorecard")
+        .cloned()
+        .or_else(|| metadata.get("adaptive_scorecard").cloned())
+        .unwrap_or(Value::Null);
+    let memory_growth_lookup = candidate
+        .get("memory_growth_lookup")
+        .cloned()
+        .or_else(|| metadata.get("memory_growth_lookup").cloned())
+        .unwrap_or(Value::Null);
+    let memory_context_refs = candidate
+        .get("memory_context_refs")
+        .cloned()
+        .or_else(|| metadata.get("memory_context_refs").cloned())
+        .unwrap_or(Value::Null);
+    let manifest_path = candidate
+        .get("manifest_path")
+        .cloned()
+        .or_else(|| metadata.get("manifest_path").cloned())
+        .unwrap_or(Value::Null);
+    let source = candidate
+        .get("source")
+        .cloned()
+        .or_else(|| metadata.get("source").cloned())
+        .unwrap_or(Value::Null);
+
+    json!({
+        "type": "recovery_candidate",
+        "capability_id": candidate.get("capability_id").cloned().unwrap_or(Value::Null),
+        "target_id": candidate.get("target_id").cloned().unwrap_or(Value::Null),
+        "candidate_strategy": candidate
+            .get("strategy")
+            .cloned()
+            .or_else(|| scorecard.get("candidate_strategy").cloned())
+            .unwrap_or(Value::Null),
+        "candidate_tool": candidate
+            .get("tool")
+            .cloned()
+            .or_else(|| scorecard.get("candidate_tool").cloned())
+            .unwrap_or(Value::Null),
+        "eligible": candidate.get("eligible").cloned().unwrap_or(Value::Null),
+        "reject_reason": candidate.get("reject_reason").cloned().unwrap_or(Value::Null),
+        "rank_score": candidate.get("rank_score").cloned().unwrap_or(Value::Null),
+        "score": candidate
+            .get("rank_score")
+            .cloned()
+            .or_else(|| scorecard.get("score").cloned())
+            .unwrap_or(Value::Null),
+        "current_failure_class": scorecard.get("current_failure_class").cloned().unwrap_or(Value::Null),
+        "current_failure_reason": scorecard.get("current_failure_reason").cloned().unwrap_or(Value::Null),
+        "failed_tool": scorecard.get("failed_tool").cloned().unwrap_or(Value::Null),
+        "history_failure_classes": scorecard.get("history_failure_classes").cloned().unwrap_or(Value::Null),
+        "rationale": scorecard.get("rationale").cloned().unwrap_or(Value::Null),
+        "source": source,
+        "manifest_path": manifest_path,
+        "memory_growth_lookup": memory_growth_lookup,
+        "memory_context_refs": memory_context_refs,
+        "metadata": metadata,
+        "adaptive_scorecard": scorecard,
+    })
 }
 
 fn collect_failure_learning_records(value: &Value, out: &mut Vec<Value>) {
@@ -611,6 +749,75 @@ fn collect_failure_learning_records(value: &Value, out: &mut Vec<Value>) {
         Value::Array(items) => {
             for item in items {
                 collect_failure_learning_records(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_memory_trust_events(value: &Value, out: &mut Vec<Value>) {
+    match value {
+        Value::Object(map) => {
+            let event_type = map.get("event_type").and_then(|v| v.as_str()).unwrap_or("");
+            if event_type == "memory_lifecycle_trust_governance" {
+                out.push(value.clone());
+                for (key, item) in map {
+                    if key != "payload" {
+                        collect_memory_trust_events(item, out);
+                    }
+                }
+                return;
+            }
+            if map
+                .get("type")
+                .and_then(|v| v.as_str())
+                .map(|s| s == "memory_trust_governance" || s == "memory_trust_governed")
+                .unwrap_or(false)
+            {
+                out.push(value.clone());
+            }
+            for item in map.values() {
+                collect_memory_trust_events(item, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_memory_trust_events(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_memory_write_events(value: &Value, out: &mut Vec<Value>) {
+    match value {
+        Value::Object(map) => {
+            let event_type = map.get("event_type").and_then(|v| v.as_str()).unwrap_or("");
+            if event_type == "memory_lifecycle_write" {
+                out.push(value.clone());
+                for (key, item) in map {
+                    if key != "payload" {
+                        collect_memory_write_events(item, out);
+                    }
+                }
+                return;
+            }
+            if map.get("trust_prior").is_some()
+                || map
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s == "memory_trust_prior")
+                    .unwrap_or(false)
+            {
+                out.push(value.clone());
+            }
+            for item in map.values() {
+                collect_memory_write_events(item, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_memory_write_events(item, out);
             }
         }
         _ => {}
@@ -761,6 +968,15 @@ fn evidence_entry(path: &Path) -> Option<OsEvidenceEntry> {
     let mut failure_learning_records = Vec::new();
     collect_failure_learning_records(&value, &mut failure_learning_records);
     failure_learning_records.truncate(40);
+    let mut memory_trust_events = Vec::new();
+    collect_memory_trust_events(&value, &mut memory_trust_events);
+    memory_trust_events.truncate(40);
+    let mut memory_write_events = Vec::new();
+    collect_memory_write_events(&value, &mut memory_write_events);
+    memory_write_events.truncate(40);
+    let mut input_adapters = Vec::new();
+    collect_input_adapters(&value, &mut input_adapters);
+    input_adapters.truncate(20);
     let evidence_panel_path = get_path(&value, &["evidence_panel_path"]);
     let report_path = get_path(&value, &["report_path"]);
     let id = path.to_string_lossy().into_owned();
@@ -799,11 +1015,14 @@ fn evidence_entry(path: &Path) -> Option<OsEvidenceEntry> {
             .unwrap_or_default(),
         retry: value.get("retry").cloned(),
         metrics: value.get("metrics").cloned(),
+        input_adapters,
         role_executions,
         pending_decisions,
         tool_quality_reports,
         recovery_scorecards,
         failure_learning_records,
+        memory_trust_events,
+        memory_write_events,
     })
 }
 
@@ -897,6 +1116,9 @@ fn cognitive_turn_entry(path: &Path, turn_id: &str, events: Vec<Value>) -> Optio
     let mut tool_quality_reports = Vec::new();
     let mut recovery_scorecards = Vec::new();
     let mut failure_learning_records = Vec::new();
+    let mut memory_trust_events = Vec::new();
+    let mut memory_write_events = Vec::new();
+    let mut input_adapters = Vec::new();
     let mut timeline = Vec::new();
     let mut metrics_start_ms: Option<u64> = None;
     let mut metrics_end_ms: Option<u64> = None;
@@ -914,6 +1136,9 @@ fn cognitive_turn_entry(path: &Path, turn_id: &str, events: Vec<Value>) -> Optio
     collect_tool_quality_reports(&aggregate, &mut tool_quality_reports);
     collect_recovery_scorecards(&aggregate, &mut recovery_scorecards);
     collect_failure_learning_records(&aggregate, &mut failure_learning_records);
+    collect_memory_trust_events(&aggregate, &mut memory_trust_events);
+    collect_memory_write_events(&aggregate, &mut memory_write_events);
+    collect_input_adapters(&aggregate, &mut input_adapters);
 
     for event in events.iter() {
         let event_type = event
@@ -1035,6 +1260,9 @@ fn cognitive_turn_entry(path: &Path, turn_id: &str, events: Vec<Value>) -> Optio
     tool_quality_reports.truncate(40);
     recovery_scorecards.truncate(40);
     failure_learning_records.truncate(40);
+    memory_trust_events.truncate(40);
+    memory_write_events.truncate(40);
+    input_adapters.truncate(20);
     let duration_ms = metrics_start_ms
         .zip(metrics_end_ms)
         .map(|(start, end)| end.saturating_sub(start))
@@ -1079,11 +1307,14 @@ fn cognitive_turn_entry(path: &Path, turn_id: &str, events: Vec<Value>) -> Optio
             "duration_ms": duration_ms,
             "attempt_count": role_executions.len(),
         })),
+        input_adapters,
         role_executions,
         pending_decisions,
         tool_quality_reports,
         recovery_scorecards,
         failure_learning_records,
+        memory_trust_events,
+        memory_write_events,
     })
 }
 
@@ -1885,6 +2116,7 @@ fn spawn_runner(
     let recipients_json = serde_json::to_string(&recipients)
         .map_err(|e| format!("serialize recipients failed: {e}"))?;
     let wait_seconds = input.wait_seconds.unwrap_or(120).clamp(10, 600).to_string();
+    let web_query = input.web_query.clone().unwrap_or_default();
     let out_dir = output_subdir(mode)?;
     fs::create_dir_all(&out_dir).map_err(|e| format!("create output dir failed: {e}"))?;
     let script = root.join("scripts").join("os_evidence_task_runner.py");
@@ -1906,6 +2138,8 @@ fn spawn_runner(
         .arg(&recipients_json)
         .arg("--wait-seconds")
         .arg(&wait_seconds)
+        .arg("--web-query")
+        .arg(&web_query)
         .arg("--out-dir")
         .arg(&out_dir)
         .stdout(Stdio::null())
@@ -1964,6 +2198,7 @@ fn runner_command(
     let recipients_json = serde_json::to_string(&recipients)
         .map_err(|e| format!("serialize recipients failed: {e}"))?;
     let wait_seconds = input.wait_seconds.unwrap_or(120).clamp(10, 600).to_string();
+    let web_query = input.web_query.clone().unwrap_or_default();
     let script = root.join("scripts").join("os_evidence_task_runner.py");
     if !script.exists() {
         return Err(format!("runner script not found: {}", script.display()));
@@ -1982,6 +2217,8 @@ fn runner_command(
         .arg(&recipients_json)
         .arg("--wait-seconds")
         .arg(wait_seconds)
+        .arg("--web-query")
+        .arg(web_query)
         .arg("--out-dir")
         .arg(out_dir);
     if let Some(template_id) = input.template_id.as_ref() {
@@ -2209,6 +2446,59 @@ mod tests {
         assert_eq!(
             rows[0].get("failure_class").and_then(|v| v.as_str()),
             Some("target_not_found")
+        );
+    }
+
+    #[test]
+    fn collects_memory_trust_governance_events() {
+        let value = json!({
+            "events": [
+                {
+                    "event_type": "memory_lifecycle_trust_governance",
+                    "payload": {
+                        "memory_trust_governance": {
+                            "action": "reject_memory",
+                            "after": {
+                                "memory_id": "mem-1",
+                                "trust_state": "rejected",
+                                "recall_allowed": false
+                            }
+                        }
+                    }
+                }
+            ]
+        });
+        let mut rows = Vec::new();
+        collect_memory_trust_events(&value, &mut rows);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("event_type").and_then(|v| v.as_str()),
+            Some("memory_lifecycle_trust_governance")
+        );
+    }
+
+    #[test]
+    fn collects_memory_write_trust_prior_events() {
+        let value = json!({
+            "event_type": "memory_lifecycle_write",
+            "payload": {
+                "memory_write": {
+                    "memory_type": "user_preference",
+                    "trust_state": "conflicted"
+                },
+                "trust_prior": {
+                    "matched_count": 2,
+                    "recommended_state": "conflicted",
+                    "reason": "trust_prior:similar_memory_conflicted"
+                }
+            }
+        });
+        let mut rows = Vec::new();
+        collect_memory_write_events(&value, &mut rows);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("event_type").and_then(|v| v.as_str()),
+            Some("memory_lifecycle_write")
         );
     }
 }

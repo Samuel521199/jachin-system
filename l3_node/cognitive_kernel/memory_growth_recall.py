@@ -228,12 +228,18 @@ def _concept_content(path: Path, frontmatter: dict[str, Any], text: str, *, stra
 
 def _playbook_content(path: Path, frontmatter: dict[str, Any], text: str, *, strategy: dict[str, Any], usage: dict[str, Any]) -> str:
     summary = str(frontmatter.get("summary") or path.stem)
-    trigger = _section(text, "Trigger Conditions")
-    flow = _section(text, "Recommended Flow")
-    verify = _section(text, "Verification Criteria")
+    trigger = _section(text, "Trigger Conditions") or _section(text, "Trigger")
+    flow = _section(text, "Recommended Flow") or _section(text, "Learned Strategy")
+    verify = _section(text, "Verification Criteria") or _section(text, "Verification Required")
     failure = _section(text, "Failure Paths")
+    next_strategy = str(frontmatter.get("next_strategy") or "")
+    failure_class = str(frontmatter.get("failure_class") or "")
+    success_strategy = str(frontmatter.get("success_strategy") or "")
+    work_order_chain = frontmatter.get("work_order_chain") or []
     return (
         f"playbook path={path}; summary={summary}; {strategy_preview(strategy)}; {usage_preview(usage)}; "
+        f"failure_class={failure_class}; next_strategy={next_strategy}; "
+        f"success_strategy={success_strategy}; work_order_chain={work_order_chain}; "
         f"trigger={trigger[:500]}; flow={flow[:800]}; "
         f"verification={verify[:500]}; failure_paths={failure[:500]}"
     ).strip()[:2400]

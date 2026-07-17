@@ -22,6 +22,17 @@ from typing import Any
 from .contracts import MemoryEvidence, MemoryWriteRequest
 from .ledger import append_event
 from .memory_confidence import apply_feedback, classify_memory_layer, extract_memory_scope, initial_confidence, recall_score
+from .memory_trust import (
+    TRUST_CONFIRMED,
+    TRUST_CONFLICTED,
+    TRUST_FLOATING,
+    TRUST_REJECTED,
+    decorate_memory_evidence,
+    infer_memory_trust,
+    lifecycle_record_trust_defaults,
+    should_recall_memory,
+    trust_weight,
+)
 from .paths import kernel_home
 
 
@@ -118,6 +129,10 @@ class LifecycleMemoryRecord:
     evidence: list[dict[str, Any]] = field(default_factory=list)
     status: str = "active"
     merge_policy: str = "dedupe_and_merge"
+    trust_state: str = "floating"
+    trust_reason: str = ""
+    user_attitude: str = "floating"
+    recall_allowed: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -145,10 +160,14 @@ class LifecycleMemoryRecord:
             "evidence": list(self.evidence),
             "status": self.status,
             "merge_policy": self.merge_policy,
+            "trust_state": self.trust_state,
+            "trust_reason": self.trust_reason,
+            "user_attitude": self.user_attitude,
+            "recall_allowed": self.recall_allowed,
         }
 
     def to_evidence(self, reason: str = "memory lifecycle recall") -> MemoryEvidence:
-        return MemoryEvidence(
+        evidence = MemoryEvidence(
             memory_id=self.memory_id,
             memory_type=self.memory_type,
             content=self.content,
@@ -159,7 +178,12 @@ class LifecycleMemoryRecord:
             confirmed_by_user=self.memory_type in {"user_preference", "alias", "correction"},
             ttl=self.ttl,
             relevance_reason=reason,
+            trust_state=self.trust_state,
+            trust_reason=self.trust_reason,
+            user_attitude=self.user_attitude,
+            recall_allowed=self.recall_allowed,
         )
+        return decorate_memory_evidence(evidence, reason_prefix="memory lifecycle trust")
 
 
 def classify_memory_type(content: str, requested: str = "") -> str:
@@ -220,17 +244,71 @@ def write_lifecycle_memory(request: MemoryWriteRequest) -> LifecycleMemoryRecord
         evidence=request.evidence,
         requires_user_confirmation=bool(request.requires_user_confirmation),
     )
+    trust_defaults = lifecycle_record_trust_defaults(request)
+    request_trust_state = request.trust_state or trust_defaults["trust_state"]
+    request_trust_reason = request.trust_reason or trust_defaults["trust_reason"]
+    request_user_attitude = request.user_attitude or trust_defaults["user_attitude"]
+    request_recall_allowed = bool(trust_defaults["recall_allowed"])
+    trust_prior = _trust_prior_for_write(
+        records=records,
+        memory_type=memory_type,
+        content=request.content,
+        scope=scope,
+        evidence=request.evidence,
+    )
+    request_review_required = bool(request.requires_user_confirmation)
+    request_review_reason = "requires_user_confirmation" if request.requires_user_confirmation else ""
+    if trust_prior["matched_count"]:
+        confidence = _confidence_with_trust_prior(confidence, trust_prior)
+    if (
+        trust_prior["recommended_state"] == TRUST_CONFLICTED
+        and request_trust_state != TRUST_CONFIRMED
+    ):
+        request_trust_state = TRUST_CONFLICTED
+        request_trust_reason = trust_prior["reason"]
+        request_user_attitude = TRUST_CONFLICTED
+        request_recall_allowed = True
+        request_review_required = True
+        request_review_reason = "similar_memory_trust_governance_requires_confirmation"
+    elif (
+        trust_prior["recommended_state"] == TRUST_CONFIRMED
+        and request_trust_state == TRUST_FLOATING
+    ):
+        request_trust_state = TRUST_CONFIRMED
+        request_trust_reason = trust_prior["reason"]
+        request_user_attitude = TRUST_CONFIRMED
+        request_recall_allowed = True
+    prior_evidence = _trust_prior_evidence(trust_prior)
+    request_evidence = list(request.evidence or [])
+    if prior_evidence:
+        request_evidence.append(prior_evidence)
     if existing and request.merge_policy in {"dedupe_and_merge", "append_action_chain"}:
+        existing_state, _existing_reason = infer_memory_trust(existing)
+        if existing_state == TRUST_REJECTED and request_trust_state != "confirmed":
+            existing.review_required = True
+            existing.review_reason = "new_memory_conflicts_with_user_rejected_memory"
+            existing.trust_state = "conflicted"
+            existing.trust_reason = "existing_rejected_memory_requires_user_confirmation"
+            existing.user_attitude = "conflicted"
+            existing.recall_allowed = True
         existing.updated_at_ms = now
         existing.hit_count += 1
         existing.confidence = max(existing.confidence, confidence)
-        existing.evidence.extend(request.evidence or [])
+        existing.evidence.extend(request_evidence)
         existing.ttl = request.ttl or existing.ttl
         existing.expires_at_ms = ttl_to_expiry_ms(existing.ttl, memory_type)
         existing.layer = existing.layer or layer
         existing.domain = existing.domain or scope["domain"]
         existing.owner = existing.owner or scope["owner"]
         existing.skill_id = existing.skill_id or scope["skill_id"]
+        if request_trust_state == "confirmed" or not existing.trust_state:
+            existing.trust_state = request_trust_state
+            existing.trust_reason = request_trust_reason
+            existing.user_attitude = request_user_attitude
+            existing.recall_allowed = request_recall_allowed
+        if request_review_required and existing.trust_state != TRUST_CONFIRMED:
+            existing.review_required = True
+            existing.review_reason = request_review_reason
         record = existing
         action = "merged"
     else:
@@ -245,19 +323,23 @@ def write_lifecycle_memory(request: MemoryWriteRequest) -> LifecycleMemoryRecord
             created_at_ms=now,
             updated_at_ms=now,
             hit_count=1,
-            success_count=_evidence_success_count(request.evidence),
-            failure_count=_evidence_failure_count(request.evidence),
-            last_verified_at_ms=now if _evidence_success_count(request.evidence) else 0,
-            review_required=bool(request.requires_user_confirmation),
-            review_reason="requires_user_confirmation" if request.requires_user_confirmation else "",
+            success_count=_evidence_success_count(request_evidence),
+            failure_count=_evidence_failure_count(request_evidence),
+            last_verified_at_ms=now if _evidence_success_count(request_evidence) else 0,
+            review_required=request_review_required,
+            review_reason=request_review_reason,
             layer=layer,
             domain=scope["domain"],
             owner=scope["owner"],
             skill_id=scope["skill_id"],
             content_hash=content_hash,
             tags=[memory_type, request.source_event],
-            evidence=list(request.evidence or []),
+            evidence=request_evidence,
             merge_policy=request.merge_policy,
+            trust_state=request_trust_state,
+            trust_reason=request_trust_reason,
+            user_attitude=request_user_attitude,
+            recall_allowed=request_recall_allowed,
         )
         records.append(record)
         action = "created"
@@ -272,6 +354,10 @@ def write_lifecycle_memory(request: MemoryWriteRequest) -> LifecycleMemoryRecord
             "ttl": record.ttl,
             "expires_at_ms": record.expires_at_ms,
             "content_hash": record.content_hash,
+            "trust_state": record.trust_state,
+            "trust_reason": record.trust_reason,
+            "recall_allowed": record.recall_allowed,
+            "trust_prior": trust_prior,
         },
     )
     return record
@@ -287,8 +373,12 @@ def recall_lifecycle_memories(query: str = "", *, memory_types: list[str] | None
     for record in records:
         if record.status != "active":
             continue
+        if not should_recall_memory(record):
+            continue
         if record.expires_at_ms and record.expires_at_ms < now:
             record.status = "expired"
+            record.trust_state = "expired"
+            record.trust_reason = "expired_during_recall"
             continue
         active_records.append(record)
     rule_scored = [
@@ -316,6 +406,7 @@ def recall_lifecycle_memories(query: str = "", *, memory_types: list[str] | None
             "rule_scored_count": len(rule_scored),
             "rerank_window": min(len(rule_scored), max(limit, _RERANK_WINDOW)),
             "hit_count": len(out),
+            "trust_filter": "rejected memories excluded by default",
         },
     )
     return out
@@ -399,6 +490,106 @@ def record_lifecycle_memory_feedback(
         },
     )
     return record
+
+
+def govern_lifecycle_memory(
+    *,
+    memory_id: str,
+    action: str,
+    note: str = "",
+    corrected_content: str = "",
+) -> dict[str, Any]:
+    """Apply explicit human governance to one lifecycle memory.
+
+    This is the write side of Memory Trust Layer. It keeps rejected memories in
+    the ledger for auditability, but marks them as non-recallable by default.
+    """
+
+    memory_id = (memory_id or "").strip()
+    action = (action or "").strip()
+    if not memory_id:
+        raise ValueError("memory governance requires memory_id")
+    if action not in {"confirm", "reject", "mark_conflicted", "correct"}:
+        raise ValueError(f"unsupported memory governance action: {action}")
+
+    records = _load_records(include_expired=True)
+    record = next((item for item in records if item.memory_id == memory_id), None)
+    if record is None:
+        raise ValueError(f"memory not found: {memory_id}")
+
+    now = _now_ms()
+    before = record.to_dict()
+    record.updated_at_ms = now
+    governance_evidence = {
+        "type": "memory_trust_governance",
+        "action": action,
+        "note": note,
+        "ts_ms": now,
+    }
+
+    if action == "confirm":
+        record.trust_state = TRUST_CONFIRMED
+        record.trust_reason = "user_confirmed_from_console"
+        record.user_attitude = TRUST_CONFIRMED
+        record.recall_allowed = True
+        record.review_required = False
+        record.review_reason = ""
+        record.last_verified_at_ms = now
+        record.success_count += 1
+        record.confidence = max(record.confidence, 0.82)
+    elif action == "reject":
+        record.trust_state = TRUST_REJECTED
+        record.trust_reason = "user_rejected_from_console"
+        record.user_attitude = TRUST_REJECTED
+        record.recall_allowed = False
+        record.review_required = False
+        record.review_reason = ""
+        record.failure_count += 1
+        record.confidence = min(record.confidence, 0.08)
+    elif action == "mark_conflicted":
+        record.trust_state = TRUST_CONFLICTED
+        record.trust_reason = "user_marked_conflicted_from_console"
+        record.user_attitude = TRUST_CONFLICTED
+        record.recall_allowed = True
+        record.review_required = True
+        record.review_reason = "memory_trust_conflict_needs_user_confirmation"
+        record.confidence = min(record.confidence, 0.5)
+    elif action == "correct":
+        corrected = (corrected_content or "").strip()
+        if not corrected:
+            raise ValueError("correct memory governance requires corrected_content")
+        record.content = corrected
+        record.content_hash = _content_hash(record.memory_type, corrected)
+        record.trust_state = TRUST_CONFIRMED
+        record.trust_reason = "user_corrected_from_console"
+        record.user_attitude = TRUST_CONFIRMED
+        record.recall_allowed = True
+        record.review_required = False
+        record.review_reason = ""
+        record.last_verified_at_ms = now
+        record.success_count += 1
+        record.confidence = max(record.confidence, 0.86)
+        governance_evidence["corrected_content_hash"] = record.content_hash
+
+    if not record.trust_state:
+        record.trust_state = TRUST_FLOATING
+    record.evidence.append(governance_evidence)
+    _rewrite_records(records)
+    after = record.to_dict()
+    append_event(
+        "memory_lifecycle_trust_governance",
+        "memory-governance",
+        {
+            "memory_id": memory_id,
+            "memory_type": record.memory_type,
+            "action": action,
+            "trust_state": record.trust_state,
+            "trust_reason": record.trust_reason,
+            "recall_allowed": record.recall_allowed,
+            "note": note,
+        },
+    )
+    return {"before": before, "after": after}
 
 
 def expire_lifecycle_memories() -> int:
@@ -540,6 +731,112 @@ def memory_quality_snapshot() -> dict[str, Any]:
     }
 
 
+def _trust_prior_for_write(
+    *,
+    records: list[LifecycleMemoryRecord],
+    memory_type: str,
+    content: str,
+    scope: dict[str, str],
+    evidence: list[dict[str, Any]],
+) -> dict[str, Any]:
+    query_terms = set(_query_terms(content))
+    governance_key = _governance_key_from_evidence(memory_type, scope, evidence)
+    confirmed_strength = 0.0
+    rejected_strength = 0.0
+    conflicted_strength = 0.0
+    matched: list[dict[str, Any]] = []
+    for record in records:
+        if record.status != "active" or record.memory_type != memory_type:
+            continue
+        if record.domain and scope.get("domain") and record.domain != scope.get("domain"):
+            continue
+        similarity = 0.0
+        match_reason = ""
+        if governance_key and _governance_key(record) == governance_key:
+            similarity = 1.0
+            match_reason = "governance_key"
+        else:
+            record_terms = set(_query_terms(record.content))
+            if query_terms and record_terms:
+                overlap = len(query_terms & record_terms)
+                similarity = overlap / max(1, min(len(query_terms), len(record_terms)))
+                match_reason = "term_overlap"
+        if similarity < 0.42:
+            continue
+        state, reason = infer_memory_trust(record)
+        strength = similarity * max(1.0, float(record.success_count + record.failure_count + 1))
+        if state == TRUST_CONFIRMED:
+            confirmed_strength += strength
+        elif state == TRUST_REJECTED:
+            rejected_strength += strength
+        elif state == TRUST_CONFLICTED:
+            conflicted_strength += strength
+        matched.append(
+            {
+                "memory_id": record.memory_id,
+                "trust_state": state,
+                "trust_reason": reason,
+                "similarity": round(similarity, 3),
+                "match_reason": match_reason,
+                "strength": round(strength, 3),
+            }
+        )
+    recommended_state = ""
+    reason = ""
+    requires_confirmation = False
+    confidence_delta = 0.0
+    if rejected_strength >= 1.5 and rejected_strength >= confirmed_strength + 0.75:
+        recommended_state = TRUST_CONFLICTED
+        requires_confirmation = True
+        confidence_delta = -0.22
+        reason = "trust_prior:similar_memory_repeatedly_rejected"
+    elif conflicted_strength >= 1.5 and conflicted_strength >= confirmed_strength:
+        recommended_state = TRUST_CONFLICTED
+        requires_confirmation = True
+        confidence_delta = -0.12
+        reason = "trust_prior:similar_memory_conflicted"
+    elif confirmed_strength >= 2.0 and confirmed_strength >= rejected_strength + 0.75:
+        recommended_state = TRUST_CONFIRMED
+        confidence_delta = 0.12
+        reason = "trust_prior:similar_memory_confirmed_by_user"
+    return {
+        "matched_count": len(matched),
+        "confirmed_strength": round(confirmed_strength, 3),
+        "rejected_strength": round(rejected_strength, 3),
+        "conflicted_strength": round(conflicted_strength, 3),
+        "recommended_state": recommended_state,
+        "requires_confirmation": requires_confirmation,
+        "confidence_delta": confidence_delta,
+        "reason": reason,
+        "matches": matched[:8],
+    }
+
+
+def _confidence_with_trust_prior(confidence: float, prior: dict[str, Any]) -> float:
+    try:
+        delta = float(prior.get("confidence_delta") or 0.0)
+    except Exception:
+        delta = 0.0
+    return max(0.01, min(0.99, float(confidence or 0.0) + delta))
+
+
+def _trust_prior_evidence(prior: dict[str, Any]) -> dict[str, Any]:
+    if not int(prior.get("matched_count") or 0):
+        return {}
+    return {
+        "type": "memory_trust_prior",
+        "recommended_state": prior.get("recommended_state") or "",
+        "requires_confirmation": bool(prior.get("requires_confirmation")),
+        "confidence_delta": prior.get("confidence_delta") or 0.0,
+        "reason": prior.get("reason") or "trust_prior:similar_memory_seen",
+        "confirmed_strength": prior.get("confirmed_strength") or 0.0,
+        "rejected_strength": prior.get("rejected_strength") or 0.0,
+        "conflicted_strength": prior.get("conflicted_strength") or 0.0,
+        "matched_count": prior.get("matched_count") or 0,
+        "matches": prior.get("matches") or [],
+    }
+
+
 def _score_record(record: LifecycleMemoryRecord, query_terms: list[str]) -> float:
     if not query_terms:
         hits = 1
@@ -549,7 +846,7 @@ def _score_record(record: LifecycleMemoryRecord, query_terms: list[str]) -> floa
         if hits <= 0:
             return 0.0
     recency = min(1.0, max(0.0, record.updated_at_ms / max(1, _now_ms())))
-    return recall_score(
+    base = recall_score(
         text_hits=hits,
         confidence=record.confidence,
         hit_count=record.hit_count,
@@ -559,6 +856,7 @@ def _score_record(record: LifecycleMemoryRecord, query_terms: list[str]) -> floa
         layer=record.layer,
         recency_hint=recency,
     )
+    return base * trust_weight(record.trust_state)
 
 
 def _normalized_dot_rerank(
@@ -893,7 +1191,18 @@ def _governance_key(record: LifecycleMemoryRecord) -> str:
             if value:
                 keys.append(value)
     if keys:
-        return f"{record.memory_type}:{record.domain}:{record.owner}:{keys[0]}"
+            return f"{record.memory_type}:{record.domain}:{record.owner}:{keys[0]}"
+    return ""
+
+
+def _governance_key_from_evidence(memory_type: str, scope: dict[str, str], evidence: list[dict[str, Any]]) -> str:
+    for item in evidence or []:
+        if not isinstance(item, dict):
+            continue
+        for name in ("governance_key", "entity_key", "target_key", "alias_key", "subject_key", "app_key", "project_key"):
+            value = str(item.get(name) or "").strip().lower()
+            if value:
+                return f"{memory_type}:{scope.get('domain') or 'global'}:{scope.get('owner') or 'user'}:{value}"
     return ""
 
 
@@ -907,6 +1216,11 @@ def _record_defaults(obj: dict[str, Any]) -> dict[str, Any]:
     obj.setdefault("domain", "global")
     obj.setdefault("owner", "user")
     obj.setdefault("skill_id", "")
+    defaults = lifecycle_record_trust_defaults(obj)
+    obj.setdefault("trust_state", defaults["trust_state"])
+    obj.setdefault("trust_reason", defaults["trust_reason"])
+    obj.setdefault("user_attitude", defaults["user_attitude"])
+    obj.setdefault("recall_allowed", defaults["recall_allowed"])
     return obj
 
 

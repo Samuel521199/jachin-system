@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .contracts import AgentInputEnvelope, InputSource, MemoryEvidence, RelevantMemoryBundle, StateSnapshot, TaskLedgerEntry
+from .input_adapter import CognitiveInputAdaptation, adapt_input_for_cognitive_kernel
 from .kernel_prompts import build_cognitive_kernel_system_prompt
 from .ledger import record_turn_started
 from .memory_recall_agent import recall_relevant_memory
@@ -21,6 +22,7 @@ class CognitiveTurnContext:
     state_snapshot: StateSnapshot
     memory_bundle: RelevantMemoryBundle
     ledger_entry: TaskLedgerEntry
+    input_adaptation: CognitiveInputAdaptation | None = None
 
     def prompt_block(self, max_chars: int = 6000) -> str:
         payload = {
@@ -154,24 +156,24 @@ async def build_cognitive_turn_context(
     start_task_guardian()
     now_ms = int(time.time() * 1000)
     companion = desktop_companion_context or {}
-    raw_voice = (
-        companion.get("voice_raw_stt_text")
-        or companion.get("voice_asr_raw_text")
-        or companion.get("voice_final_text")
-        or companion.get("voice_routed_text")
-        or ""
+    input_adaptation = adapt_input_for_cognitive_kernel(
+        turn_id=run_id,
+        user_input=user_input or "",
+        channel=channel or "",
+        session_id=session_id or "",
+        desktop_companion_context=companion,
+        implicit_attribution=implicit_attribution,
     )
-    source = _source_from_channel(channel, companion)
     envelope = AgentInputEnvelope(
         turn_id=run_id,
-        source=source,
-        raw_text=str(raw_voice or user_input or ""),
-        normalized_text=str(user_input or "").strip(),
+        source=input_adaptation.source,
+        raw_text=input_adaptation.raw_text,
+        normalized_text=input_adaptation.normalized_text,
         session_id=session_id or "",
         channel=channel or "",
         attachments=list(attachments_metadata or []),
-        confidence=_voice_confidence(companion),
-        modality_evidence={"voice": companion} if companion else {},
+        confidence=input_adaptation.confidence,
+        modality_evidence=input_adaptation.modality_evidence,
         implicit_attribution=implicit_attribution or {},
         created_at_ms=now_ms,
     )
@@ -199,4 +201,5 @@ async def build_cognitive_turn_context(
         state_snapshot=state_snapshot,
         memory_bundle=memory_bundle,
         ledger_entry=ledger_entry,
+        input_adaptation=input_adaptation,
     )

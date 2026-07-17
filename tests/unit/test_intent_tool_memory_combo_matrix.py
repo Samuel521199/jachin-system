@@ -101,6 +101,91 @@ def test_web_research_delivery_accepts_short_send_to_recipient_phrase(monkeypatc
     ]
 
 
+def test_web_research_manifest_nodes_switch_tools_from_memory_reliability(monkeypatch, tmp_path):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+    from l3_node.cognitive_kernel.contracts import MemoryEvidence
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+
+    ctx = _ctx(
+        "\u641c\u7d22\u6700\u65b0AI\u6a21\u578b\u76f8\u5173\u7684\u6d88\u606f\uff0c\u7136\u540e\u53d1\u9001\u7ed9Neil",
+        turn_id="combo-web-research-reliability-switch",
+    )
+    ctx.memory_bundle.tool_habits.extend(
+        [
+            MemoryEvidence(
+                memory_id="memory_growth:playbook:tavily-search-degraded",
+                memory_type="success_playbook",
+                content=(
+                    "playbook path=playbooks/learned_success/tavily-search-degraded.md; "
+                    "tool=mcp:tavily_search; artifact_success_rate=0.10; "
+                    "artifact_use_count=12; artifact_failure_count=10; "
+                    "artifact_last_failure_reason=search_empty_results"
+                ),
+                source="Memory Growth Playbooks",
+                confidence=0.92,
+                relevance_reason="tool=mcp:tavily_search; artifact_success_rate=0.10",
+            ),
+            MemoryEvidence(
+                memory_id="memory_growth:playbook:browser-search-reliable",
+                memory_type="success_playbook",
+                content=(
+                    "playbook path=playbooks/learned_success/browser-search-reliable.md; "
+                    "tool=mcp:browser_search; artifact_success_rate=0.93; "
+                    "artifact_use_count=8; artifact_failure_count=0"
+                ),
+                source="Memory Growth Playbooks",
+                confidence=0.88,
+                relevance_reason="tool=mcp:browser_search; artifact_success_rate=0.93",
+            ),
+            MemoryEvidence(
+                memory_id="memory_growth:playbook:fetch-degraded",
+                memory_type="success_playbook",
+                content=(
+                    "playbook path=playbooks/learned_success/fetch-degraded.md; "
+                    "tool=mcp:fetch; artifact_success_rate=0.20; "
+                    "artifact_use_count=10; artifact_failure_count=8; "
+                    "artifact_last_failure_reason=fetch_access_or_bot_wall"
+                ),
+                source="Memory Growth Playbooks",
+                confidence=0.9,
+                relevance_reason="tool=mcp:fetch; artifact_success_rate=0.20",
+            ),
+            MemoryEvidence(
+                memory_id="memory_growth:playbook:browser-extract-reliable",
+                memory_type="success_playbook",
+                content=(
+                    "playbook path=playbooks/learned_success/browser-extract-reliable.md; "
+                    "tool=mcp:browser_extract; artifact_success_rate=0.86; "
+                    "artifact_use_count=7; artifact_failure_count=1"
+                ),
+                source="Memory Growth Playbooks",
+                confidence=0.85,
+                relevance_reason="tool=mcp:browser_extract; artifact_success_rate=0.86",
+            ),
+        ]
+    )
+
+    result = plan_cognitive_turn(ctx)
+
+    tools = [wo.inputs.get("tool") for wo in result.work_orders]
+    assert tools == [
+        "mcp:browser_search",
+        "mcp:browser_extract",
+        "core:web_research_summarize",
+        "mcp:windows_lark_send_message",
+    ]
+    assert result.work_orders[0].inputs["planned_tool"] == "mcp:tavily_search"
+    assert result.work_orders[0].inputs["tool_selection_reason"] == "memory_growth_reliability_preferred_alternate_tool"
+    assert result.work_orders[1].inputs["planned_tool"] == "mcp:fetch"
+    assert result.work_orders[1].inputs["tool_selection_reason"] == "memory_growth_reliability_preferred_alternate_tool"
+    assert result.work_orders[3].inputs.get("planned_tool") == "mcp:windows_lark_send_message"
+    search_reliability = result.work_orders[0].inputs["candidate_tool_reliability"]
+    assert search_reliability[0]["tool"] == "mcp:browser_search"
+    assert search_reliability[0]["health"] == "reliable"
+    tavily = next(item for item in search_reliability if item["tool"] == "mcp:tavily_search")
+    assert tavily["health"] == "degraded"
+
+
 def test_web_research_summary_uses_complete_clean_sentences():
     from l3_node.cognitive_kernel.role_executors import _web_research_summary_message
 

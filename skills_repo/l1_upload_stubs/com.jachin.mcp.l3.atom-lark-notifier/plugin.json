@@ -5,5 +5,61 @@
   "description": "对应运行时工具 mcp:atom_lark_notifier：由 L3 进程内置注册，无需单独 stdio；上架仅供商城可见性与 manifest 对齐。",
   "item_type": "MCP",
   "type": "MCP",
-  "runtime_tier": "L3_LOCAL"
+  "runtime_tier": "L3_LOCAL",
+  "recovery_playbook": {
+    "targets": [
+      {
+        "id": "lark_delivery_guarded_send",
+        "role_agent": "MessageExecutorAgent",
+        "tools": [
+          "mcp:atom_lark_notifier",
+          "mcp:windows_lark_send_message",
+          "*lark*send*",
+          "*lark*notifier*"
+        ],
+        "max_attempts": 5,
+        "steps": [
+          {
+            "strategy": "resolve_recipient_before_send",
+            "tool": "util:lark_search_user",
+            "when": {
+              "failure_any": [
+                "recipient_missing",
+                "chat_id_missing",
+                "user_not_found",
+                "requires recipient"
+              ]
+            },
+            "action_patch": {
+              "resolve_recipient": true,
+              "recovery_strategy": "resolve_recipient_before_send"
+            },
+            "rationale": "resolve recipient/chat id before attempting another Lark send",
+            "priority": 10
+          },
+          {
+            "strategy": "retry_send_with_dedupe_guard",
+            "tool": "$same",
+            "when": {
+              "failure_any": [
+                "timeout",
+                "connection",
+                "delivery_unverified",
+                "websocket",
+                "unverified"
+              ],
+              "after_attempt": 2
+            },
+            "action_patch": {
+              "dedupe_guard": true,
+              "verify_after_send": true,
+              "recovery_strategy": "retry_send_with_dedupe_guard"
+            },
+            "rationale": "retry delivery only with dedupe and post-send verification evidence",
+            "priority": 30
+          }
+        ]
+      }
+    ]
+  }
 }

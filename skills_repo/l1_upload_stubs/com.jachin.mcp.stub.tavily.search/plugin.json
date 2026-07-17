@@ -16,5 +16,61 @@
     "env": {
       "TAVILY_API_KEY": "${TAVILY_API_KEY}"
     }
+  },
+  "recovery_playbook": {
+    "targets": [
+      {
+        "id": "web_search_quality",
+        "role_agent": "BrowserExecutorAgent",
+        "tools": [
+          "mcp:tavily_search",
+          "*tavily*",
+          "*search*"
+        ],
+        "max_attempts": 5,
+        "steps": [
+          {
+            "strategy": "retry_clean_recent_query",
+            "tool": "$same",
+            "when": {
+              "failure_any": [
+                "search_results_missing",
+                "search_result_urls_missing",
+                "no_results",
+                "timeout"
+              ]
+            },
+            "action_patch": {
+              "clean_query": true,
+              "recency_days": 14,
+              "max_results": 8,
+              "recovery_strategy": "retry_clean_recent_query"
+            },
+            "rationale": "retry with a cleaner, more recent query and more result slots when search lacks usable URLs",
+            "priority": 10
+          },
+          {
+            "strategy": "broaden_query_without_site_lock",
+            "tool": "$same",
+            "when": {
+              "failure_any": [
+                "too_few_sources",
+                "domain_blocked",
+                "source_diversity_low"
+              ],
+              "after_attempt": 2
+            },
+            "action_patch": {
+              "remove_domain_filter": true,
+              "broaden_query": true,
+              "max_results": 10,
+              "recovery_strategy": "broaden_query_without_site_lock"
+            },
+            "rationale": "if initial search is too narrow, broaden the query to get independent sources",
+            "priority": 30
+          }
+        ]
+      }
+    ]
   }
 }

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from .memory_growth import ensure_memory_growth_scaffold, memory_growth_dir
+from .memory_governance_auto_index import append_auto_governance_mode_history
 from .memory_growth_strategy import persist_strategy_policy_to_artifacts
 
 
@@ -90,10 +91,13 @@ def run_weekly_review(
     stale_concepts = _stale_concepts(concepts, now=start, stale_after_days=stale_after_days)
     weak_outputs = _weak_outputs(outputs)
     failure_patterns = _failure_patterns(conflicts=conflicts, outputs=outputs, playbooks=playbooks)
+    trust_governance_review = _trust_governance_status(root)
+    memory_governance_auto = _memory_governance_auto_status(root)
     governance_effectiveness = _governance_effectiveness(
         governance_actions=governance_actions,
         conflicts=conflicts,
         failure_patterns=failure_patterns,
+        trust_governance_review=trust_governance_review,
     )
     artifact_usage = _artifact_usage_analysis(root)
 
@@ -116,6 +120,14 @@ def run_weekly_review(
             "governance_batch_count": sum(1 for item in governance_actions if item.get("is_batch")),
             "governance_failed_count": sum(int(item.get("failed_count") or 0) for item in governance_actions),
             "governance_effectiveness_score": governance_effectiveness["score"],
+            "trust_governance_conversion_rate": trust_governance_review["summary"]["conversion_rate"],
+            "trust_governance_pending_count": trust_governance_review["summary"]["pending_count"],
+            "trust_governance_failed_count": trust_governance_review["summary"]["failed_count"],
+            "trust_governance_follow_up_count": trust_governance_review["summary"].get("follow_up_count", 0),
+            "trust_governance_next_action_count": trust_governance_review["summary"].get("next_action_count", 0),
+            "memory_governance_auto_current_mode": memory_governance_auto.get("recommendation", {}).get("current_mode", ""),
+            "memory_governance_auto_recommended_mode": memory_governance_auto.get("recommendation", {}).get("recommended_mode", ""),
+            "memory_governance_auto_should_change": bool(memory_governance_auto.get("recommendation", {}).get("should_change")),
             "artifact_usage_count": artifact_usage["summary"]["artifact_count"],
             "artifact_total_use_count": artifact_usage["summary"]["total_use_count"],
             "artifact_success_rate": artifact_usage["summary"]["success_rate"],
@@ -129,6 +141,9 @@ def run_weekly_review(
         "failure_patterns": failure_patterns,
         "governance_actions": governance_actions[:100],
         "governance_effectiveness": governance_effectiveness,
+        "trust_governance_review": trust_governance_review,
+        "memory_governance_next_actions": (trust_governance_review.get("next_actions") or [])[:8],
+        "memory_governance_auto": memory_governance_auto,
         "artifact_usage": artifact_usage,
         "conflicts": conflicts[:100],
         "warnings": warnings,
@@ -139,6 +154,8 @@ def run_weekly_review(
             conflicts=conflicts,
             governance_actions=governance_actions,
             governance_effectiveness=governance_effectiveness,
+            trust_governance_review=trust_governance_review,
+            memory_governance_auto=memory_governance_auto,
             artifact_usage=artifact_usage,
             warnings=warnings,
         ),
@@ -148,6 +165,16 @@ def run_weekly_review(
     reviews_dir.mkdir(parents=True, exist_ok=True)
     report_path = reviews_dir / f"{week_id}.weekly_lifecycle.json"
     markdown_path = reviews_dir / f"{week_id}.md"
+    auto_history = append_auto_governance_mode_history(
+        source="weekly_review",
+        date=start.isoformat(),
+        recommendation=memory_governance_auto.get("recommendation") if isinstance(memory_governance_auto.get("recommendation"), dict) else {},
+        auto_policy=memory_governance_auto.get("policy") if isinstance(memory_governance_auto.get("policy"), dict) else {},
+        auto_result=memory_governance_auto.get("latest") if isinstance(memory_governance_auto.get("latest"), dict) else {},
+        report_path=str(report_path),
+    )
+    report["memory_governance_auto_history"] = auto_history
+    report["summary"]["memory_governance_auto_history_risk"] = (auto_history.get("summary") or {}).get("risk_direction", "")
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
     markdown_path.write_text(_render_markdown(report), encoding="utf-8")
     _write_lifecycle_index(report, report_path=report_path, markdown_path=markdown_path)
@@ -276,6 +303,7 @@ def _governance_effectiveness(
     governance_actions: list[dict[str, Any]],
     conflicts: list[dict[str, Any]],
     failure_patterns: list[dict[str, Any]],
+    trust_governance_review: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     action_count = len(governance_actions)
     success_count = sum(int(item.get("success_count") or 0) for item in governance_actions)
@@ -283,10 +311,18 @@ def _governance_effectiveness(
     conflict_pressure = len(conflicts)
     failure_pressure = sum(int(item.get("count") or 0) for item in failure_patterns if item.get("pattern") != "recovery_playbooks_exist")
     success_rate = round(success_count / max(1, success_count + failed_count), 3)
+    trust_summary = trust_governance_review.get("summary") if isinstance(trust_governance_review, dict) else {}
+    trust_conversion_rate = _float_value(trust_summary.get("conversion_rate"), 0.0) if isinstance(trust_summary, dict) else 0.0
+    trust_converted_count = int(trust_summary.get("converted_count") or 0) if isinstance(trust_summary, dict) else 0
+    trust_pending_count = int(trust_summary.get("pending_count") or 0) if isinstance(trust_summary, dict) else 0
+    trust_failed_count = int(trust_summary.get("failed_count") or 0) if isinstance(trust_summary, dict) else 0
     score = 0
     if action_count:
         score = 35 + round(success_rate * 35) + min(20, success_count * 3)
+        if trust_converted_count:
+            score += min(10, round(trust_conversion_rate * 10))
         score -= min(20, failed_count * 5)
+        score -= min(12, trust_pending_count * 2 + trust_failed_count * 4)
         score -= min(15, max(0, conflict_pressure + failure_pressure - success_count) // 2)
         score = max(0, min(100, score))
     grade = "no_data" if not action_count else "healthy" if score >= 80 else "watch" if score >= 60 else "weak"
@@ -295,6 +331,12 @@ def _governance_effectiveness(
         recommendations.append("Run governance actions before the next review so effectiveness can be measured.")
     if failed_count:
         recommendations.append("Retry failed governance actions with a safer path or explicit user confirmation.")
+    if trust_pending_count:
+        recommendations.append("Trust-governance recommendations are pending; execute or dismiss them so they can become durable artifacts.")
+    if trust_failed_count:
+        recommendations.append("Trust-governance conversion failed; inspect side effects and retry with safer inputs.")
+    if trust_converted_count and trust_conversion_rate >= 0.7:
+        recommendations.append("Trust-governance conversion is healthy; keep comparing future conversion rates against this baseline.")
     if conflict_pressure > success_count:
         recommendations.append("Governance output is still lower than conflict pressure; prioritize confirmations and recovery playbooks.")
     if not recommendations:
@@ -306,10 +348,76 @@ def _governance_effectiveness(
         "success_count": success_count,
         "failure_count": failed_count,
         "success_rate": success_rate,
+        "trust_conversion_rate": trust_conversion_rate,
+        "trust_converted_count": trust_converted_count,
+        "trust_pending_count": trust_pending_count,
+        "trust_failed_count": trust_failed_count,
         "conflict_pressure": conflict_pressure,
         "failure_pressure": failure_pressure,
         "recommendations": recommendations,
     }
+
+
+def _trust_governance_status(root: Path) -> dict[str, Any]:
+    """Read normalized trust-governance conversion status for weekly scoring."""
+
+    fallback = {
+        "summary": {
+            "recommended_count": 0,
+            "executed_count": 0,
+            "converted_count": 0,
+            "pending_count": 0,
+            "failed_count": 0,
+            "follow_up_count": 0,
+            "next_action_count": 0,
+            "conversion_rate": 0.0,
+        },
+        "pending": [],
+        "converted": [],
+        "failed": [],
+        "follow_up_queue": [],
+        "next_actions": [],
+        "recent": [],
+    }
+    try:
+        from l3_node.memory_growth_http import memory_growth_status
+
+        monitoring = memory_growth_status().get("monitoring")
+        review = monitoring.get("trust_governance_review") if isinstance(monitoring, dict) else None
+        if isinstance(review, dict) and isinstance(review.get("summary"), dict):
+            return review
+    except Exception:
+        pass
+    return fallback
+
+
+def _memory_governance_auto_status(root: Path) -> dict[str, Any]:
+    fallback = {
+        "policy": {},
+        "latest": {},
+        "trends": {"days_7": [], "days_14": [], "days_30": []},
+        "recommendation": {
+            "current_mode": "",
+            "recommended_mode": "",
+            "should_change": False,
+            "reasons": [],
+            "metrics": {},
+        },
+    }
+    try:
+        from l3_node.memory_growth_http import memory_growth_status
+
+        monitoring = memory_growth_status().get("monitoring")
+        if not isinstance(monitoring, dict):
+            return fallback
+        return {
+            "policy": monitoring.get("memory_governance_auto_policy") if isinstance(monitoring.get("memory_governance_auto_policy"), dict) else {},
+            "latest": monitoring.get("memory_governance_auto_latest") if isinstance(monitoring.get("memory_governance_auto_latest"), dict) else {},
+            "trends": monitoring.get("memory_governance_auto_trends") if isinstance(monitoring.get("memory_governance_auto_trends"), dict) else fallback["trends"],
+            "recommendation": monitoring.get("memory_governance_auto_recommendation") if isinstance(monitoring.get("memory_governance_auto_recommendation"), dict) else fallback["recommendation"],
+        }
+    except Exception:
+        return fallback
 
 
 def _duplicate_concept_clusters(concepts: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -429,6 +537,8 @@ def _recommendations(
     conflicts: list[dict[str, Any]],
     governance_actions: list[dict[str, Any]],
     governance_effectiveness: dict[str, Any],
+    trust_governance_review: dict[str, Any],
+    memory_governance_auto: dict[str, Any],
     artifact_usage: dict[str, Any],
     warnings: list[str],
 ) -> list[str]:
@@ -451,6 +561,29 @@ def _recommendations(
         out.append("No governance actions were recorded this week; use the Memory Growth console to confirm, archive, or convert failures into playbooks.")
     if warnings:
         out.append("Repair index warnings before relying on Memory Growth recall in production.")
+    trust_summary = trust_governance_review.get("summary") if isinstance(trust_governance_review, dict) else {}
+    trust_pending = int(trust_summary.get("pending_count") or 0) if isinstance(trust_summary, dict) else 0
+    trust_failed = int(trust_summary.get("failed_count") or 0) if isinstance(trust_summary, dict) else 0
+    trust_converted = int(trust_summary.get("converted_count") or 0) if isinstance(trust_summary, dict) else 0
+    trust_next_actions = int(trust_summary.get("next_action_count") or 0) if isinstance(trust_summary, dict) else 0
+    trust_conversion_rate = _float_value(trust_summary.get("conversion_rate"), 0.0) if isinstance(trust_summary, dict) else 0.0
+    if trust_pending:
+        out.append("Execute or dismiss pending trust-governance recommendations; unresolved trust work should not drift between reviews.")
+    if trust_failed:
+        out.append("Retry failed trust-governance actions and check whether the expected durable artifact was created.")
+    if trust_next_actions:
+        out.append("Run the memory governance next-action list before the next review; it contains executable follow-ups for pending or failed trust work.")
+    if trust_converted and trust_conversion_rate >= 0.7:
+        out.append("Trust-governance conversion is healthy; use it as a baseline for future memory-quality work.")
+    auto_rec = memory_governance_auto.get("recommendation") if isinstance(memory_governance_auto.get("recommendation"), dict) else {}
+    if auto_rec.get("should_change"):
+        out.append(
+            "Memory governance auto mode should be reviewed: "
+            f"{auto_rec.get('current_mode') or '-'} -> {auto_rec.get('recommended_mode') or '-'} "
+            f"because {', '.join(str(item) for item in (auto_rec.get('reasons') or [])[:2])}."
+        )
+    elif auto_rec.get("recommended_mode"):
+        out.append(f"Memory governance auto mode recommendation is stable: keep `{auto_rec.get('recommended_mode')}`.")
     score = int(governance_effectiveness.get("score") or 0)
     if governance_actions and score < 60:
         out.append("Governance effectiveness is weak; connect more failed patterns to recovery playbooks and retry failed governance items.")
@@ -468,6 +601,13 @@ def _recommendations(
     if not out:
         out.append("No major lifecycle issues found; keep weekly review running.")
     return out
+
+
+def _float_value(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
 
 
 def _write_lifecycle_index(report: dict[str, Any], *, report_path: Path, markdown_path: Path) -> None:
@@ -512,6 +652,10 @@ def _write_governance_effectiveness_index(report: dict[str, Any], *, report_path
         "success_count": int(effectiveness.get("success_count") or 0),
         "failure_count": int(effectiveness.get("failure_count") or summary.get("governance_failed_count") or 0),
         "success_rate": float(effectiveness.get("success_rate") or 0.0),
+        "trust_conversion_rate": float(effectiveness.get("trust_conversion_rate") or summary.get("trust_governance_conversion_rate") or 0.0),
+        "trust_converted_count": int(effectiveness.get("trust_converted_count") or 0),
+        "trust_pending_count": int(effectiveness.get("trust_pending_count") or summary.get("trust_governance_pending_count") or 0),
+        "trust_failed_count": int(effectiveness.get("trust_failed_count") or summary.get("trust_governance_failed_count") or 0),
         "conflict_pressure": int(effectiveness.get("conflict_pressure") or summary.get("conflict_count") or 0),
         "failure_pressure": int(effectiveness.get("failure_pressure") or summary.get("failure_pattern_count") or 0),
         "report_path": str(report_path.relative_to(root)),
@@ -827,6 +971,10 @@ def _render_markdown(report: dict[str, Any]) -> str:
         f"- Governance batches: {summary['governance_batch_count']}",
         f"- Governance failed items: {summary['governance_failed_count']}",
         f"- Governance effectiveness score: {summary['governance_effectiveness_score']}",
+        f"- Memory governance auto mode: {summary.get('memory_governance_auto_current_mode') or '-'}",
+        f"- Memory governance auto recommended mode: {summary.get('memory_governance_auto_recommended_mode') or '-'}",
+        f"- Memory governance auto should change: {bool(summary.get('memory_governance_auto_should_change'))}",
+        f"- Memory governance auto history risk: {summary.get('memory_governance_auto_history_risk') or '-'}",
         f"- Artifact usage count: {summary.get('artifact_usage_count', 0)}",
         f"- Artifact total uses: {summary.get('artifact_total_use_count', 0)}",
         f"- Artifact success rate: {summary.get('artifact_success_rate', 0)}",
@@ -849,6 +997,12 @@ def _render_markdown(report: dict[str, Any]) -> str:
     lines.extend(_render_list(report["governance_actions"], empty="- None."))
     lines.extend(["", "## Governance Effectiveness", ""])
     lines.extend(_render_list([report["governance_effectiveness"]], empty="- None."))
+    lines.extend(["", "## Memory Governance Auto Recommendation", ""])
+    auto = report.get("memory_governance_auto") if isinstance(report.get("memory_governance_auto"), dict) else {}
+    lines.extend(_render_list([auto.get("recommendation") or {}], empty="- None."))
+    lines.extend(["", "## Memory Governance Auto History", ""])
+    auto_history = report.get("memory_governance_auto_history") if isinstance(report.get("memory_governance_auto_history"), dict) else {}
+    lines.extend(_render_list([auto_history.get("summary") or {}], empty="- None."))
     lines.extend(["", "## Artifact Usage", ""])
     artifact_usage = report.get("artifact_usage") if isinstance(report.get("artifact_usage"), dict) else {}
     lines.extend(_render_list([artifact_usage.get("summary") or {}], empty="- None."))

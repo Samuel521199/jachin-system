@@ -256,6 +256,10 @@ def _strict_verification_failure(
     if _is_message_delivery_work_order(work_order):
         if adapter_evidence.get("duplicate_skipped") is True:
             return True, "message_duplicate_skipped_without_new_send"
+        if adapter_evidence.get("dry_run_preview_verified") is True:
+            if not _message_dry_run_preview_evidence_present(observation):
+                return True, "message_dry_run_preview_missing"
+            return False, ""
         if adapter_evidence.get("post_send_verified") is not True:
             return True, "message_post_send_verification_missing"
         if not _message_delivery_evidence_present(observation):
@@ -286,6 +290,23 @@ def _message_delivery_evidence_present(observation: str) -> bool:
             "screenshot",
         )
     )
+
+
+def _message_dry_run_preview_evidence_present(observation: str) -> bool:
+    text = str(observation or "").strip()
+    if not text:
+        return False
+    try:
+        obj = json.loads(text)
+    except Exception:
+        obj = None
+    if isinstance(obj, dict):
+        return (
+            obj.get("dry_run") is True
+            and obj.get("dry_run_preview_verified") is True
+            and bool(str(obj.get("message") or "").strip())
+        )
+    return False
 
 
 def _message_delivery_evidence_in_json(value: Any) -> bool:

@@ -17,5 +17,77 @@
     "env": {
       "PYTHONIOENCODING": "utf-8"
     }
+  },
+  "recovery_playbook": {
+    "targets": [
+      {
+        "id": "windows_uia_window_and_visual",
+        "role_agent": "AppControlExecutorAgent",
+        "tools": [
+          "mcp:windows_*",
+          "*windows_uia*",
+          "*windows_lark*"
+        ],
+        "max_attempts": 5,
+        "steps": [
+          {
+            "strategy": "refresh_window_inventory",
+            "tool": "mcp:windows_window_switch",
+            "when": {
+              "failure_any": [
+                "window_not_found",
+                "focus",
+                "foreground",
+                "unverified"
+              ]
+            },
+            "action_patch": {
+              "refresh_windows": true,
+              "timeout": 8.0,
+              "recovery_strategy": "refresh_window_inventory"
+            },
+            "rationale": "refresh the desktop window inventory and focus the nearest matching window before repeating UIA actions",
+            "priority": 15
+          },
+          {
+            "strategy": "retry_with_visual_verification",
+            "tool": "$same",
+            "when": {
+              "failure_any": [
+                "click_failed",
+                "control_not_found",
+                "ocr_mismatch",
+                "unverified"
+              ],
+              "after_attempt": 2
+            },
+            "action_patch": {
+              "use_vision": true,
+              "take_screenshot": true,
+              "recovery_strategy": "retry_with_visual_verification"
+            },
+            "rationale": "when UIA control lookup is unreliable, retry with screenshot/OCR evidence",
+            "priority": 25
+          },
+          {
+            "strategy": "longer_uia_timeout",
+            "tool": "$same",
+            "when": {
+              "failure_any": [
+                "timeout",
+                "busy",
+                "loading"
+              ]
+            },
+            "action_patch": {
+              "timeout": 12.0,
+              "recovery_strategy": "longer_uia_timeout"
+            },
+            "rationale": "slow native apps may need a longer UIA verification window",
+            "priority": 60
+          }
+        ]
+      }
+    ]
   }
 }

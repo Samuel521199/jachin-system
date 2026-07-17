@@ -385,6 +385,75 @@ def _target_from_jsonish(content: str) -> str:
     return ""
 
 
+def _message_from_jsonish(content: str) -> str:
+    try:
+        obj = json.loads(content)
+    except Exception:
+        obj = None
+    if isinstance(obj, dict):
+        for key in (
+            "message",
+            "message_text",
+            "summary",
+            "final_text",
+            "brief",
+            "content",
+            "text",
+            "last_message",
+            "sendable_text",
+        ):
+            value = str(obj.get(key) or "").strip()
+            if value:
+                return value
+        for value in obj.values():
+            if isinstance(value, (dict, list)):
+                nested = _message_from_jsonish(json.dumps(value, ensure_ascii=False))
+                if nested:
+                    return nested
+    if isinstance(obj, list):
+        for item in reversed(obj):
+            nested = _message_from_jsonish(json.dumps(item, ensure_ascii=False))
+            if nested:
+                return nested
+    return ""
+
+
+def _looks_like_recent_message_reference(text: str) -> bool:
+    low = _lower(text)
+    return any(
+        token in low
+        for token in (
+            "last message",
+            "previous message",
+            "that summary",
+            "the summary",
+            "recent summary",
+            "\u521a\u624d\u90a3\u4e2a",
+            "\u521a\u624d\u7684",
+            "\u4e0a\u4e00\u6761",
+            "\u4e0a\u6b21\u90a3\u4e2a",
+            "\u90a3\u4e2a\u603b\u7ed3",
+            "\u90a3\u6761\u603b\u7ed3",
+        )
+    )
+
+
+def _recent_message_body(memory_bundle: RelevantMemoryBundle) -> tuple[str, str]:
+    for ref in reversed(memory_bundle.resolved_references):
+        for key in ("message", "message_text", "summary", "final_text", "brief", "content", "text"):
+            value = str(ref.get(key) or "").strip()
+            if value:
+                return value, f"resolved_reference.{key}"
+    for evidence in reversed(memory_bundle.recent_actions):
+        body = _message_from_jsonish(evidence.content or "")
+        if body:
+            return body, evidence.memory_id or evidence.source or "recent_action"
+        content = str(evidence.content or "").strip()
+        if content and 8 <= len(content) <= 2000 and not _target_from_jsonish(content):
+            return content, evidence.memory_id or evidence.source or "recent_action"
+    return "", ""
+
+
 def _extract_message_recipients(text: str) -> list[str]:
     text = str(text or "").strip()
     if not text:
@@ -537,6 +606,12 @@ def _extract_target(text: str, intent: str, state_snapshot: StateSnapshot, memor
     if intent == "message_send":
         recipients = _extract_message_recipients(text)
         message = _extract_message_body(text, recipients)
+        message_source = "input_text"
+        if (not message or _looks_like_recent_message_reference(text)) and memory_bundle:
+            remembered_message, remembered_source = _recent_message_body(memory_bundle)
+            if remembered_message:
+                message = remembered_message
+                message_source = "recent_memory"
         explicit_app = _explicit_app_from_text(text)
         correction = {} if explicit_app else _app_correction_candidate(text, intent)
         app = explicit_app or correction.get("name") or "Lark"
@@ -547,7 +622,10 @@ def _extract_target(text: str, intent: str, state_snapshot: StateSnapshot, memor
                 "recipients": recipients,
                 "message": message,
                 "source": "input_text",
+                "message_source": message_source,
             }
+            if message_source == "recent_memory":
+                target["message_memory_source"] = remembered_source
             if correction:
                 target.update(
                     {
@@ -596,6 +674,47 @@ def _extract_target(text: str, intent: str, state_snapshot: StateSnapshot, memor
         if recent:
             return {"type": "app", "name": recent, "source": "recent_action_memory"}
     return {}
+
+
+def _input_context_from_envelope(envelope: AgentInputEnvelope) -> dict[str, Any]:
+    evidence = envelope.modality_evidence or {}
+    adapter = evidence.get("input_adapter") if isinstance(evidence.get("input_adapter"), dict) else {}
+    voice_norm = evidence.get("voice_language_normalization") if isinstance(evidence.get("voice_language_normalization"), dict) else {}
+    context: dict[str, Any] = {
+        "source": envelope.source.value,
+        "raw_text": envelope.raw_text,
+        "normalized_text": envelope.normalized_text,
+    }
+    constraint_text = f"{envelope.raw_text or ''} {envelope.normalized_text or ''}".lower()
+    if "dry-run" in constraint_text or "dry run" in constraint_text or "preview only" in constraint_text or "只演练" in constraint_text or "不要发送" in constraint_text:
+        context["dry_run"] = True
+        context["send_allowed"] = False
+        context["delivery_mode"] = "dry_run"
+    if "live-run" in constraint_text or "live run" in constraint_text or "真实发送" in constraint_text or "立即发送" in constraint_text:
+        context["dry_run"] = False
+        context["send_allowed"] = True
+        context["delivery_mode"] = "live_run"
+    if envelope.confidence is not None:
+        context["confidence"] = envelope.confidence
+    if adapter:
+        context["adapter_changed"] = bool(adapter.get("changed"))
+        context["adapter_steps"] = adapter.get("steps") or []
+    if voice_norm:
+        context["voice_language"] = {
+            "pending_confirmation_detected": bool(voice_norm.get("pending_confirmation_detected")),
+            "pending_cancellation_detected": bool(voice_norm.get("pending_cancellation_detected")),
+            "corrections": (voice_norm.get("correction") or {}).get("corrections") or [],
+            "suspect_tokens": (voice_norm.get("correction") or {}).get("suspect_tokens") or [],
+        }
+    return context
+
+
+def _attach_input_context(target: dict[str, Any], envelope: AgentInputEnvelope) -> dict[str, Any]:
+    if not target:
+        return target
+    enriched = dict(target)
+    enriched.setdefault("input_context", _input_context_from_envelope(envelope))
+    return enriched
 
 
 def _task_type_for_intent(intent: str) -> str:
@@ -710,8 +829,12 @@ def _risk_for(intent: str, target: dict[str, Any], state_snapshot: StateSnapshot
 def _voice_needs_clarification(envelope: AgentInputEnvelope, intent: str) -> tuple[bool, str]:
     if envelope.source != InputSource.VOICE or intent == "conversation":
         return False, ""
+    modality = envelope.modality_evidence or {}
+    voice_norm = modality.get("voice_language_normalization") if isinstance(modality.get("voice_language_normalization"), dict) else {}
+    if bool(voice_norm.get("pending_confirmation_detected")) or bool(voice_norm.get("pending_cancellation_detected")):
+        return False, ""
     confidence = envelope.confidence
-    voice = (envelope.modality_evidence or {}).get("voice") or {}
+    voice = modality.get("voice") or {}
     if confidence is None:
         raw_conf = voice.get("confidence") or voice.get("stt_confidence")
         try:
@@ -719,9 +842,15 @@ def _voice_needs_clarification(envelope: AgentInputEnvelope, intent: str) -> tup
         except Exception:
             confidence = None
     if confidence is not None and confidence < 0.72:
-        return True, "语音识别置信度偏低，请确认你要执行的操作。"
+        raw_text = str(envelope.raw_text or "").strip()
+        normalized_text = str(envelope.normalized_text or "").strip()
+        if raw_text and normalized_text and raw_text != normalized_text:
+            return (
+                True,
+                f"\u6211\u542c\u5230\u7684\u662f\u201c{raw_text}\u201d\uff0c\u7406\u89e3\u4e3a\u201c{normalized_text}\u201d\u3002\u8981\u6309\u8fd9\u4e2a\u6267\u884c\u5417\uff1f\u8bf7\u56de\u590d\u201c\u662f\u201d\u6216\u201c\u5426\u201d\u3002",
+            )
+        return True, "\u8bed\u97f3\u8bc6\u522b\u7f6e\u4fe1\u5ea6\u504f\u4f4e\uff0c\u8981\u6267\u884c\u8fd9\u4e2a\u64cd\u4f5c\u5417\uff1f\u8bf7\u56de\u590d\u201c\u662f\u201d\u6216\u201c\u5426\u201d\u3002"
     return False, ""
-
 
 def run_review_board(
     *,
@@ -733,7 +862,7 @@ def run_review_board(
     text = _norm_text(envelope)
     intent = _detect_intent(text)
     task_type = _task_type_for_intent(intent)
-    target = _extract_target(text, intent, state_snapshot, memory_bundle)
+    target = _attach_input_context(_extract_target(text, intent, state_snapshot, memory_bundle), envelope)
     tool = _tool_for_intent(intent, target)
     semantic_candidates = resolve_semantic_intent_candidates(
         text=text,
@@ -759,9 +888,11 @@ def run_review_board(
             target = _workflow_target_from_override(text, task_type, target, semantic_override.target_patch)
         else:
             target = _merge_target_patch(target, semantic_override.target_patch)
+        target = _attach_input_context(target, envelope)
         tool = semantic_override.tool or _tool_for_intent(intent, target)
     else:
         task_type = _task_type_for_intent(intent) if not task_type else task_type
+        target = _attach_input_context(target, envelope)
         tool = tool or _tool_for_intent(intent, target)
     risk, risk_needs_clarification, risk_question = _risk_for(intent, target, state_snapshot)
     voice_needs_clarification, voice_question = _voice_needs_clarification(envelope, intent)
@@ -965,8 +1096,20 @@ def _review_as_role(
         confidence = 0.8 if target else 0.5
     elif role_id == "VoiceEvidenceAgent":
         voice = review_input.input_envelope.modality_evidence.get("voice") if review_input.input_envelope.modality_evidence else None
-        rationale.append("Voice evidence reviewed." if voice else "No voice evidence attached.")
-        evidence.append({"type": "voice_evidence", "source": review_input.input_envelope.source.value, "voice": voice or {}})
+        adapter = (
+            review_input.input_envelope.modality_evidence.get("input_adapter")
+            if review_input.input_envelope.modality_evidence
+            else None
+        )
+        rationale.append("Voice Input Adapter evidence reviewed." if voice or adapter else "No voice evidence attached.")
+        evidence.append(
+            {
+                "type": "voice_evidence",
+                "source": review_input.input_envelope.source.value,
+                "voice": voice or {},
+                "input_adapter": adapter or {},
+            }
+        )
         confidence = 0.7
     elif role_id == "MemoryRecallAgent":
         rationale.append("RelevantMemoryBundle was reviewed as the only memory source for this turn.")

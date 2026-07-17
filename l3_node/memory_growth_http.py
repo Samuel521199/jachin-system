@@ -166,6 +166,21 @@ async def handle_memory_growth_artifact_curator(request: Any) -> Any:
         return _json_response({"ok": False, "error": str(e)}, status=400)
 
 
+async def handle_memory_growth_auto_governance_policy(request: Any) -> Any:
+    """POST /api/v1/memory-growth/auto-governance-policy"""
+
+    body = await _json_body(request)
+    try:
+        result = save_memory_growth_auto_governance_policy(
+            mode=str(body.get("mode") or ""),
+            max_items=body.get("max_items"),
+        )
+        return _json_response({"ok": True, "result": result, "status": memory_growth_status()})
+    except Exception as e:
+        logger.exception("[MemoryGrowth HTTP] auto governance policy save failed: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=400)
+
+
 def memory_growth_status() -> dict[str, Any]:
     from l3_node.cognitive_kernel.memory_growth import ensure_memory_growth_scaffold, memory_growth_dir
 
@@ -204,6 +219,7 @@ def memory_growth_status() -> dict[str, Any]:
             "batch-governance",
             "artifact-governance",
             "artifact-curator",
+            "auto-governance-policy",
         ],
     }
 
@@ -230,6 +246,13 @@ def apply_memory_growth_governance(
         "promote_preferred_guidance",
         "revalidate_artifact",
         "merge_artifact_draft",
+        "confirm_memory",
+        "reject_memory",
+        "mark_memory_conflicted",
+        "correct_memory",
+        "review_rejected_memory_pattern",
+        "promote_memory_pattern",
+        "revalidate_confirmed_memory",
     }
     if action not in allowed:
         raise ValueError(f"unsupported governance action: {action}")
@@ -246,7 +269,15 @@ def apply_memory_growth_governance(
         "side_effects": [],
     }
 
-    if action in ("confirm_pending", "reject_pending", "defer_pending"):
+    if action in ("confirm_memory", "reject_memory", "mark_memory_conflicted", "correct_memory"):
+        _apply_memory_trust_governance(action=action, item=item, result=result, governance_id=governance_id, note=note)
+    elif action == "review_rejected_memory_pattern":
+        _apply_rejected_memory_pattern_review(item=item, root=root, result=result, governance_id=governance_id, note=note)
+    elif action == "promote_memory_pattern":
+        _apply_promote_memory_pattern(item=item, root=root, result=result, governance_id=governance_id, note=note)
+    elif action == "revalidate_confirmed_memory":
+        _apply_revalidate_confirmed_memory(item=item, root=root, result=result, governance_id=governance_id, note=note)
+    elif action in ("confirm_pending", "reject_pending", "defer_pending"):
         if not item_path:
             raise ValueError("pending governance requires item.path")
         _apply_pending_governance(
@@ -305,7 +336,18 @@ def apply_memory_growth_governance(
         review={
             "review_candidate": True,
             "promotion_targets": ["concepts", "playbooks", "outputs"],
-            "priority": "high" if action in ("confirm_pending", "generate_failure_playbook") else "normal",
+            "priority": "high"
+            if action
+            in (
+                "confirm_pending",
+                "generate_failure_playbook",
+                "confirm_memory",
+                "reject_memory",
+                "correct_memory",
+                "review_rejected_memory_pattern",
+                "promote_memory_pattern",
+            )
+            else "normal",
             "reason": "memory_growth_governance_action",
         },
     )
@@ -381,6 +423,170 @@ def apply_memory_growth_batch_governance(
     return result
 
 
+def apply_memory_growth_auto_governance(
+    *,
+    source: str = "daily_review",
+    max_items: int = 5,
+) -> dict[str, Any]:
+    """Run safe memory-governance follow-ups with bounded retries.
+
+    This is intentionally narrow. It only consumes trust-governance next actions
+    that are already produced by monitoring, and failed conversions get one
+    automatic retry before remaining in the manual follow-up queue.
+    """
+
+    from l3_node.cognitive_kernel.memory_growth import append_raw_event, ensure_memory_growth_scaffold
+
+    root = ensure_memory_growth_scaffold()
+    policy = _memory_growth_auto_governance_policy(root)
+    mode = str(policy.get("mode") or "safe_auto")
+    limit = max(1, min(int(policy.get("max_items") or max_items or 5), 10))
+    if mode != "safe_auto":
+        result: dict[str, Any] = {
+            "schema_version": 1,
+            "auto_governance_id": f"auto_governance_{int(time.time() * 1000)}",
+            "created_at": _iso_now(),
+            "source": source,
+            "mode": mode,
+            "requested_count": 0,
+            "selected_count": 0,
+            "executed_count": 0,
+            "failed_count": 0,
+            "skipped": [{"reason": "auto_governance_disabled", "mode": mode}],
+            "results": [],
+        }
+        report_path = _write_auto_governance_report(root, result)
+        raw_path = append_raw_event(
+            category="evidence",
+            source="memory_growth_auto_governance_agent",
+            stream="auto_governance",
+            payload={"auto_governance_id": result["auto_governance_id"], "result": result},
+            source_refs=[{"type": "memory_growth_auto_governance", "auto_governance_id": result["auto_governance_id"]}],
+            review={
+                "review_candidate": True,
+                "promotion_targets": ["playbooks", "outputs"],
+                "priority": "normal",
+                "reason": "memory_growth_auto_governance_disabled",
+            },
+        )
+        result["report_path"] = str(report_path)
+        result["raw_event_path"] = str(raw_path)
+        return result
+
+    status = memory_growth_status()
+    review = ((status.get("monitoring") or {}).get("trust_governance_review") or {}) if isinstance(status, dict) else {}
+    next_actions = review.get("next_actions") if isinstance(review.get("next_actions"), list) else []
+    selected: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for row in next_actions:
+        if not isinstance(row, dict):
+            continue
+        action = str(row.get("action") or "")
+        item = row.get("item") if isinstance(row.get("item"), dict) else {}
+        recovery_policy = row.get("recovery_policy") if isinstance(row.get("recovery_policy"), dict) else {}
+        kind = str(recovery_policy.get("kind") or "")
+        pattern_key = str(item.get("pattern_key") or item.get("memory_id") or item.get("pattern") or "")
+        if action not in {"review_rejected_memory_pattern", "promote_memory_pattern", "revalidate_confirmed_memory"}:
+            skipped.append({"id": row.get("id"), "action": action, "reason": "unsupported_auto_action"})
+            continue
+        if not item:
+            skipped.append({"id": row.get("id"), "action": action, "reason": "missing_item"})
+            continue
+        if kind == "failed_trust_conversion" and _trust_auto_retry_count(root, action=action, pattern_key=pattern_key) >= 1:
+            skipped.append({"id": row.get("id"), "action": action, "pattern_key": pattern_key, "reason": "auto_retry_limit_reached"})
+            continue
+        selected.append(row)
+        if len(selected) >= limit:
+            break
+
+    result: dict[str, Any] = {
+        "schema_version": 1,
+        "auto_governance_id": f"auto_governance_{int(time.time() * 1000)}",
+        "created_at": _iso_now(),
+        "source": source,
+        "mode": mode,
+        "requested_count": len(next_actions),
+        "selected_count": len(selected),
+        "executed_count": 0,
+        "failed_count": 0,
+        "skipped": skipped,
+        "results": [],
+    }
+    for row in selected:
+        action = str(row.get("action") or "")
+        item = row.get("item") if isinstance(row.get("item"), dict) else {}
+        recovery_policy = row.get("recovery_policy") if isinstance(row.get("recovery_policy"), dict) else {}
+        kind = str(recovery_policy.get("kind") or "")
+        pattern_key = str(item.get("pattern_key") or item.get("memory_id") or item.get("pattern") or "")
+        note = f"auto_trust_follow_up source={source} kind={kind} pattern={pattern_key}".strip()
+        try:
+            child = apply_memory_growth_governance(action=action, item=item, note=note)
+            result["executed_count"] += 1
+            result["results"].append(
+                {
+                    "ok": True,
+                    "action": action,
+                    "item": item,
+                    "kind": kind,
+                    "pattern_key": pattern_key,
+                    "governance_id": child.get("governance_id"),
+                    "report_path": child.get("report_path"),
+                    "side_effects": child.get("side_effects", []),
+                }
+            )
+        except Exception as exc:
+            result["failed_count"] += 1
+            result["results"].append({"ok": False, "action": action, "item": item, "kind": kind, "pattern_key": pattern_key, "error": str(exc)})
+
+    report_path = _write_auto_governance_report(root, result)
+    raw_path = append_raw_event(
+        category="evidence",
+        source="memory_growth_auto_governance_agent",
+        stream="auto_governance",
+        payload={"auto_governance_id": result["auto_governance_id"], "result": result},
+        source_refs=[{"type": "memory_growth_auto_governance", "auto_governance_id": result["auto_governance_id"]}],
+        review={
+            "review_candidate": True,
+            "promotion_targets": ["playbooks", "outputs"],
+            "priority": "high" if result["failed_count"] else "normal",
+            "reason": "memory_growth_auto_governance_action",
+        },
+    )
+    result["report_path"] = str(report_path)
+    result["raw_event_path"] = str(raw_path)
+    return result
+
+
+def save_memory_growth_auto_governance_policy(*, mode: str, max_items: Any = None) -> dict[str, Any]:
+    from l3_node.cognitive_kernel.memory_growth import ensure_memory_growth_scaffold
+
+    root = ensure_memory_growth_scaffold()
+    normalized_mode = str(mode or "").strip().lower().replace("-", "_")
+    aliases = {
+        "safe": "safe_auto",
+        "auto": "safe_auto",
+        "safeauto": "safe_auto",
+        "safe_auto": "safe_auto",
+        "manual": "manual",
+        "off": "off",
+        "disabled": "off",
+    }
+    if normalized_mode not in aliases:
+        raise ValueError("auto governance mode must be one of: off, manual, safe_auto")
+    try:
+        limit = int(max_items) if max_items is not None else int(_memory_growth_auto_governance_policy(root).get("max_items") or 5)
+    except Exception:
+        limit = 5
+    policy = {
+        "schema_version": 1,
+        "mode": aliases[normalized_mode],
+        "max_items": max(1, min(limit, 10)),
+        "updated_at": _iso_now(),
+    }
+    _write_json(root / "indexes" / "memory_governance_auto_policy.json", policy)
+    return policy
+
+
 def register_memory_growth_routes(app: Any) -> None:
     app.router.add_get("/api/v1/memory-growth/status", handle_memory_growth_status)
     app.router.add_post("/api/v1/memory-growth/pipeline", handle_memory_growth_pipeline)
@@ -390,6 +596,7 @@ def register_memory_growth_routes(app: Any) -> None:
     app.router.add_post("/api/v1/memory-growth/governance", handle_memory_growth_governance)
     app.router.add_post("/api/v1/memory-growth/batch-governance", handle_memory_growth_batch_governance)
     app.router.add_post("/api/v1/memory-growth/artifact-curator", handle_memory_growth_artifact_curator)
+    app.router.add_post("/api/v1/memory-growth/auto-governance-policy", handle_memory_growth_auto_governance_policy)
     logger.info("[MemoryGrowth HTTP] routes registered")
 
 
@@ -468,23 +675,40 @@ def _memory_growth_monitoring(root: Path, counts: dict[str, int]) -> dict[str, A
     pending_queue = _pending_confirmation_queue(root)
     governance_history = _governance_history(root)
     artifact_usage = _artifact_usage_rows(root)
+    source_quality = _source_quality_summary(root)
+    memory_trust = _memory_trust_summary()
+    success_path_health = _success_path_health(artifact_usage)
     artifact_usage_trend_index = _artifact_usage_trend_index(root)
     governance_effectiveness_index = _governance_effectiveness_index(root)
     governance_strategy_policy = _governance_strategy_policy(governance_effectiveness_index)
-    governance_effectiveness = _governance_effectiveness(
-        root=root,
-        governance_history=governance_history,
-        conflict_types=conflict_types,
-        failure_patterns=failure_patterns,
-    )
+    auto_governance_policy = _memory_growth_auto_governance_policy(root)
+    latest_auto_governance = _latest_auto_governance_report(root)
+    auto_governance_trends = _auto_governance_trends(root)
+    auto_governance_mode_history = _auto_governance_mode_history(root)
     governance_recommendations = _governance_recommendations(
         root=root,
         pending_queue=pending_queue,
         stale_concepts=stale_concepts,
         failure_patterns=failure_patterns,
         conflict_types=conflict_types,
+        memory_trust=memory_trust,
         governance_history=governance_history,
         strategy_policy=governance_strategy_policy,
+    )
+    trust_governance_review = _trust_governance_review(root, governance_recommendations=governance_recommendations)
+    governance_effectiveness = _governance_effectiveness(
+        root=root,
+        governance_history=governance_history,
+        conflict_types=conflict_types,
+        failure_patterns=failure_patterns,
+        trust_governance_review=trust_governance_review,
+    )
+    auto_governance_recommendation = _auto_governance_mode_recommendation(
+        policy=auto_governance_policy,
+        latest=latest_auto_governance,
+        trends=auto_governance_trends,
+        trust_governance_review=trust_governance_review,
+        governance_effectiveness=governance_effectiveness,
     )
     durable = counts.get("concepts", 0) + counts.get("playbooks", 0) + counts.get("outputs", 0)
     risk = counts.get("conflicts", 0) + len(stale_concepts) + len(pending_queue) + sum(row["count"] for row in failure_patterns)
@@ -502,14 +726,23 @@ def _memory_growth_monitoring(root: Path, counts: dict[str, int]) -> dict[str, A
         "pending_confirmation_queue": pending_queue[:30],
         "governance_history": governance_history[:30],
         "artifact_usage": artifact_usage[:30],
+        "source_quality": source_quality,
+        "memory_trust": memory_trust,
+        "success_path_health": success_path_health,
         "artifact_usage_trends": _artifact_usage_trends(artifact_usage_trend_index),
         "artifact_usage_attribution": _artifact_usage_attribution(artifact_usage_trend_index),
         "artifact_usage_recommendations": _artifact_usage_recommendations(artifact_usage_trend_index),
         "governance_recommendations": governance_recommendations[:8],
         "governance_effectiveness": governance_effectiveness,
+        "trust_governance_review": trust_governance_review,
         "governance_effectiveness_trends": _governance_effectiveness_trends(governance_effectiveness_index),
         "governance_effectiveness_attribution": _governance_effectiveness_attribution(governance_effectiveness_index),
         "governance_strategy_policy": governance_strategy_policy,
+        "memory_governance_auto_policy": auto_governance_policy,
+        "memory_governance_auto_latest": latest_auto_governance,
+        "memory_governance_auto_trends": auto_governance_trends,
+        "memory_governance_auto_recommendation": auto_governance_recommendation,
+        "memory_governance_auto_mode_history": auto_governance_mode_history,
         "health": {
             "quality_score": quality_score,
             "risk_level": risk_level,
@@ -518,12 +751,362 @@ def _memory_growth_monitoring(root: Path, counts: dict[str, int]) -> dict[str, A
             "failure_pattern_count": len(failure_patterns),
             "governance_history_count": len(governance_history),
             "artifact_usage_count": len(artifact_usage),
+            "source_quality_domain_count": source_quality["summary"]["domain_count"],
+            "source_quality_reliable_count": source_quality["summary"]["reliable_count"],
+            "source_quality_degraded_count": source_quality["summary"]["degraded_count"],
+            "memory_trust_confirmed_count": memory_trust["summary"]["confirmed_count"],
+            "memory_trust_floating_count": memory_trust["summary"]["floating_count"],
+            "memory_trust_conflicted_count": memory_trust["summary"]["conflicted_count"],
+            "memory_trust_rejected_count": memory_trust["summary"]["rejected_count"],
+            "memory_trust_expired_count": memory_trust["summary"]["expired_count"],
+            "memory_trust_rejected_pattern_count": memory_trust.get("analytics", {}).get("summary", {}).get("rejected_pattern_count", 0),
+            "memory_trust_promotion_candidate_count": memory_trust.get("analytics", {}).get("summary", {}).get("promotion_candidate_count", 0),
+            "memory_trust_stale_confirmed_count": memory_trust.get("analytics", {}).get("summary", {}).get("stale_confirmed_count", 0),
+            "success_path_reliable_count": len(success_path_health["reliable_paths"]),
+            "success_path_degraded_count": len(success_path_health["degraded_paths"]),
             "artifact_low_success_count": len((artifact_usage_trend_index.get("attribution") or {}).get("low_success_assets") or []) if isinstance(artifact_usage_trend_index.get("attribution"), dict) else 0,
             "artifact_stale_unused_count": len((artifact_usage_trend_index.get("attribution") or {}).get("stale_unused_assets") or []) if isinstance(artifact_usage_trend_index.get("attribution"), dict) else 0,
             "recommendation_count": len(governance_recommendations),
             "governance_effectiveness_score": governance_effectiveness["score"],
+            "trust_governance_conversion_rate": trust_governance_review["summary"]["conversion_rate"],
+            "memory_governance_auto_mode": auto_governance_policy["mode"],
+            "memory_governance_auto_executed_count": int(latest_auto_governance.get("executed_count") or 0),
+            "memory_governance_auto_failed_count": int(latest_auto_governance.get("failed_count") or 0),
+            "memory_governance_auto_recommended_mode": auto_governance_recommendation["recommended_mode"],
+            "memory_governance_auto_history_risk": (auto_governance_mode_history.get("summary") or {}).get("risk_direction", ""),
         },
 }
+
+
+def _memory_trust_summary() -> dict[str, Any]:
+    try:
+        from l3_node.cognitive_kernel.memory_lifecycle import _store_path  # type: ignore
+        from l3_node.cognitive_kernel.memory_trust import (
+            TRUST_CONFIRMED,
+            TRUST_CONFLICTED,
+            TRUST_EXPIRED,
+            TRUST_FLOATING,
+            TRUST_REJECTED,
+            infer_memory_trust,
+            should_recall_memory,
+            trust_weight,
+        )
+    except Exception as exc:
+        return {
+            "summary": {
+                "total_count": 0,
+                "confirmed_count": 0,
+                "floating_count": 0,
+                "conflicted_count": 0,
+                "rejected_count": 0,
+                "expired_count": 0,
+                "recall_blocked_count": 0,
+                "error": f"{exc.__class__.__name__}",
+            },
+            "requires_confirmation": [],
+            "review_queue": [],
+            "recent_floating": [],
+            "recent_rejected": [],
+            "recent_confirmed": [],
+        }
+    path = _store_path()
+    now_ms = int(time.time() * 1000)
+    counts: Counter[str] = Counter()
+    blocked = 0
+    rows_by_state: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    if path.exists():
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(row, dict):
+                continue
+            state, reason = infer_memory_trust(row)
+            counts[state] += 1
+            if not should_recall_memory(row):
+                blocked += 1
+            item = {
+                "memory_id": str(row.get("memory_id") or ""),
+                "memory_type": str(row.get("memory_type") or ""),
+                "trust_state": state,
+                "trust_reason": reason,
+                "trust_weight": round(trust_weight(state), 3),
+                "recall_allowed": should_recall_memory(row),
+                "review_required": bool(row.get("review_required")),
+                "confidence": _float_value(row.get("confidence"), 0.0),
+                "updated_at_ms": int(row.get("updated_at_ms") or 0),
+                "created_at_ms": int(row.get("created_at_ms") or 0),
+                "last_verified_at_ms": int(row.get("last_verified_at_ms") or 0),
+                "success_count": int(row.get("success_count") or 0),
+                "failure_count": int(row.get("failure_count") or 0),
+                "domain": str(row.get("domain") or ""),
+                "owner": str(row.get("owner") or ""),
+                "skill_id": str(row.get("skill_id") or ""),
+                "age_days": round(max(0, now_ms - int(row.get("updated_at_ms") or 0)) / 86_400_000, 1)
+                if int(row.get("updated_at_ms") or 0)
+                else None,
+                "content": str(row.get("content") or "")[:2000],
+                "content_preview": str(row.get("content") or "")[:240],
+            }
+            rows_by_state[state].append(item)
+    for rows in rows_by_state.values():
+        rows.sort(key=lambda item: int(item.get("updated_at_ms") or 0), reverse=True)
+    review_queue: list[dict[str, Any]] = []
+    for state, priority, reason in (
+        (TRUST_CONFLICTED, 100, "conflicted_memory_requires_user_confirmation"),
+        (TRUST_FLOATING, 60, "floating_memory_can_be_confirmed_or_rejected"),
+        (TRUST_REJECTED, 40, "rejected_memory_kept_for_audit_or_correction"),
+    ):
+        for item in rows_by_state[state][:20]:
+            review_queue.append({**item, "review_priority": priority, "review_reason": reason})
+    review_queue.sort(
+        key=lambda item: (
+            int(item.get("review_priority") or 0),
+            bool(item.get("review_required")),
+            int(item.get("updated_at_ms") or 0),
+        ),
+        reverse=True,
+    )
+    return {
+        "summary": {
+            "total_count": sum(counts.values()),
+            "confirmed_count": counts[TRUST_CONFIRMED],
+            "floating_count": counts[TRUST_FLOATING],
+            "conflicted_count": counts[TRUST_CONFLICTED],
+            "rejected_count": counts[TRUST_REJECTED],
+            "expired_count": counts[TRUST_EXPIRED],
+            "recall_blocked_count": blocked,
+        },
+        "requires_confirmation": rows_by_state[TRUST_CONFLICTED][:12],
+        "review_queue": review_queue[:50],
+        "recent_floating": rows_by_state[TRUST_FLOATING][:12],
+        "recent_rejected": rows_by_state[TRUST_REJECTED][:12],
+        "recent_confirmed": rows_by_state[TRUST_CONFIRMED][:12],
+        "analytics": _memory_trust_analytics(rows_by_state, now_ms=now_ms),
+    }
+
+
+def _memory_trust_analytics(rows_by_state: dict[str, list[dict[str, Any]]], *, now_ms: int) -> dict[str, Any]:
+    """Summarize memory trust trends for active curation.
+
+    This keeps the expensive judgment out of recall. The console and Daily
+    Review can use this compact view to decide which memory patterns need a
+    human, which can be promoted, and which confirmed facts are drifting.
+    """
+
+    try:
+        from l3_node.cognitive_kernel.memory_trust import (
+            TRUST_CONFIRMED,
+            TRUST_CONFLICTED,
+            TRUST_FLOATING,
+            TRUST_REJECTED,
+        )
+    except Exception:
+        TRUST_CONFIRMED = "confirmed"
+        TRUST_CONFLICTED = "conflicted"
+        TRUST_FLOATING = "floating"
+        TRUST_REJECTED = "rejected"
+
+    all_rows = [item for rows in rows_by_state.values() for item in rows]
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in all_rows:
+        key = _memory_trust_pattern_key(item)
+        if key:
+            groups[key].append(item)
+
+    rejected_patterns: list[dict[str, Any]] = []
+    promotion_candidates: list[dict[str, Any]] = []
+    conflict_clusters: list[dict[str, Any]] = []
+    floating_hotspots: list[dict[str, Any]] = []
+    stale_confirmed: list[dict[str, Any]] = []
+
+    for key, items in groups.items():
+        state_counts = Counter(str(item.get("trust_state") or "") for item in items)
+        avg_confidence = sum(_float_value(item.get("confidence"), 0.0) for item in items) / max(1, len(items))
+        latest_ms = max(int(item.get("updated_at_ms") or 0) for item in items)
+        latest = max(items, key=lambda item: int(item.get("updated_at_ms") or 0))
+        base = {
+            "pattern_key": key,
+            "memory_type": str(latest.get("memory_type") or ""),
+            "sample": str(latest.get("content_preview") or latest.get("content") or "")[:240],
+            "total_count": len(items),
+            "confirmed_count": state_counts[TRUST_CONFIRMED],
+            "floating_count": state_counts[TRUST_FLOATING],
+            "conflicted_count": state_counts[TRUST_CONFLICTED],
+            "rejected_count": state_counts[TRUST_REJECTED],
+            "average_confidence": round(avg_confidence, 3),
+            "latest_updated_at_ms": latest_ms,
+            "memory_ids": [str(item.get("memory_id") or "") for item in items[:8] if item.get("memory_id")],
+        }
+        if state_counts[TRUST_REJECTED] >= 2 and state_counts[TRUST_REJECTED] >= state_counts[TRUST_CONFIRMED]:
+            rejected_patterns.append(
+                {
+                    **base,
+                    "severity": min(100, 60 + state_counts[TRUST_REJECTED] * 12 + state_counts[TRUST_CONFLICTED] * 8),
+                    "recommendation": "Stop trusting this inferred pattern until a user corrects it.",
+                }
+            )
+        if state_counts[TRUST_CONFIRMED] >= 2 and avg_confidence >= 0.78 and state_counts[TRUST_REJECTED] == 0:
+            promotion_candidates.append(
+                {
+                    **base,
+                    "promotion_score": round(min(1.0, avg_confidence + state_counts[TRUST_CONFIRMED] * 0.04), 3),
+                    "recommendation": "Promote this stable confirmed pattern into long-term method memory.",
+                }
+            )
+        if state_counts[TRUST_CONFLICTED] or (state_counts[TRUST_CONFIRMED] and state_counts[TRUST_REJECTED]):
+            conflict_clusters.append(
+                {
+                    **base,
+                    "severity": min(100, 50 + state_counts[TRUST_CONFLICTED] * 15 + min(state_counts[TRUST_CONFIRMED], state_counts[TRUST_REJECTED]) * 20),
+                    "recommendation": "Ask the user to choose the correct version before using this pattern.",
+                }
+            )
+        if state_counts[TRUST_FLOATING] >= 3 and not state_counts[TRUST_CONFIRMED]:
+            floating_hotspots.append(
+                {
+                    **base,
+                    "priority": min(100, 45 + state_counts[TRUST_FLOATING] * 8),
+                    "recommendation": "This inferred pattern appears often but has no user confirmation.",
+                }
+            )
+
+    stale_after_ms = 30 * 86_400_000
+    for item in rows_by_state.get(TRUST_CONFIRMED, []):
+        last_verified = int(item.get("last_verified_at_ms") or 0)
+        updated = int(item.get("updated_at_ms") or 0)
+        anchor = last_verified or updated
+        if anchor and now_ms - anchor >= stale_after_ms:
+            stale_confirmed.append(
+                {
+                    "memory_id": str(item.get("memory_id") or ""),
+                    "memory_type": str(item.get("memory_type") or ""),
+                    "sample": str(item.get("content_preview") or item.get("content") or "")[:240],
+                    "age_days": round((now_ms - anchor) / 86_400_000, 1),
+                    "confidence": _float_value(item.get("confidence"), 0.0),
+                    "recommendation": "Re-verify this confirmed memory because it may have drifted.",
+                }
+            )
+
+    rejected_patterns.sort(key=lambda item: (int(item["severity"]), int(item["total_count"])), reverse=True)
+    promotion_candidates.sort(key=lambda item: (float(item["promotion_score"]), int(item["total_count"])), reverse=True)
+    conflict_clusters.sort(key=lambda item: (int(item["severity"]), int(item["total_count"])), reverse=True)
+    floating_hotspots.sort(key=lambda item: (int(item["priority"]), int(item["total_count"])), reverse=True)
+    stale_confirmed.sort(key=lambda item: (float(item["age_days"]), float(item["confidence"])), reverse=True)
+
+    return {
+        "summary": {
+            "pattern_count": len(groups),
+            "rejected_pattern_count": len(rejected_patterns),
+            "promotion_candidate_count": len(promotion_candidates),
+            "conflict_cluster_count": len(conflict_clusters),
+            "floating_hotspot_count": len(floating_hotspots),
+            "stale_confirmed_count": len(stale_confirmed),
+        },
+        "rejected_patterns": rejected_patterns[:12],
+        "promotion_candidates": promotion_candidates[:12],
+        "conflict_clusters": conflict_clusters[:12],
+        "floating_hotspots": floating_hotspots[:12],
+        "stale_confirmed": stale_confirmed[:12],
+    }
+
+
+def _memory_trust_pattern_key(item: dict[str, Any]) -> str:
+    memory_type = str(item.get("memory_type") or "memory").strip().lower()
+    domain = str(item.get("domain") or item.get("skill_id") or "").strip().lower()
+    terms = _memory_trust_terms(str(item.get("content") or item.get("content_preview") or ""))
+    if not terms:
+        return ""
+    return "|".join([memory_type, domain, "+".join(terms[:3])])
+
+
+def _memory_trust_terms(text: str) -> list[str]:
+    import re
+
+    terms = re.findall(r"[\w\u4e00-\u9fff]{2,}", text.lower())
+    stop = {
+        "this",
+        "that",
+        "with",
+        "from",
+        "into",
+        "onto",
+        "in",
+        "on",
+        "to",
+        "of",
+        "as",
+        "by",
+        "at",
+        "are",
+        "is",
+        "be",
+        "should",
+        "memory",
+        "means",
+        "maybe",
+        "usually",
+        "for",
+        "and",
+        "the",
+        "用户",
+        "记忆",
+        "系统",
+        "推断",
+        "确认",
+    }
+    seen: set[str] = set()
+    out: list[str] = []
+    for term in terms:
+        if term in stop or term in seen:
+            continue
+        seen.add(term)
+        out.append(term)
+    return out
+
+
+def _source_quality_summary(root: Path) -> dict[str, Any]:
+    path = root / "indexes" / "source_quality.json"
+    payload = _read_json(path)
+    domains = payload.get("domains") if isinstance(payload, dict) else {}
+    rows: list[dict[str, Any]] = []
+    if isinstance(domains, dict):
+        for domain, row in domains.items():
+            if not isinstance(row, dict):
+                continue
+            rows.append(
+                {
+                    "domain": str(row.get("domain") or domain),
+                    "health": str(row.get("health") or "unproven"),
+                    "reputation_score": _float_value(row.get("reputation_score"), 0.0),
+                    "success_rate": _float_value(row.get("success_rate"), 0.0),
+                    "average_quality_score": _float_value(row.get("average_quality_score"), 0.0),
+                    "use_count": int(row.get("use_count") or 0),
+                    "success_count": int(row.get("success_count") or 0),
+                    "failure_count": int(row.get("failure_count") or 0),
+                    "last_primary_issue": str(row.get("last_primary_issue") or ""),
+                    "last_query": str(row.get("last_query") or "")[:160],
+                    "last_url": str(row.get("last_url") or "")[:240],
+                }
+            )
+    rows.sort(key=lambda item: (float(item["reputation_score"]), int(item["use_count"])), reverse=True)
+    reliable = [row for row in rows if row["health"] == "reliable"]
+    degraded = sorted([row for row in rows if row["health"] == "degraded"], key=lambda item: (float(item["reputation_score"]), -int(item["use_count"])))
+    unproven = [row for row in rows if row["health"] not in {"reliable", "degraded"}]
+    return {
+        "summary": {
+            "domain_count": len(rows),
+            "reliable_count": len(reliable),
+            "degraded_count": len(degraded),
+            "unproven_count": len(unproven),
+        },
+        "reliable_sources": reliable[:12],
+        "degraded_sources": degraded[:12],
+        "unproven_sources": unproven[:12],
+    }
 
 
 def _artifact_usage_rows(root: Path) -> list[dict[str, Any]]:
@@ -554,6 +1137,68 @@ def _artifact_usage_rows(root: Path) -> list[dict[str, Any]]:
         )
     clean.sort(key=lambda row: (-int(row.get("memory_use_count") or 0), -float(row.get("memory_success_rate") or 0.0), str(row.get("path") or "")))
     return clean
+
+
+def _success_path_health(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    success_rows = [
+        row
+        for row in rows
+        if str(row.get("type") or "").lower() == "success_playbook"
+        or "learned_success" in str(row.get("path") or "").lower()
+    ]
+    reliable = [
+        {
+            **row,
+            "health": "reliable",
+            "reason": "high_success_rate",
+        }
+        for row in success_rows
+        if int(row.get("memory_use_count") or 0) >= 2 and float(row.get("memory_success_rate") or 0.0) >= 0.75
+    ]
+    degraded = [
+        {
+            **row,
+            "health": "degraded",
+            "reason": "low_success_rate" if float(row.get("memory_success_rate") or 0.0) < 0.5 else "repeated_failures",
+        }
+        for row in success_rows
+        if int(row.get("memory_use_count") or 0) >= 2
+        and (
+            float(row.get("memory_success_rate") or 0.0) < 0.5
+            or int(row.get("memory_failure_count") or 0) >= 3
+        )
+    ]
+    unused = [
+        {
+            **row,
+            "health": "unproven",
+            "reason": "insufficient_usage",
+        }
+        for row in success_rows
+        if int(row.get("memory_use_count") or 0) < 2
+    ]
+    reliable.sort(key=lambda row: (-float(row.get("memory_success_rate") or 0.0), -int(row.get("memory_use_count") or 0), str(row.get("path") or "")))
+    degraded.sort(key=lambda row: (float(row.get("memory_success_rate") or 0.0), -int(row.get("memory_failure_count") or 0), str(row.get("path") or "")))
+    unused.sort(key=lambda row: (str(row.get("path") or "")))
+    total_use = sum(int(row.get("memory_use_count") or 0) for row in success_rows)
+    total_success = sum(int(row.get("memory_success_count") or 0) for row in success_rows)
+    total_failure = sum(int(row.get("memory_failure_count") or 0) for row in success_rows)
+    success_rate = round(total_success / max(1, total_success + total_failure), 3)
+    return {
+        "summary": {
+            "total_paths": len(success_rows),
+            "reliable_count": len(reliable),
+            "degraded_count": len(degraded),
+            "unproven_count": len(unused),
+            "total_use_count": total_use,
+            "success_count": total_success,
+            "failure_count": total_failure,
+            "success_rate": success_rate,
+        },
+        "reliable_paths": reliable[:10],
+        "degraded_paths": degraded[:10],
+        "unproven_paths": unused[:10],
+    }
 
 
 def _artifact_usage_trend_index(root: Path) -> dict[str, Any]:
@@ -636,11 +1281,170 @@ def _governance_history(root: Path) -> list[dict[str, Any]]:
                 "note": str(payload.get("note") or ""),
                 "summary": _governance_item_summary(item) if not is_batch else f"Batch governance: {payload.get('executed_count', 0)} executed, {payload.get('failed_count', 0)} failed",
                 "item_path": str(item.get("path") or ""),
-                "item_pattern": str(item.get("pattern") or ""),
+                "item_pattern": str(item.get("pattern") or item.get("pattern_key") or item.get("memory_id") or ""),
                 "side_effect_count": len(payload.get("side_effects") or []),
                 "executed_count": int(payload.get("executed_count") or 0),
                 "failed_count": int(payload.get("failed_count") or 0),
                 "report_path": str(path.relative_to(root)),
+            }
+        )
+    return rows
+
+
+def _trust_governance_review(root: Path, *, governance_recommendations: list[dict[str, Any]]) -> dict[str, Any]:
+    """Track whether trust-governance recommendations become durable artifacts."""
+
+    reports_root = root / "reviews" / "governance"
+    action_to_expected_effect = {
+        "review_rejected_memory_pattern": "memory_trust_rejected_pattern_review_written",
+        "promote_memory_pattern": "memory_trust_method_memory_proposal_written",
+        "revalidate_confirmed_memory": "memory_trust_revalidation_request_written",
+    }
+    current_recommendations = [
+        row
+        for row in governance_recommendations
+        if isinstance(row, dict) and str(row.get("action") or "") in action_to_expected_effect
+    ]
+    executed: list[dict[str, Any]] = []
+    converted: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+
+    if reports_root.exists():
+        for path in sorted(reports_root.glob("*.json"), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True):
+            payload = _read_json(path)
+            if not isinstance(payload, dict):
+                continue
+            action = str(payload.get("action") or "")
+            expected_effect = action_to_expected_effect.get(action)
+            if not expected_effect:
+                continue
+            item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
+            side_effects = payload.get("side_effects") if isinstance(payload.get("side_effects"), list) else []
+            effect = next(
+                (side for side in side_effects if isinstance(side, dict) and side.get("type") == expected_effect),
+                None,
+            )
+            record = {
+                "governance_id": str(payload.get("governance_id") or path.stem),
+                "action": action,
+                "created_at": str(payload.get("created_at") or _iso_from_mtime(path)),
+                "pattern_key": str(item.get("pattern_key") or item.get("memory_id") or item.get("pattern") or ""),
+                "summary": _governance_item_summary(item),
+                "item": item,
+                "report_path": str(path.relative_to(root)),
+                "converted": bool(effect),
+                "conversion_type": expected_effect if effect else "",
+                "artifact_path": str(effect.get("path") or "") if isinstance(effect, dict) else "",
+                "error": str(payload.get("error") or ""),
+            }
+            executed.append(record)
+            if effect:
+                converted.append(record)
+            else:
+                failed.append(record)
+
+    pending = []
+    executed_keys = {(row["action"], row["pattern_key"]) for row in executed}
+    for row in current_recommendations:
+        item = row.get("item") if isinstance(row.get("item"), dict) else {}
+        key = (str(row.get("action") or ""), str(item.get("pattern_key") or item.get("memory_id") or item.get("pattern") or ""))
+        if key in executed_keys:
+            continue
+        pending.append(
+            {
+                "id": str(row.get("id") or ""),
+                "action": key[0],
+                "pattern_key": key[1],
+                "priority": str(row.get("priority") or ""),
+                "priority_score": _float_value(row.get("priority_score"), 0.0),
+                "summary": str(row.get("title") or row.get("reason") or ""),
+                "item": item,
+                "source": str(row.get("source") or ""),
+            }
+        )
+
+    conversion_rate = round(len(converted) / max(1, len(executed)), 3) if executed else 0.0
+    follow_up_queue = _trust_governance_follow_up_queue(pending=pending, failed=failed)
+    next_actions = _trust_governance_next_actions(follow_up_queue)
+    return {
+        "summary": {
+            "recommended_count": len(current_recommendations),
+            "executed_count": len(executed),
+            "converted_count": len(converted),
+            "pending_count": len(pending),
+            "failed_count": len(failed),
+            "follow_up_count": len(follow_up_queue),
+            "next_action_count": len(next_actions),
+            "conversion_rate": conversion_rate,
+        },
+        "pending": pending[:12],
+        "converted": converted[:12],
+        "failed": failed[:12],
+        "follow_up_queue": follow_up_queue[:12],
+        "next_actions": next_actions[:8],
+        "recent": executed[:20],
+    }
+
+
+def _trust_governance_follow_up_queue(*, pending: list[dict[str, Any]], failed: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in pending:
+        rows.append(
+            {
+                "kind": "pending_trust_governance",
+                "action": str(item.get("action") or ""),
+                "pattern_key": str(item.get("pattern_key") or ""),
+                "priority": str(item.get("priority") or "medium"),
+                "priority_score": _float_value(item.get("priority_score"), 70.0),
+                "summary": str(item.get("summary") or ""),
+                "item": item.get("item") if isinstance(item.get("item"), dict) else {},
+                "reason": "recommended_but_not_executed",
+                "suggested_recovery": "execute_original_trust_governance_action",
+                "source": "trust_governance_pending",
+            }
+        )
+    for item in failed:
+        rows.append(
+            {
+                "kind": "failed_trust_conversion",
+                "action": str(item.get("action") or ""),
+                "pattern_key": str(item.get("pattern_key") or ""),
+                "priority": "high",
+                "priority_score": 95.0,
+                "summary": str(item.get("summary") or ""),
+                "item": item.get("item") if isinstance(item.get("item"), dict) else {},
+                "reason": str(item.get("error") or "expected_artifact_not_created"),
+                "suggested_recovery": "retry_with_validated_item_and_side_effect_check",
+                "source": "trust_governance_failed",
+                "failed_report_path": str(item.get("report_path") or ""),
+            }
+        )
+    rows.sort(key=lambda row: (-_float_value(row.get("priority_score"), 0.0), str(row.get("kind") or ""), str(row.get("pattern_key") or "")))
+    return rows
+
+
+def _trust_governance_next_actions(follow_up_queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in follow_up_queue:
+        action = str(row.get("action") or "")
+        item = row.get("item") if isinstance(row.get("item"), dict) else {}
+        if not action or not item:
+            continue
+        rows.append(
+            {
+                "id": f"trust-follow-up:{row.get('kind')}:{action}:{row.get('pattern_key')}",
+                "priority": str(row.get("priority") or "medium"),
+                "priority_score": _float_value(row.get("priority_score"), 70.0),
+                "title": "Run trust-governance follow-up",
+                "reason": f"{row.get('reason')}; suggested_recovery={row.get('suggested_recovery')}",
+                "action": action,
+                "item": item,
+                "source": str(row.get("source") or "trust_governance_follow_up"),
+                "recovery_policy": {
+                    "kind": str(row.get("kind") or ""),
+                    "suggested_recovery": str(row.get("suggested_recovery") or ""),
+                    "failed_report_path": str(row.get("failed_report_path") or ""),
+                },
             }
         )
     return rows
@@ -653,6 +1457,7 @@ def _governance_recommendations(
     stale_concepts: list[dict[str, Any]],
     failure_patterns: list[dict[str, Any]],
     conflict_types: list[dict[str, Any]],
+    memory_trust: dict[str, Any],
     governance_history: list[dict[str, Any]],
     strategy_policy: dict[str, Any],
 ) -> list[dict[str, Any]]:
@@ -738,6 +1543,82 @@ def _governance_recommendations(
                     "item": {"pattern": f"conflict:{reason}", "count": item.get("count"), "examples": [item.get("latest_path")]},
                     "source": "conflict_types",
                     "base_priority_score": 60 + min(20, int(item.get("count") or 0) * 2),
+                },
+                strategy_policy,
+            )
+        )
+
+    trust_analytics = memory_trust.get("analytics") if isinstance(memory_trust.get("analytics"), dict) else {}
+    for item in (trust_analytics.get("rejected_patterns") or [])[:3]:
+        if not isinstance(item, dict):
+            continue
+        pattern_key = str(item.get("pattern_key") or "")
+        if not pattern_key:
+            continue
+        signature = ("review_rejected_memory_pattern", pattern_key)
+        if signature in recent:
+            continue
+        rows.append(
+            _strategy_enriched_recommendation(
+                {
+                    "id": f"memory-trust-rejected:{pattern_key}",
+                    "priority": "high",
+                    "title": "Stop trusting a rejected memory pattern",
+                    "reason": str(item.get("recommendation") or "Repeatedly rejected inferred memory pattern."),
+                    "action": "review_rejected_memory_pattern",
+                    "item": item,
+                    "source": "memory_trust_analytics",
+                    "base_priority_score": min(96, int(item.get("severity") or 82)),
+                },
+                strategy_policy,
+            )
+        )
+
+    for item in (trust_analytics.get("promotion_candidates") or [])[:3]:
+        if not isinstance(item, dict):
+            continue
+        pattern_key = str(item.get("pattern_key") or "")
+        if not pattern_key:
+            continue
+        signature = ("promote_memory_pattern", pattern_key)
+        if signature in recent:
+            continue
+        rows.append(
+            _strategy_enriched_recommendation(
+                {
+                    "id": f"memory-trust-promote:{pattern_key}",
+                    "priority": "medium",
+                    "title": "Promote stable confirmed memory into methodology",
+                    "reason": str(item.get("recommendation") or "Stable confirmed memory pattern can become long-term method memory."),
+                    "action": "promote_memory_pattern",
+                    "item": item,
+                    "source": "memory_trust_analytics",
+                    "base_priority_score": max(60, min(90, int(float(item.get("promotion_score") or 0.75) * 100))),
+                },
+                strategy_policy,
+            )
+        )
+
+    for item in (trust_analytics.get("stale_confirmed") or [])[:3]:
+        if not isinstance(item, dict):
+            continue
+        memory_id = str(item.get("memory_id") or "")
+        if not memory_id:
+            continue
+        signature = ("revalidate_confirmed_memory", memory_id)
+        if signature in recent:
+            continue
+        rows.append(
+            _strategy_enriched_recommendation(
+                {
+                    "id": f"memory-trust-stale:{memory_id}",
+                    "priority": "medium",
+                    "title": "Re-check stale confirmed memory",
+                    "reason": str(item.get("recommendation") or "Confirmed memory may be stale and should be re-verified."),
+                    "action": "revalidate_confirmed_memory",
+                    "item": item,
+                    "source": "memory_trust_analytics",
+                    "base_priority_score": min(82, 55 + int(float(item.get("age_days") or 0) // 10)),
                 },
                 strategy_policy,
             )
@@ -847,6 +1728,7 @@ def _governance_effectiveness(
     governance_history: list[dict[str, Any]],
     conflict_types: list[dict[str, Any]],
     failure_patterns: list[dict[str, Any]],
+    trust_governance_review: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     reports = _governance_report_payloads(root)
     action_count = 0
@@ -900,10 +1782,18 @@ def _governance_effectiveness(
     open_failure_pressure = sum(int(row.get("count") or 0) for row in failure_patterns)
     success_rate = round(success_count / max(1, action_count), 3)
     production_gain = confirmed_count + playbook_count + revalidated_count + archived_count
+    trust_summary = trust_governance_review.get("summary") if isinstance(trust_governance_review, dict) else {}
+    trust_conversion_rate = _float_value(trust_summary.get("conversion_rate"), 0.0) if isinstance(trust_summary, dict) else 0.0
+    trust_converted_count = int(trust_summary.get("converted_count") or 0) if isinstance(trust_summary, dict) else 0
+    trust_pending_count = int(trust_summary.get("pending_count") or 0) if isinstance(trust_summary, dict) else 0
+    trust_failed_count = int(trust_summary.get("failed_count") or 0) if isinstance(trust_summary, dict) else 0
     score = 0
     if action_count:
         score = 35 + round(success_rate * 35) + min(20, production_gain * 4)
+        if trust_converted_count:
+            score += min(10, round(trust_conversion_rate * 10))
         score -= min(20, failure_count * 5 + post_governance_failure_count * 3)
+        score -= min(12, trust_pending_count * 2 + trust_failed_count * 4)
         score -= min(15, max(0, open_conflict_pressure + open_failure_pressure - production_gain) // 2)
         score = max(0, min(100, score))
 
@@ -925,6 +1815,12 @@ def _governance_effectiveness(
         signals.append("same_failure_after_governance")
     if open_conflict_pressure:
         signals.append("open_conflict_pressure")
+    if trust_converted_count:
+        signals.append("trust_governance_converted")
+    if trust_pending_count:
+        signals.append("trust_governance_pending")
+    if trust_failed_count:
+        signals.append("trust_governance_failed")
 
     recommendations: list[str] = []
     if not action_count:
@@ -933,8 +1829,14 @@ def _governance_effectiveness(
         recommendations.append("Review failed governance reports and retry with a safer path or user confirmation.")
     if post_governance_failure_count:
         recommendations.append("Failures still appeared after playbook governance; update the playbook with a stronger recovery path.")
+    if trust_pending_count:
+        recommendations.append("Trust-governance recommendations are pending; execute or dismiss them before the next review.")
+    if trust_failed_count:
+        recommendations.append("Trust-governance actions failed to create durable artifacts; inspect reports and retry with safer inputs.")
     if open_conflict_pressure > production_gain:
         recommendations.append("Conflict pressure is still higher than governance output; prioritize confirmations and conflict playbooks.")
+    if trust_converted_count and trust_conversion_rate >= 0.7:
+        recommendations.append("Trust-governance conversion is healthy; keep using rejected-pattern review, method-memory proposals, and revalidation requests.")
     if not recommendations:
         recommendations.append("Keep weekly review enabled and compare future conflict/failure pressure against this baseline.")
 
@@ -950,6 +1852,10 @@ def _governance_effectiveness(
         "revalidated_count": revalidated_count,
         "archived_count": archived_count,
         "post_governance_failure_count": post_governance_failure_count,
+        "trust_conversion_rate": trust_conversion_rate,
+        "trust_converted_count": trust_converted_count,
+        "trust_pending_count": trust_pending_count,
+        "trust_failed_count": trust_failed_count,
         "open_conflict_pressure": open_conflict_pressure,
         "open_failure_pressure": open_failure_pressure,
         "history_visible_count": len(governance_history),
@@ -992,6 +1898,9 @@ def _effectiveness_trend_rows(rows: list[dict[str, Any]], *, days: int) -> list[
                 "action_count": int(row.get("action_count") or 0),
                 "success_count": int(row.get("success_count") or 0),
                 "failure_count": int(row.get("failure_count") or 0),
+                "trust_conversion_rate": _float_value(row.get("trust_conversion_rate"), 0.0),
+                "trust_pending_count": int(row.get("trust_pending_count") or 0),
+                "trust_failed_count": int(row.get("trust_failed_count") or 0),
                 "conflict_pressure": int(row.get("conflict_pressure") or 0),
                 "failure_pressure": int(row.get("failure_pressure") or 0),
             }
@@ -1091,7 +2000,12 @@ def _recent_governance_signatures(history: list[dict[str, Any]]) -> set[tuple[st
         action = str(row.get("action") or "")
         if action in ("confirm_pending", "reject_pending", "defer_pending", "revalidate_stale", "archive_stale"):
             target = str(row.get("item_path") or "")
-        elif action == "generate_failure_playbook":
+        elif action in (
+            "generate_failure_playbook",
+            "review_rejected_memory_pattern",
+            "promote_memory_pattern",
+            "revalidate_confirmed_memory",
+        ):
             target = str(row.get("item_pattern") or "")
         else:
             target = ""
@@ -1101,7 +2015,7 @@ def _recent_governance_signatures(history: list[dict[str, Any]]) -> set[tuple[st
 
 
 def _governance_item_summary(item: dict[str, Any]) -> str:
-    for key in ("summary", "reason", "pattern", "path", "candidate_id"):
+    for key in ("summary", "reason", "recommendation", "sample", "pattern", "pattern_key", "path", "candidate_id", "memory_id"):
         value = str(item.get(key) or "").strip()
         if value:
             return value[:160]
@@ -1122,6 +2036,175 @@ def _normalize_batch_operations(*, operations: Any, action: str | None, items: A
     if action and isinstance(items, list):
         return [{"action": action, "item": item, "note": note} for item in items if isinstance(item, dict)]
     return []
+
+
+def _apply_memory_trust_governance(
+    *,
+    action: str,
+    item: dict[str, Any],
+    result: dict[str, Any],
+    governance_id: str,
+    note: str,
+) -> None:
+    from l3_node.cognitive_kernel.memory_lifecycle import govern_lifecycle_memory
+
+    memory_id = str(item.get("memory_id") or item.get("id") or "").strip()
+    if not memory_id:
+        raise ValueError("memory trust governance requires item.memory_id")
+    mapped_action = {
+        "confirm_memory": "confirm",
+        "reject_memory": "reject",
+        "mark_memory_conflicted": "mark_conflicted",
+        "correct_memory": "correct",
+    }[action]
+    corrected_content = str(item.get("corrected_content") or item.get("content") or "")
+    outcome = govern_lifecycle_memory(
+        memory_id=memory_id,
+        action=mapped_action,
+        note=note,
+        corrected_content=corrected_content,
+    )
+    after = outcome.get("after") if isinstance(outcome.get("after"), dict) else {}
+    result["side_effects"].append(
+        {
+            "type": "memory_trust_governed",
+            "governance_id": governance_id,
+            "memory_id": memory_id,
+            "action": action,
+            "trust_state": after.get("trust_state"),
+            "trust_reason": after.get("trust_reason"),
+            "recall_allowed": after.get("recall_allowed"),
+        }
+    )
+    result["memory_trust_governance"] = outcome
+
+
+def _apply_rejected_memory_pattern_review(
+    *,
+    item: dict[str, Any],
+    root: Path,
+    result: dict[str, Any],
+    governance_id: str,
+    note: str,
+) -> None:
+    pattern_key = str(item.get("pattern_key") or item.get("pattern") or "rejected_memory_pattern").strip()
+    if not pattern_key:
+        raise ValueError("rejected memory pattern review requires item.pattern_key")
+    target_dir = root / "conflicts" / "memory_trust"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    path = target_dir / f"{_safe_segment(pattern_key)[:96] or 'rejected_memory_pattern'}.json"
+    payload = {
+        "schema_version": 1,
+        "type": "memory_trust_rejected_pattern_review",
+        "status": "requires_user_confirmation",
+        "governance_id": governance_id,
+        "created_at": _iso_now(),
+        "pattern_key": pattern_key,
+        "memory_type": item.get("memory_type"),
+        "sample": item.get("sample"),
+        "recommendation": item.get("recommendation") or "Stop trusting this inferred pattern until a user corrects it.",
+        "confirmed_count": item.get("confirmed_count", 0),
+        "rejected_count": item.get("rejected_count", 0),
+        "conflicted_count": item.get("conflicted_count", 0),
+        "memory_ids": item.get("memory_ids") if isinstance(item.get("memory_ids"), list) else [],
+        "note": note,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
+    result["side_effects"].append(
+        {
+            "type": "memory_trust_rejected_pattern_review_written",
+            "path": str(path.relative_to(root)),
+            "pattern_key": pattern_key,
+        }
+    )
+
+
+def _apply_promote_memory_pattern(
+    *,
+    item: dict[str, Any],
+    root: Path,
+    result: dict[str, Any],
+    governance_id: str,
+    note: str,
+) -> None:
+    pattern_key = str(item.get("pattern_key") or "memory_pattern").strip()
+    if not pattern_key:
+        raise ValueError("promote memory pattern requires item.pattern_key")
+    target_dir = root / "playbooks" / "method_memory"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    slug = _safe_segment(pattern_key)[:96] or "memory_pattern"
+    path = target_dir / f"{slug}.md"
+    now = _iso_now()
+    memory_ids = item.get("memory_ids") if isinstance(item.get("memory_ids"), list) else []
+    body = (
+        "---\n"
+        f"id: \"method-memory:{slug}\"\n"
+        "type: \"method_memory\"\n"
+        f"summary: \"Stable confirmed memory pattern: {pattern_key}\"\n"
+        f"created_at: \"{now}\"\n"
+        f"last_verified: \"{now[:10]}\"\n"
+        f"governance_id: \"{governance_id}\"\n"
+        f"promotion_score: \"{item.get('promotion_score', '')}\"\n"
+        "---\n\n"
+        f"# Stable Memory Pattern: {pattern_key}\n\n"
+        "## Why this should be promoted\n\n"
+        f"- Confirmed count: `{item.get('confirmed_count', 0)}`\n"
+        f"- Rejected count: `{item.get('rejected_count', 0)}`\n"
+        f"- Average confidence: `{item.get('average_confidence', '')}`\n"
+        f"- Recommendation: {item.get('recommendation') or 'Promote this stable confirmed pattern into long-term method memory.'}\n\n"
+        "## Representative sample\n\n"
+        f"> {item.get('sample') or ''}\n\n"
+        "## Source memory ids\n\n"
+        + "".join(f"- `{memory_id}`\n" for memory_id in memory_ids[:12])
+        + "\n## Governance note\n\n"
+        f"- {note or 'Promoted by Memory Trust Analytics.'}\n"
+    )
+    path.write_text(body, encoding="utf-8")
+    result["side_effects"].append(
+        {
+            "type": "memory_trust_method_memory_proposal_written",
+            "path": str(path.relative_to(root)),
+            "pattern_key": pattern_key,
+        }
+    )
+
+
+def _apply_revalidate_confirmed_memory(
+    *,
+    item: dict[str, Any],
+    root: Path,
+    result: dict[str, Any],
+    governance_id: str,
+    note: str,
+) -> None:
+    memory_id = str(item.get("memory_id") or "").strip()
+    if not memory_id:
+        raise ValueError("revalidate confirmed memory requires item.memory_id")
+    target_dir = root / "conflicts" / "memory_revalidation"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    path = target_dir / f"{_safe_segment(memory_id)[:96]}.json"
+    payload = {
+        "schema_version": 1,
+        "type": "memory_trust_confirmed_revalidation",
+        "status": "requires_user_confirmation",
+        "governance_id": governance_id,
+        "created_at": _iso_now(),
+        "memory_id": memory_id,
+        "memory_type": item.get("memory_type"),
+        "sample": item.get("sample"),
+        "age_days": item.get("age_days"),
+        "confidence": item.get("confidence"),
+        "recommendation": item.get("recommendation") or "Re-verify this confirmed memory because it may have drifted.",
+        "note": note,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
+    result["side_effects"].append(
+        {
+            "type": "memory_trust_revalidation_request_written",
+            "path": str(path.relative_to(root)),
+            "memory_id": memory_id,
+        }
+    )
 
 
 def _apply_pending_governance(
@@ -1420,6 +2503,218 @@ def _write_batch_governance_report(root: Path, result: dict[str, Any]) -> Path:
     path = reports_dir / f"{result['batch_id']}.batch.json"
     path.write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
     return path
+
+
+def _write_auto_governance_report(root: Path, result: dict[str, Any]) -> Path:
+    reports_dir = root / "reviews" / "governance"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    path = reports_dir / f"{result['auto_governance_id']}.auto.json"
+    path.write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
+    return path
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
+
+
+def _memory_growth_auto_governance_policy(root: Path) -> dict[str, Any]:
+    path = root / "indexes" / "memory_governance_auto_policy.json"
+    payload = _read_json(path)
+    mode = str(payload.get("mode") or "safe_auto").strip().lower().replace("-", "_")
+    if mode not in {"off", "manual", "safe_auto"}:
+        mode = "safe_auto"
+    try:
+        max_items = int(payload.get("max_items") or 5)
+    except Exception:
+        max_items = 5
+    return {
+        "schema_version": 1,
+        "mode": mode,
+        "max_items": max(1, min(max_items, 10)),
+        "updated_at": str(payload.get("updated_at") or ""),
+        "allowed_modes": ["off", "manual", "safe_auto"],
+    }
+
+
+def _latest_auto_governance_report(root: Path) -> dict[str, Any]:
+    latest = _latest(root / "reviews" / "governance", "*.auto.json")
+    if not latest:
+        return {}
+    payload = _read_json(latest)
+    if not isinstance(payload, dict):
+        return {}
+    payload = dict(payload)
+    payload["report_path"] = str(latest)
+    return payload
+
+
+def _auto_governance_trends(root: Path) -> dict[str, list[dict[str, Any]]]:
+    reports_dir = root / "reviews" / "governance"
+    by_date: dict[str, Counter[str]] = defaultdict(Counter)
+    if reports_dir.exists():
+        for path in reports_dir.glob("*.auto.json"):
+            payload = _read_json(path)
+            if not isinstance(payload, dict):
+                continue
+            date_key = str(payload.get("created_at") or "")[:10]
+            if not date_key:
+                date_key = _date_from_path_or_mtime(path)
+            skipped = payload.get("skipped") if isinstance(payload.get("skipped"), list) else []
+            by_date[date_key]["runs"] += 1
+            by_date[date_key]["executed"] += int(payload.get("executed_count") or 0)
+            by_date[date_key]["failed"] += int(payload.get("failed_count") or 0)
+            by_date[date_key]["skipped"] += len(skipped)
+            by_date[date_key]["retry_limited"] += sum(
+                1 for item in skipped if isinstance(item, dict) and item.get("reason") == "auto_retry_limit_reached"
+            )
+    return {
+        "days_7": _auto_governance_trend_rows(7, by_date),
+        "days_14": _auto_governance_trend_rows(14, by_date),
+        "days_30": _auto_governance_trend_rows(30, by_date),
+    }
+
+
+def _auto_governance_mode_history(root: Path) -> dict[str, Any]:
+    try:
+        from l3_node.cognitive_kernel.memory_governance_auto_index import read_auto_governance_mode_history
+
+        return read_auto_governance_mode_history(root)
+    except Exception as exc:
+        return {
+            "schema_version": 1,
+            "history": [],
+            "latest": {},
+            "trends": {"days_7": [], "days_14": [], "days_30": []},
+            "summary": {"error": f"{exc.__class__.__name__}: {exc}"},
+        }
+
+
+def _auto_governance_trend_rows(days: int, by_date: dict[str, Counter[str]]) -> list[dict[str, Any]]:
+    today = Date.today()
+    rows: list[dict[str, Any]] = []
+    for offset in range(days - 1, -1, -1):
+        key = (today - timedelta(days=offset)).isoformat()
+        counts = by_date.get(key, Counter())
+        rows.append(
+            {
+                "date": key,
+                "runs": int(counts.get("runs", 0)),
+                "executed": int(counts.get("executed", 0)),
+                "failed": int(counts.get("failed", 0)),
+                "skipped": int(counts.get("skipped", 0)),
+                "retry_limited": int(counts.get("retry_limited", 0)),
+            }
+        )
+    return rows
+
+
+def _auto_governance_mode_recommendation(
+    *,
+    policy: dict[str, Any],
+    latest: dict[str, Any],
+    trends: dict[str, list[dict[str, Any]]],
+    trust_governance_review: dict[str, Any],
+    governance_effectiveness: dict[str, Any],
+) -> dict[str, Any]:
+    mode = str(policy.get("mode") or "safe_auto")
+    summary = trust_governance_review.get("summary") if isinstance(trust_governance_review.get("summary"), dict) else {}
+    trend_rows = trends.get("days_14") if isinstance(trends.get("days_14"), list) else []
+    recent_runs = sum(int(row.get("runs") or 0) for row in trend_rows if isinstance(row, dict))
+    recent_executed = sum(int(row.get("executed") or 0) for row in trend_rows if isinstance(row, dict))
+    recent_failed = sum(int(row.get("failed") or 0) for row in trend_rows if isinstance(row, dict))
+    recent_skipped = sum(int(row.get("skipped") or 0) for row in trend_rows if isinstance(row, dict))
+    recent_retry_limited = sum(int(row.get("retry_limited") or 0) for row in trend_rows if isinstance(row, dict))
+    pending = int(summary.get("pending_count") or 0)
+    failed = int(summary.get("failed_count") or 0)
+    next_actions = int(summary.get("next_action_count") or 0)
+    conversion_rate = float(summary.get("conversion_rate") or 0.0)
+    effectiveness_score = int(governance_effectiveness.get("score") or 0)
+    failure_rate = recent_failed / max(1, recent_executed + recent_failed)
+    reasons: list[str] = []
+    recommended_mode = mode
+    severity = "info"
+
+    if mode == "safe_auto":
+        if recent_failed >= 2 or recent_retry_limited >= 2 or failure_rate >= 0.25:
+            recommended_mode = "manual"
+            severity = "warning"
+            reasons.append("recent_auto_governance_failures_or_retry_limits")
+        elif conversion_rate >= 0.7 and recent_failed == 0 and recent_retry_limited <= 1:
+            recommended_mode = "safe_auto"
+            severity = "healthy"
+            reasons.append("safe_auto_is_converting_cleanly")
+        else:
+            reasons.append("safe_auto_has_limited_evidence")
+    elif mode == "manual":
+        if next_actions >= 3 and conversion_rate >= 0.7 and recent_failed == 0 and effectiveness_score >= 65:
+            recommended_mode = "safe_auto"
+            severity = "opportunity"
+            reasons.append("manual_queue_is_safe_auto_candidate")
+        elif next_actions > 0:
+            recommended_mode = "manual"
+            severity = "info"
+            reasons.append("manual_review_still_has_pending_actions")
+        else:
+            reasons.append("manual_mode_has_no_pressure")
+    else:
+        if next_actions > 0 or pending + failed > 0:
+            recommended_mode = "manual"
+            severity = "warning"
+            reasons.append("off_mode_is_accumulating_trust_governance_work")
+        elif recent_skipped >= 3:
+            recommended_mode = "manual"
+            severity = "warning"
+            reasons.append("off_mode_has_repeated_disabled_runs")
+        else:
+            reasons.append("off_mode_has_low_current_pressure")
+
+    if not reasons:
+        reasons.append("no_mode_change_recommended")
+
+    return {
+        "schema_version": 1,
+        "current_mode": mode,
+        "recommended_mode": recommended_mode,
+        "severity": severity,
+        "should_change": recommended_mode != mode,
+        "reasons": reasons,
+        "metrics": {
+            "recent_runs_14d": recent_runs,
+            "recent_executed_14d": recent_executed,
+            "recent_failed_14d": recent_failed,
+            "recent_skipped_14d": recent_skipped,
+            "recent_retry_limited_14d": recent_retry_limited,
+            "recent_failure_rate_14d": round(failure_rate, 3),
+            "trust_pending_count": pending,
+            "trust_failed_count": failed,
+            "trust_next_action_count": next_actions,
+            "trust_conversion_rate": round(conversion_rate, 3),
+            "governance_effectiveness_score": effectiveness_score,
+            "latest_mode": latest.get("mode") or "",
+        },
+    }
+
+
+def _trust_auto_retry_count(root: Path, *, action: str, pattern_key: str) -> int:
+    reports_dir = root / "reviews" / "governance"
+    if not reports_dir.exists():
+        return 0
+    count = 0
+    for path in reports_dir.glob("*.json"):
+        payload = _read_json(path)
+        if not isinstance(payload, dict):
+            continue
+        note = str(payload.get("note") or "")
+        if not note.startswith("auto_trust_follow_up"):
+            continue
+        if str(payload.get("action") or "") != action:
+            continue
+        item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
+        current_key = str(item.get("pattern_key") or item.get("memory_id") or item.get("pattern") or "")
+        if current_key == pattern_key:
+            count += 1
+    return count
 
 
 def _trend_rows(days: int, raw_by_date: Counter[str], file_counts: dict[str, Counter[str]]) -> list[dict[str, Any]]:

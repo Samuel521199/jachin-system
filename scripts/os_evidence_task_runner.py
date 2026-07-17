@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -20,6 +21,26 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from l3_client.local_mcps.windows_uia_mcp.os_tasks import WindowsOSAutomation  # noqa: E402
+
+
+def _load_dotenv_if_present() -> None:
+    env_path = REPO_ROOT / ".env"
+    if not env_path.exists():
+        return
+    try:
+        lines = env_path.read_text(encoding="utf-8-sig").splitlines()
+    except Exception:
+        return
+    for line in lines:
+        text = line.strip()
+        if not text or text.startswith("#") or "=" not in text:
+            continue
+        key, value = text.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        value = value.strip().strip('"').strip("'")
+        os.environ[key] = value
 
 
 def _loads_list(raw: str) -> list[str]:
@@ -109,6 +130,353 @@ def _write_run_state(out_dir: Path, *, mode: str, status: str, payload: dict | N
     if payload:
         state.update(payload)
     (out_dir / "run_state.json").write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _recipients_text(recipients: list[str]) -> str:
+    clean = [str(item or "").strip() for item in recipients if str(item or "").strip()]
+    if not clean:
+        return "Neil"
+    if len(clean) == 1:
+        return clean[0]
+    return " 和 ".join(clean)
+
+
+def _live_recipient_allowlist() -> set[str]:
+    raw = os.getenv("JACHIN_WEB_RESEARCH_LIVE_RECIPIENT_ALLOWLIST")
+    if raw is None:
+        raw = "Neil,测试备注冒烟草稿"
+    return {item.strip().lower() for item in raw.replace("，", ",").split(",") if item.strip()}
+
+
+def _live_recipients_guard(recipients: list[str]) -> dict[str, object]:
+    clean = [str(item or "").strip() for item in recipients if str(item or "").strip()]
+    allowlist = _live_recipient_allowlist()
+    blocked = [item for item in clean if item.lower() not in allowlist]
+    return {
+        "ok": bool(clean) and not blocked,
+        "recipients": clean,
+        "allowlist": sorted(allowlist),
+        "blocked": blocked,
+        "reason": "" if clean and not blocked else ("missing_recipient" if not clean else "recipient_not_in_live_allowlist"),
+    }
+
+
+def _message_sha256(message: str) -> str:
+    return hashlib.sha256(str(message or "").encode("utf-8")).hexdigest()
+
+
+async def _web_research_direct_task(
+    *,
+    query: str,
+    recipients: list[str],
+    dry_run: bool,
+) -> dict:
+    from l3_node.cognitive_kernel.direct_mainline import try_execute_cognitive_direct_plan
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+    from l3_node.cognitive_kernel.ledger import current_ledger_path
+    from l3_node.cognitive_kernel.pipeline import build_cognitive_turn_context
+
+    run_id = f"os-evidence-web-research-{int(time.time() * 1000)}"
+    live_guard = {"ok": True, "recipients": recipients, "allowlist": [], "blocked": [], "reason": "dry_run"}
+    if not dry_run:
+        live_guard = _live_recipients_guard(recipients)
+        if not live_guard["ok"]:
+            return {
+                "ok": False,
+                "reply": f"live_run_blocked:{live_guard['reason']}",
+                "preview_message": "",
+                "delivery_evidence": {
+                    "delivery_mode": "live_run",
+                    "live_guard": live_guard,
+                    "post_send_verified": False,
+                    "reason": live_guard["reason"],
+                },
+                "live_guard": live_guard,
+                "user_input": "",
+                "run_id": run_id,
+                "ledger_path": str(current_ledger_path()),
+                "plan": {},
+            }
+
+    delivery_hint = "只演练，不要发送" if dry_run else "真实发送"
+    user_input = f"{delivery_hint}：搜索{query}，整理成中文简报，最后发给{_recipients_text(recipients)}"
+    tools = [
+        {"id": "mcp:tavily_search", "label": "Tavily Search"},
+        {"id": "mcp:fetch", "label": "Fetch Web Page"},
+        {"id": "core:web_research_summarize", "label": "Web Research Summarizer"},
+        {"id": "mcp:windows_lark_send_message", "label": "Windows Lark Send Message"},
+    ]
+
+    ctx = await build_cognitive_turn_context(
+        run_id=run_id,
+        user_input=user_input,
+        channel="evidence_console",
+        session_id="os_evidence_console_web_research",
+        desktop_companion_context={
+            "evidence_template": "web_research_lark",
+            "delivery_mode": "dry_run" if dry_run else "live_run",
+        },
+    )
+    plan = plan_cognitive_turn(ctx, emit_non_execution_closure=False)
+    _normalize_web_research_plan_slots(plan, query=query, recipients=recipients, dry_run=dry_run)
+
+    async def run_tool(tool_id: str, work_order_input: str, _allowed_skills: list[str] | None = None) -> str:
+        if tool_id != "mcp:windows_lark_send_message":
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": f"unexpected_transport_call:{tool_id}",
+                    "note": "search/fetch/summary should be handled by RoleExecutor native path",
+                },
+                ensure_ascii=False,
+            )
+        payload = json.loads(work_order_input or "{}")
+        if payload.get("dry_run") is True or payload.get("delivery_mode") == "dry_run":
+            return json.dumps(
+                {
+                    "ok": True,
+                    "dry_run": True,
+                    "dry_run_preview_verified": True,
+                    "message": payload.get("message") or "",
+                    "recipients_json": payload.get("recipients_json") or json.dumps(recipients, ensure_ascii=False),
+                    "detail": "preview_generated_no_external_send",
+                },
+                ensure_ascii=False,
+            )
+        send_guard = _live_recipients_guard(
+            _loads_list(str(payload.get("recipients_json") or json.dumps(recipients, ensure_ascii=False)))
+        )
+        if not send_guard["ok"]:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "delivery_mode": "live_run",
+                    "live_guard": send_guard,
+                    "error": send_guard["reason"],
+                    "detail": "live_send_blocked_by_runner_guard",
+                },
+                ensure_ascii=False,
+            )
+        from l3_client.local_mcps.windows_uia_mcp import server as windows_uia_server
+
+        return windows_uia_server.windows_lark_send_message(
+            recipients_json=str(payload.get("recipients_json") or json.dumps(recipients, ensure_ascii=False)),
+            message=str(payload.get("message") or ""),
+            out_dir="",
+            max_attempts=2,
+        )
+
+    reply = await try_execute_cognitive_direct_plan(
+        plan=plan,
+        tools=tools,
+        allowed_skills=None,
+        run_tool_func=run_tool,
+        user_input=user_input,
+        session_id="os_evidence_console_web_research",
+        channel="evidence_console",
+    )
+    reply_text = str(reply or "")
+    ok = bool(reply_text) and not _looks_like_direct_failure(reply_text)
+    ledger_path = current_ledger_path()
+    preview_message = _extract_lark_preview_message(ledger_path, run_id)
+    delivery_evidence = _extract_lark_delivery_evidence(
+        ledger_path,
+        run_id,
+        message=preview_message,
+        live_guard=live_guard,
+    )
+    return {
+        "ok": ok,
+        "reply": reply_text,
+        "preview_message": preview_message,
+        "delivery_evidence": delivery_evidence,
+        "live_guard": live_guard,
+        "user_input": user_input,
+        "run_id": run_id,
+        "ledger_path": str(ledger_path),
+        "plan": plan.to_dict(),
+    }
+
+
+def _extract_lark_preview_message(ledger_path: Path, turn_id: str) -> str:
+    if not ledger_path.exists():
+        return ""
+    best = ""
+    try:
+        lines = ledger_path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return ""
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except Exception:
+            continue
+        if event.get("turn_id") != turn_id:
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        if event.get("event_type") == "work_order":
+            inputs = payload.get("inputs") if isinstance(payload.get("inputs"), dict) else {}
+            if inputs.get("tool") == "mcp:windows_lark_send_message":
+                raw = str(inputs.get("work_order_input") or "")
+                try:
+                    obj = json.loads(raw)
+                except Exception:
+                    obj = {}
+                message = str(obj.get("message") or "").strip() if isinstance(obj, dict) else ""
+                if len(message) > len(best):
+                    best = message
+            continue
+        if payload.get("tool") != "mcp:windows_lark_send_message":
+            continue
+        observation = str(payload.get("observation_preview") or "")
+        if not observation:
+            evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+            evidence_preview = str(evidence.get("send_preview") or "").strip()
+            if evidence_preview:
+                best = evidence_preview
+            continue
+        try:
+            obj = json.loads(observation)
+        except Exception:
+            obj = {}
+        if isinstance(obj, dict):
+            message = str(obj.get("message") or "").strip()
+            if message:
+                best = message
+                continue
+        evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+        send_result = evidence.get("send_result") if isinstance(evidence.get("send_result"), dict) else {}
+        send_reason = str(send_result.get("reason") or "").strip()
+        if send_reason:
+            best = send_reason
+            continue
+        evidence_preview = str(evidence.get("send_preview") or "").strip()
+        if evidence_preview:
+            best = evidence_preview
+    return best
+
+
+def _extract_lark_delivery_evidence(
+    ledger_path: Path,
+    turn_id: str,
+    *,
+    message: str,
+    live_guard: dict[str, object],
+) -> dict[str, object]:
+    evidence: dict[str, object] = {
+        "turn_id": turn_id,
+        "message_sha256": _message_sha256(message),
+        "message_len": len(str(message or "")),
+        "live_guard": live_guard,
+        "role_execution_found": False,
+        "delivery_mode": "dry_run" if str(live_guard.get("reason") or "") == "dry_run" else "live_run",
+        "post_send_verified": False,
+        "dry_run_preview_verified": False,
+    }
+    if not ledger_path.exists():
+        evidence["reason"] = "ledger_not_found"
+        return evidence
+    try:
+        lines = ledger_path.read_text(encoding="utf-8").splitlines()
+    except Exception as exc:
+        evidence["reason"] = f"ledger_read_failed:{type(exc).__name__}"
+        return evidence
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except Exception:
+            continue
+        if event.get("turn_id") != turn_id or event.get("event_type") != "role_execution_finished":
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        if payload.get("tool") != "mcp:windows_lark_send_message":
+            continue
+        role_evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+        evidence.update(
+            {
+                "role_execution_found": True,
+                "role_id": payload.get("role_id"),
+                "work_order_id": payload.get("work_order_id"),
+                "adapter_role": payload.get("adapter_role"),
+                "elapsed_ms": payload.get("elapsed_ms"),
+                "delivery_mode": role_evidence.get("delivery_mode") or evidence["delivery_mode"],
+                "post_send_verified": bool(role_evidence.get("post_send_verified")),
+                "dry_run_preview_verified": bool(role_evidence.get("dry_run_preview_verified")),
+                "duplicate_skipped": bool(role_evidence.get("duplicate_skipped")),
+                "dedupe_key": role_evidence.get("dedupe_key"),
+                "send_result": role_evidence.get("send_result"),
+                "quality_report": role_evidence.get("web_research_quality_report"),
+                "source_quality": role_evidence.get("source_quality"),
+                "observation_preview": payload.get("observation_preview"),
+            }
+        )
+    if not evidence["role_execution_found"]:
+        evidence["reason"] = "lark_role_execution_missing"
+    elif evidence["delivery_mode"] == "live_run" and not evidence["post_send_verified"]:
+        evidence["reason"] = "live_send_post_verification_missing"
+    elif evidence["delivery_mode"] == "dry_run" and not evidence["dry_run_preview_verified"]:
+        evidence["reason"] = "dry_run_preview_verification_missing"
+    else:
+        evidence["reason"] = "verified"
+    return evidence
+
+
+def _looks_like_direct_failure(text: str) -> bool:
+    low = str(text or "").lower()
+    return any(
+        marker in low
+        for marker in (
+            "没有通过验证",
+            "verification_failure",
+            "missing_tavily_api_key",
+            "missing tavily",
+            "live_run_blocked",
+            "recipient_not_in_live_allowlist",
+            "message_post_send_verification_missing",
+            "failed",
+            '"ok": false',
+        )
+    )
+
+
+def _normalize_web_research_plan_slots(plan, *, query: str, recipients: list[str], dry_run: bool) -> None:
+    delivery_mode = "dry_run" if dry_run else "live_run"
+    recipients_json = json.dumps(recipients or ["Neil"], ensure_ascii=False)
+    try:
+        plan.review_summary.target["query"] = query
+        plan.review_summary.target["name"] = query
+        plan.review_summary.target["recipients"] = recipients or ["Neil"]
+        plan.review_summary.target["delivery_mode"] = delivery_mode
+        plan.decision_contract.target["query"] = query
+        plan.decision_contract.target["name"] = query
+        plan.decision_contract.target["recipients"] = recipients or ["Neil"]
+        plan.decision_contract.target["delivery_mode"] = delivery_mode
+    except Exception:
+        pass
+    for work_order in getattr(plan, "work_orders", []) or []:
+        tool = str(work_order.inputs.get("tool") or "")
+        raw = str(work_order.inputs.get("work_order_input") or "")
+        try:
+            payload = json.loads(raw) if raw else {}
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        if tool == "mcp:tavily_search":
+            payload["query"] = query
+        elif tool == "mcp:fetch":
+            payload.setdefault("query", query)
+        elif tool == "core:web_research_summarize":
+            payload["query"] = query
+            payload["recipients_json"] = recipients_json
+        elif tool == "mcp:windows_lark_send_message":
+            payload["query"] = query
+            payload["recipients_json"] = recipients_json
+            payload["delivery_mode"] = delivery_mode
+            payload["dry_run"] = dry_run
+            payload["send_allowed"] = not dry_run
+        if payload:
+            work_order.inputs["work_order_input"] = json.dumps(payload, ensure_ascii=False)
 
 
 def run_standard_demo(args: argparse.Namespace) -> dict:
@@ -276,6 +644,63 @@ def run_template(args: argparse.Namespace) -> dict:
         result = auto.app_switch_matrix(apps_json=json.dumps(["codex", "lark", "browser", "explorer"], ensure_ascii=False))
     elif template_id == "project_memory":
         result = auto.project_remember(args.project_name, args.project_path)
+    elif template_id == "web_research_lark":
+        query = (args.web_query or "").strip() or "最新 AI 模型相关消息"
+        direct = asyncio.run(_web_research_direct_task(query=query, recipients=recipients, dry_run=args.dry_run))
+        evidence_payload = {
+            "task": "web_research_lark_template",
+            "ok": bool(direct.get("ok")),
+            "detail": "dry_run_preview_generated" if args.dry_run else "live_run_delivery_attempted",
+            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "template": {
+                "id": "web_research_lark",
+                "workflow_id": "web_research_to_lark",
+                "description": "Search -> fetch -> per-page summary -> final brief -> quality gate -> Lark preview/delivery",
+                "delivery_mode": "dry_run" if args.dry_run else "live_run",
+                "query": query,
+                "recipients": recipients,
+            },
+            "message_preview": str(direct.get("preview_message") or direct.get("reply") or ""),
+            "message_sha256": _message_sha256(str(direct.get("preview_message") or "")),
+            "recipients": recipients,
+            "live_guard": direct.get("live_guard") or {},
+            "delivery_evidence": direct.get("delivery_evidence") or {},
+            "control": {
+                "turn_id": direct.get("run_id"),
+                "ledger_path": direct.get("ledger_path"),
+                "user_input": direct.get("user_input"),
+            },
+            "plan_preview": direct.get("plan") or {},
+            "timeline": [
+                {
+                    "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "stage": "web_research_template_dispatch",
+                    "status": "done" if direct.get("ok") else "failed",
+                    "detail": str(direct.get("reply") or "no direct reply"),
+                    "evidence": {
+                        "query": query,
+                        "recipients": recipients,
+                        "dry_run": bool(args.dry_run),
+                        "ledger_path": direct.get("ledger_path"),
+                        "live_guard": direct.get("live_guard") or {},
+                        "delivery_evidence": direct.get("delivery_evidence") or {},
+                    },
+                }
+            ],
+        }
+        evidence_path = out_dir / "web_research_lark_template.evidence.json"
+        evidence_payload["evidence_path"] = str(evidence_path)
+        evidence_path.write_text(json.dumps(evidence_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        result = type(
+            "WebResearchTemplateResult",
+            (),
+            {
+                "task": evidence_payload["task"],
+                "ok": bool(direct.get("ok")),
+                "detail": evidence_payload["detail"],
+                "evidence": evidence_payload,
+            },
+        )()
     else:
         raise SystemExit(f"unknown template_id: {template_id}")
     evidence_path = _ensure_evidence_file(out_dir, result, template_id or "template")
@@ -324,6 +749,7 @@ def run_preflight(args: argparse.Namespace) -> dict:
 
 
 def main() -> int:
+    _load_dotenv_if_present()
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["standard_demo", "smoke_matrix", "template", "preflight"], required=True)
     parser.add_argument("--template-id", default="")
@@ -332,6 +758,7 @@ def main() -> int:
     parser.add_argument("--recipients-json", default='["Vivian"]')
     parser.add_argument("--since-days", type=int, default=3)
     parser.add_argument("--wait-seconds", type=int, default=120)
+    parser.add_argument("--web-query", default="")
     parser.add_argument("--out-dir", default=str(REPO_ROOT / "output" / "os_evidence_console_runs"))
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()

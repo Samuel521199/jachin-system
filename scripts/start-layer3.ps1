@@ -56,6 +56,7 @@ Set-Location $ProjectRoot
 
 $script:Layer3ExitCode = 0
 $script:L3SourceChild = $null
+$script:TauriDevChild = $null
 
 function Select-Layer3RunMode {
     param([string]$RequestedMode)
@@ -447,6 +448,100 @@ function Stop-TcpPortListener {
     return $true
 }
 
+function Stop-Layer3TrackedProcessTree {
+    param(
+        [object]$Process,
+        [string]$Name
+    )
+    if (-not $Process) { return }
+    $targetPid = 0
+    try { $targetPid = [int]$Process.Id } catch { return }
+    if ($targetPid -le 0) { return }
+    try {
+        $alive = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
+        if (-not $alive -or $alive.HasExited) { return }
+    } catch { }
+    Write-Host "[Layer3] 结束残留 $Name 进程树 (pid=$targetPid)..." -ForegroundColor Gray
+    try {
+        & taskkill.exe /F /T /PID $targetPid *> $null
+    } catch {
+        try { Stop-Process -Id $targetPid -Force -ErrorAction SilentlyContinue } catch { }
+    }
+}
+
+function Resolve-NativeCommandPath {
+    param([string]$CommandName)
+    $cmds = @(Get-Command $CommandName -All -ErrorAction SilentlyContinue)
+    if (-not $cmds.Count) { return $null }
+
+    foreach ($cmd in ($cmds | Where-Object { $_.CommandType -eq "Application" })) {
+        foreach ($p in @($cmd.Source, $cmd.Path, $cmd.Definition)) {
+            if ($p -and (Test-Path -LiteralPath $p) -and ($p -match '\.(exe|cmd|bat|com)$')) { return $p }
+        }
+    }
+    foreach ($cmd in $cmds) {
+        foreach ($p in @($cmd.Source, $cmd.Path, $cmd.Definition)) {
+            if ($p -and (Test-Path -LiteralPath $p) -and ($p -notmatch '\.ps1$')) { return $p }
+        }
+    }
+    return $CommandName
+}
+
+function Invoke-InterruptibleNativeProcess {
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments,
+        [string]$WorkingDirectory,
+        [string]$Name
+    )
+    $resolved = Resolve-NativeCommandPath $FilePath
+    if (-not $resolved) { throw "Command not found: $FilePath" }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    if ($resolved -match '\.(cmd|bat)$') {
+        $quoted = '"' + $resolved + '"'
+        $argLine = ($Arguments | ForEach-Object {
+            $s = [string]$_
+            if ($s -match '[\s"]') { '"' + ($s -replace '"', '\"') + '"' } else { $s }
+        }) -join ' '
+        $psi.FileName = "cmd.exe"
+        $psi.Arguments = "/D /S /C `"$quoted $argLine`""
+    } else {
+        $psi.FileName = $resolved
+        $psi.Arguments = ($Arguments -join ' ')
+    }
+    $psi.WorkingDirectory = $WorkingDirectory
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $false
+
+    $proc = $null
+    try {
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        if ($null -eq $proc) { throw "Failed to start $Name" }
+        if ($Name -eq "tauri-dev") { $script:TauriDevChild = $proc }
+        while (-not $proc.HasExited) {
+            Start-Sleep -Milliseconds 500
+        }
+        return $proc.ExitCode
+    } catch [System.Management.Automation.PipelineStoppedException] {
+        Stop-Layer3TrackedProcessTree -Process $proc -Name $Name
+        throw
+    } catch {
+        Stop-Layer3TrackedProcessTree -Process $proc -Name $Name
+        throw
+    } finally {
+        if ($Name -eq "tauri-dev") { $script:TauriDevChild = $null }
+    }
+}
+
+function Invoke-NpmScriptInterruptible {
+    param(
+        [string]$ScriptName,
+        [string]$WorkingDirectory
+    )
+    return Invoke-InterruptibleNativeProcess -FilePath "npm" -Arguments @("run", $ScriptName) -WorkingDirectory $WorkingDirectory -Name "tauri-dev"
+}
+
 function Resolve-VoicePythonExe {
     $venvPy = Join-Path $ProjectRoot ".venv-voice\Scripts\python.exe"
     if (Test-Path -LiteralPath $venvPy) { return $venvPy }
@@ -615,8 +710,7 @@ function Invoke-TauriDevWithRustIceRetry {
         [string]$DesktopDir,
         [string]$TauriDevScript
     )
-    npm run $TauriDevScript
-    $code = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }
+    $code = Invoke-NpmScriptInterruptible -ScriptName $TauriDevScript -WorkingDirectory $DesktopDir
     if ($code -ne 101) {
         return $code
     }
@@ -630,8 +724,7 @@ function Invoke-TauriDevWithRustIceRetry {
     } finally {
         Pop-Location
     }
-    npm run $TauriDevScript
-    return $(if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 })
+    return (Invoke-NpmScriptInterruptible -ScriptName $TauriDevScript -WorkingDirectory $DesktopDir)
 }
 
 try {
@@ -875,11 +968,19 @@ try {
     $script:Layer3ExitCode = 1
     exit 1
 } finally {
+    if ($script:TauriDevChild) {
+        try {
+            if (-not $script:TauriDevChild.HasExited) {
+                Stop-Layer3TrackedProcessTree -Process $script:TauriDevChild -Name "tauri-dev"
+            }
+        } catch { }
+        $script:TauriDevChild = $null
+    }
     # 同窗模式下 Ctrl+C 常先打断 npm；这里兜底回收残留的 python -m l3_node 子进程，避免“界面卡住无提示符”。
     if ($script:L3SourceChild) {
         try {
             if (-not $script:L3SourceChild.HasExited) {
-                Stop-Process -Id $script:L3SourceChild.Id -Force -ErrorAction SilentlyContinue
+                Stop-Layer3TrackedProcessTree -Process $script:L3SourceChild -Name "L3"
                 Write-Host "[Layer3] 已结束残留 L3 子进程 (pid=$($script:L3SourceChild.Id))" -ForegroundColor Gray
             }
         } catch { }

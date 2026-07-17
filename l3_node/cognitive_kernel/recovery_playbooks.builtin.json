@@ -50,6 +50,9 @@
                 "summary_contains_web_noise",
                 "summary_has_ellipsis_truncation",
                 "summary_incomplete_sentence",
+                "summary_source_line_missing",
+                "summary_source_line_markdown_artifact",
+                "summary_sentence_fragment",
                 "summary_too_short"
               ]
             },

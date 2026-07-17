@@ -62,6 +62,15 @@ def is_confirmation_text(text: str) -> bool:
         "\u6267\u884c",
         "\u786e\u8ba4\u6267\u884c",
         "\u53ef\u4ee5\u6267\u884c",
+        "\u5c31\u8fd9\u4e2a",
+        "\u5c31\u662f\u8fd9\u4e2a",
+        "\u5bf9\u5c31\u662f\u8fd9\u4e2a",
+        "\u662f\u8fd9\u4e2a",
+        "\u6253\u5f00\u5427",
+        "\u53d1\u5427",
+        "\u53d1\u9001\u5427",
+        "\u6267\u884c\u5427",
+        "\u7ee7\u7eed\u5427",
     }
 
 
@@ -82,6 +91,10 @@ def is_cancellation_text(text: str) -> bool:
         "\u505c\u6b62",
         "\u4e0d\u6267\u884c",
         "\u4e0d\u8981\u6267\u884c",
+        "\u4e0d\u7528\u4e86",
+        "\u7b97\u4e86",
+        "\u522b\u6267\u884c",
+        "\u505c\u4e0b",
     }
 
 
@@ -90,6 +103,7 @@ def _normalize_confirmation_reply(text: str) -> str:
     normalized = normalized.strip(_TRAILING_CONFIRMATION_PUNCTUATION)
     normalized = normalized.replace("\u3000", " ")
     normalized = " ".join(normalized.split())
+    normalized = normalized.replace(",", "").replace("\uff0c", "").replace("\u3001", "")
     return normalized
 
 

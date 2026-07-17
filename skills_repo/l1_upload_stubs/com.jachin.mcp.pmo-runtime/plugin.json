@@ -33,5 +33,74 @@
     "runtime",
     "l3-local",
     "business-mcp"
-  ]
+  ],
+  "recovery_playbook": {
+    "targets": [
+      {
+        "id": "pmo_runtime_report_pipeline",
+        "role_agent": "ToolExecutionAgent",
+        "tools": [
+          "core:pmo_*",
+          "*pmo*"
+        ],
+        "max_attempts": 5,
+        "steps": [
+          {
+            "strategy": "run_preview_before_push",
+            "tool": "core:pmo_macro_dashboard_preview",
+            "when": {
+              "failure_any": [
+                "delivery_unverified",
+                "lark_send_failed",
+                "push_failed",
+                "message_post_send_verification_missing"
+              ]
+            },
+            "action_patch": {
+              "dry_run": true,
+              "recovery_strategy": "run_preview_before_push"
+            },
+            "rationale": "if PMO push delivery fails, generate a preview first to separate report generation from send failure",
+            "priority": 10
+          },
+          {
+            "strategy": "refresh_mirror_import",
+            "tool": "core:pmo_mirror_import",
+            "when": {
+              "failure_any": [
+                "manifest_not_found",
+                "stale_manifest",
+                "missing_raw_records",
+                "table_empty",
+                "source_missing"
+              ]
+            },
+            "action_patch": {
+              "refresh_manifest": true,
+              "recovery_strategy": "refresh_mirror_import"
+            },
+            "rationale": "when PMO data is stale or missing, refresh mirror import before recomputing dashboard",
+            "priority": 20
+          },
+          {
+            "strategy": "fallback_change_alert_analysis",
+            "tool": "core:pmo_change_alert_analyze",
+            "when": {
+              "failure_any": [
+                "dashboard_quality_failed",
+                "risk_summary_missing",
+                "incomplete_report"
+              ]
+            },
+            "action_patch": {
+              "focus": "risk_and_changes",
+              "recovery_strategy": "fallback_change_alert_analysis"
+            },
+            "rationale": "if full dashboard quality fails, produce a narrower change/risk analysis instead of sending a weak report",
+            "priority": 35
+          }
+        ]
+      }
+    ]
+  }
 }

@@ -21,6 +21,7 @@ from .contracts import (
 from .ledger import current_ledger_path
 from .memory_growth_recall import recall_memory_growth
 from .memory_lifecycle import expire_lifecycle_memories, recall_lifecycle_memories
+from .memory_trust import decorate_memory_evidence, memory_requires_confirmation, should_recall_memory, trust_score_detail, trust_weight
 
 
 def _history_evidence(prior_messages: list[dict[str, Any]], limit: int = 6) -> list[MemoryEvidence]:
@@ -137,9 +138,11 @@ async def recall_relevant_memory(
     prior_messages: list[dict[str, Any]] | None = None,
     max_results_per_channel: int = 5,
 ) -> RelevantMemoryBundle:
-    evidence = _history_evidence(prior_messages or [], max_results_per_channel)
-    state_evidence = _task_state_evidence(state_snapshot)
+    evidence = _decorate_trust_items(_history_evidence(prior_messages or [], max_results_per_channel), "conversation memory trust")
+    state_evidence = _decorate_trust_items(_task_state_evidence(state_snapshot), "state memory trust")
     recent_actions, ledger_failure_hints = _recent_ledger_evidence(max_results_per_channel)
+    recent_actions = _decorate_trust_items(recent_actions, "ledger memory trust")
+    ledger_failure_hints = _decorate_trust_items(ledger_failure_hints, "ledger failure memory trust")
     candidate_intents = _candidate_intents(envelope.normalized_text or envelope.raw_text)
     candidate_domains = _candidate_task_domains(candidate_intents, envelope, state_snapshot)
     multi_queries = _build_multi_queries(
@@ -228,6 +231,8 @@ async def recall_relevant_memory(
     )
     recalled_items.extend(growth_items)
     memory_gaps.extend(growth_gaps)
+    recalled_items, trust_ranking_evidence, trust_conflicts = _apply_recall_trust(recalled_items)
+    ranking_evidence.extend(trust_ranking_evidence)
     for item in recalled_items:
         bucket = _classify_recalled_memory(item)
         if bucket not in buckets:
@@ -261,6 +266,7 @@ async def recall_relevant_memory(
         aliases=aliases,
         corrections=corrections,
     )
+    conflicts.extend(trust_conflicts)
 
     confidence = 0.55
     if (
@@ -312,6 +318,45 @@ async def recall_relevant_memory(
         confidence=confidence,
         memory_gaps=memory_gaps,
     )
+
+
+def _decorate_trust_items(items: list[MemoryEvidence], reason_prefix: str) -> list[MemoryEvidence]:
+    out: list[MemoryEvidence] = []
+    for item in items:
+        decorated = decorate_memory_evidence(item, reason_prefix=reason_prefix)
+        if should_recall_memory(decorated):
+            out.append(decorated)
+    return out
+
+
+def _apply_recall_trust(items: list[MemoryEvidence]) -> tuple[list[MemoryEvidence], list[dict[str, Any]], list[dict[str, Any]]]:
+    trusted: list[MemoryEvidence] = []
+    ranking: list[dict[str, Any]] = []
+    conflicts: list[dict[str, Any]] = []
+    for item in items:
+        decorated = decorate_memory_evidence(item, reason_prefix="recall trust gate")
+        detail = {"memory_id": decorated.memory_id, "memory_type": decorated.memory_type, **trust_score_detail(decorated)}
+        if not should_recall_memory(decorated):
+            detail["filtered"] = True
+            detail["filter_reason"] = "memory_trust_rejected"
+            ranking.append(detail)
+            continue
+        detail["filtered"] = False
+        ranking.append(detail)
+        if memory_requires_confirmation(decorated):
+            conflicts.append(
+                {
+                    "type": "memory_trust_requires_confirmation",
+                    "memory_id": decorated.memory_id,
+                    "memory_type": decorated.memory_type,
+                    "trust_state": decorated.trust_state,
+                    "trust_reason": decorated.trust_reason,
+                    "content_preview": decorated.content[:240],
+                    "action": "ask_user_before_overwriting_or_using",
+                }
+            )
+        trusted.append(decorated)
+    return trusted, ranking, conflicts
 
 
 def _candidate_intents(text: str) -> list[str]:
@@ -734,6 +779,16 @@ def _memory_score(
     request: MemoryRecallRequest,
     state_snapshot: StateSnapshot,
 ) -> tuple[float, dict[str, Any]]:
+    if not should_recall_memory(item):
+        detail = trust_score_detail(item)
+        return 0.0, {
+            "memory_id": item.memory_id,
+            "memory_type": item.memory_type,
+            "score": 0.0,
+            "filtered": True,
+            "filter_reason": "memory_trust_rejected",
+            **detail,
+        }
     semantic_similarity = max(0.0, min(1.0, float(item.confidence or 0.0)))
     recency_score = _recency_score(item)
     user_confirmed_score = 1.0 if item.confirmed_by_user else 0.35
@@ -748,6 +803,8 @@ def _memory_score(
         + state_alignment_score * 0.10
         - conflict_penalty
     )
+    trust_detail = trust_score_detail(item)
+    score *= trust_weight(trust_detail["memory_trust_state"])
     if str(item.source or "").startswith("Memory Growth"):
         score += 0.18
         strategy_multiplier, strategy_detail = _memory_growth_strategy_multiplier(item)
@@ -767,6 +824,7 @@ def _memory_score(
         "task_relevance_score": round(task_relevance_score, 4),
         "state_alignment_score": round(state_alignment_score, 4),
         "conflict_penalty": round(conflict_penalty, 4),
+        **trust_detail,
         **strategy_detail,
     }
 

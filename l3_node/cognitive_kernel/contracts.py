@@ -118,6 +118,10 @@ class MemoryEvidence:
     confirmed_by_user: bool = False
     ttl: str = ""
     relevance_reason: str = ""
+    trust_state: str = "floating"
+    trust_reason: str = ""
+    user_attitude: str = "floating"
+    recall_allowed: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return _json_ready(asdict(self))
@@ -318,6 +322,9 @@ class MemoryWriteRequest:
     ttl: str = ""
     requires_user_confirmation: bool = False
     merge_policy: str = "dedupe_and_merge"
+    trust_state: str = ""
+    trust_reason: str = ""
+    user_attitude: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return _json_ready(asdict(self))

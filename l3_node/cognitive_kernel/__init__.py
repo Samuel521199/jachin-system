@@ -46,6 +46,7 @@ from .capability_recovery_registry import CapabilityRecoveryRegistry, RecoveryCa
 from .dispatcher import DispatchResult, dispatch_existing_work_order, dispatch_tool_work_order
 from .failure_learning_loop import FailureLearningRecord, classify_failure_reason, learn_from_failure
 from .goal_interpreter import GoalInterpretation, interpret_goal
+from .input_adapter import CognitiveInputAdaptation, adapt_input_for_cognitive_kernel
 from .kernel_loop import KernelPlanningResult, plan_cognitive_turn
 from .kernel_prompts import (
     build_cognitive_kernel_system_prompt,
@@ -120,6 +121,7 @@ __all__ = [
     "CapabilityIntelligenceProfile",
     "CapabilityRecoveryRegistry",
     "CognitiveTurnContext",
+    "CognitiveInputAdaptation",
     "DecisionContract",
     "DecomposedTaskNode",
     "DispatchResult",
@@ -170,6 +172,7 @@ __all__ = [
     "apply_governance_to_contract",
     "build_cognitive_turn_context",
     "build_cognitive_kernel_system_prompt",
+    "adapt_input_for_cognitive_kernel",
     "build_work_order_from_decision",
     "build_capability_intelligence",
     "build_capability_intelligence_index",

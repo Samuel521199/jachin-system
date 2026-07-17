@@ -61,5 +61,76 @@
     "skill-test"
   ],
   "type": "SKILL",
-  "version": "1.0.15"
+  "version": "1.0.15",
+  "recovery_playbook": {
+    "targets": [
+      {
+        "id": "english_learning_lookup_and_card",
+        "role_agent": "ToolExecutionAgent",
+        "tools": [
+          "*english*",
+          "*local_translate*"
+        ],
+        "max_attempts": 5,
+        "steps": [
+          {
+            "strategy": "check_cached_vocab_assets",
+            "tool": "english_example_pack_status",
+            "when": {
+              "failure_any": [
+                "example_missing",
+                "cache_missing",
+                "pack_missing",
+                "definition_missing"
+              ]
+            },
+            "action_patch": {
+              "include_counts": true,
+              "recovery_strategy": "check_cached_vocab_assets"
+            },
+            "rationale": "verify bundled vocab/example assets before retrying model generation",
+            "priority": 10
+          },
+          {
+            "strategy": "warmup_local_translation_for_card",
+            "tool": "local_translate_warmup",
+            "when": {
+              "failure_any": [
+                "translation_missing",
+                "model_not_ready",
+                "cold_start",
+                "timeout"
+              ]
+            },
+            "action_patch": {
+              "direction": "en-zh",
+              "recovery_strategy": "warmup_local_translation_for_card"
+            },
+            "rationale": "warm translation runtime before retrying word or sentence explanation",
+            "priority": 20
+          },
+          {
+            "strategy": "regenerate_card_with_quality_constraints",
+            "tool": "english_generate_example_card",
+            "when": {
+              "failure_any": [
+                "template_like",
+                "scene_mismatch",
+                "bad_example",
+                "logic_error"
+              ]
+            },
+            "action_patch": {
+              "strict_scene_fit": true,
+              "avoid_templates": true,
+              "require_chinese_translation": true,
+              "recovery_strategy": "regenerate_card_with_quality_constraints"
+            },
+            "rationale": "regenerate a higher-quality card when the first example feels template-like or semantically wrong",
+            "priority": 30
+          }
+        ]
+      }
+    ]
+  }
 }

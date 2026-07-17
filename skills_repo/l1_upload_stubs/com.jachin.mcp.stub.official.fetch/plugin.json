@@ -16,5 +16,61 @@
     "env": {
       "PYTHONIOENCODING": "utf-8"
     }
+  },
+  "recovery_playbook": {
+    "targets": [
+      {
+        "id": "web_fetch_readability",
+        "role_agent": "BrowserExecutorAgent",
+        "tools": [
+          "mcp:fetch",
+          "*officialfetch*",
+          "*fetch*"
+        ],
+        "max_attempts": 5,
+        "steps": [
+          {
+            "strategy": "refetch_with_text_mode",
+            "tool": "$same",
+            "when": {
+              "failure_any": [
+                "fetch_readable_content_missing",
+                "html_noise",
+                "too_short",
+                "timeout"
+              ]
+            },
+            "action_patch": {
+              "prefer_text": true,
+              "min_readable_chars": 800,
+              "recovery_strategy": "refetch_with_text_mode"
+            },
+            "rationale": "retry fetch in text/readability mode when the page body is missing or too noisy",
+            "priority": 10
+          },
+          {
+            "strategy": "mark_source_blocked_and_search_alternative",
+            "tool": "mcp:tavily_search",
+            "when": {
+              "failure_any": [
+                "403",
+                "access denied",
+                "captcha",
+                "bot wall",
+                "login wall",
+                "fetch_access_or_bot_wall"
+              ]
+            },
+            "action_patch": {
+              "exclude_blocked_url": true,
+              "max_results": 8,
+              "recovery_strategy": "mark_source_blocked_and_search_alternative"
+            },
+            "rationale": "when a source is blocked, do not keep fetching it; search for alternative readable sources",
+            "priority": 20
+          }
+        ]
+      }
+    ]
   }
 }
