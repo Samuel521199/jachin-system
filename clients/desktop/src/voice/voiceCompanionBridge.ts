@@ -3,16 +3,16 @@ import { emit, emitTo } from "@tauri-apps/api/event";
 import type { SensoryAnswerMeta, SensoryChunkMeta } from "../hooks/useSensoryWebSocket";
 import { stripAssistantUiProtocol } from "../components/Chat/pendingConfirmationProtocol";
 
-// chat -> HUD: L3 stream bridge. Chat owns L3 send/TTS; HUD only mirrors UI.
+// chat -> unified Omni event bridge. The old standalone HUD window has been retired.
 export const VOICE_COMPANION_L3_EVENT = "voice-companion-l3";
 
-// chat -> HUD: mirror user bubble for companion turns.
+// chat -> unified Omni event bridge.
 export const VOICE_COMPANION_USER_EVENT = "voice-companion-user";
 
-// HUD / Orb -> chat: request one canonical L3 send.
+// voice / quick input -> chat: request one canonical L3 send.
 export const VOICE_COMPANION_SEND_EVENT = "voice-companion-send";
 
-// HUD own WS -> chat: replay assistant text into the existing TTS orchestrator only.
+// assistant voice replay into the existing TTS orchestrator only.
 export const VOICE_COMPANION_TTS_EVENT = "voice-companion-tts";
 
 export type VoiceCompanionL3Payload = {
@@ -26,22 +26,17 @@ export type VoiceCompanionL3Payload = {
 
 export type VoiceCompanionTtsPayload = VoiceCompanionL3Payload;
 
-async function emitToHudPanel(event: string, payload: Record<string, unknown>): Promise<void> {
+async function emitToOmniSurface(event: string, payload: Record<string, unknown>): Promise<void> {
   try {
-    await invoke("voice_companion_emit_to_hud", { event, payload });
+    await invoke("voice_companion_emit_to_omni", { event, payload });
     return;
-  } catch {
-    // fallback for old builds / non-Tauri dev paths
-  }
-  try {
-    await emitTo("hud_panel", event, payload);
   } catch {
     await emit(event, payload);
   }
 }
 
 export async function emitCompanionL3ToHud(payload: VoiceCompanionL3Payload): Promise<void> {
-  await emitToHudPanel(VOICE_COMPANION_L3_EVENT, {
+  await emitToOmniSurface(VOICE_COMPANION_L3_EVENT, {
     ...payload,
     delta: payload.delta ? stripAssistantUiProtocol(payload.delta) : payload.delta,
     content: payload.content ? stripAssistantUiProtocol(payload.content) : payload.content,
@@ -64,7 +59,7 @@ export async function emitCompanionTtsToChat(payload: VoiceCompanionTtsPayload):
 export async function emitCompanionUserToHud(content: string): Promise<void> {
   const t = content.trim();
   if (!t) return;
-  await emitToHudPanel(VOICE_COMPANION_USER_EVENT, { content: t });
+  await emitToOmniSurface(VOICE_COMPANION_USER_EVENT, { content: t });
 }
 
 export async function armCompanionVoiceSession(): Promise<void> {

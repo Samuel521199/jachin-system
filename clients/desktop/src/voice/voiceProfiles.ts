@@ -1,5 +1,5 @@
 /** Voice Core UX Profile: same pipeline, different UX shells. */
-export type VoiceUxProfile = "wake" | "chat_ptt" | "chat_vad";
+export type VoiceUxProfile = "wake" | "continuous" | "chat_ptt" | "chat_vad";
 
 export type VoiceProfileConfig = {
   id: VoiceUxProfile;
@@ -20,6 +20,13 @@ export const VOICE_PROFILES: Record<VoiceUxProfile, VoiceProfileConfig> = {
     companionUi: true,
     maxSpeakSentences: 3,
     conversationWindowSec: 60,
+  },
+  continuous: {
+    id: "continuous",
+    wakeAck: false,
+    companionUi: true,
+    maxSpeakSentences: 3,
+    conversationWindowSec: 0,
   },
   chat_ptt: {
     id: "chat_ptt",

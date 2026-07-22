@@ -458,7 +458,7 @@ def check_and_preempt(
         # 尝试通过 foreground_run_registry 取消（同进程）
         cancelled_local = False
         try:
-            from l3_node.foreground_run_registry import request_cancel_run
+            from l3_node.primitives.agent_tasks.agent_cancel import request_cancel_run
 
             cancelled_local = bool(request_cancel_run(task.run_id))
             logger.info(

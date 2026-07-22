@@ -6,6 +6,7 @@ import base64
 import asyncio
 import io
 import os
+import re
 import struct
 import time
 import wave
@@ -53,10 +54,11 @@ def _make_stt_service():
         from services.cloud_stt_service import CloudSttService
 
         logger.info(
-            "JVS STT backend=cloud model=%s realtime=%s hotword=%s file=%s vocab=%s base=%s",
+            "JVS STT backend=cloud model=%s realtime=%s hotword=%s mode=%s file=%s vocab=%s base=%s",
             cfg.stt_model,
             cfg.stt_realtime_model,
             cfg.stt_hotword_model,
+            cfg.stt_hotword_mode,
             cfg.stt_file_model,
             "set" if cfg.stt_vocabulary_id else "unset",
             cfg.dashscope_api_base,
@@ -72,6 +74,7 @@ def _make_stt_service():
             vocabulary_id=cfg.stt_vocabulary_id,
             vocabulary_prefix=cfg.stt_vocabulary_prefix,
             auto_sync_vocabulary=cfg.stt_auto_sync_vocabulary,
+            hotword_mode=cfg.stt_hotword_mode,
             workspace=cfg.dashscope_workspace_id,
             language=cfg.stt_language,
         )
@@ -127,7 +130,7 @@ local_stt_fallback_service = (
     else None
 )
 tts_service = _make_tts_service()
-sv_service = SvService(cfg.sv_dir)
+sv_service = SvService(cfg.sv_dir, device=cfg.torch_device, require_gpu=cfg.require_gpu)
 
 
 def _stt_http_timeout_seconds() -> float:
@@ -206,7 +209,7 @@ def _warmup_tts_engine(reason: str = "startup") -> dict[str, Any]:
         logger.info("Preloading %s TTS engine...", getattr(tts_service, "model_name", "unknown"))
         loaded = tts_service._load_engine()
         if loaded and cfg.tts_backend == "cloud" and hasattr(tts_service, "prewarm_stream"):
-            enabled = os.getenv("JACHIN_TTS_PREWARM_STREAM", "1").strip().lower() not in {"0", "false", "no", "off"}
+            enabled = os.getenv("JACHIN_TTS_PREWARM_STREAM", "0").strip().lower() not in {"0", "false", "no", "off"}
             if not enabled:
                 return {"ok": True, "status": "disabled"}
             return tts_service.prewarm_stream(reason=reason)
@@ -296,11 +299,16 @@ def health() -> dict:
         "tts_backend": cfg.tts_backend,
         "stt_realtime_model": cfg.stt_realtime_model,
         "stt_hotword_model": cfg.stt_hotword_model,
+        "stt_hotword_mode": cfg.stt_hotword_mode,
         "stt_file_model": cfg.stt_file_model,
         "stt_vocabulary_id_configured": bool(cfg.stt_vocabulary_id),
         "stt_auto_sync_vocabulary": cfg.stt_auto_sync_vocabulary,
         "tts_fast_model": cfg.tts_fast_model,
         "sv_model": sv_service.backend,
+        "sv_dir": str(cfg.sv_dir),
+        "sv_device_request": cfg.torch_device,
+        "sv_effective_device": sv_service.effective_device,
+        "sv_require_gpu": cfg.require_gpu,
         "sv_load_error": sv_service.load_error,
         "tts_voice": current_tts_voice,
         "tts_speed": cfg.tts_speed,
@@ -893,6 +901,47 @@ def _pack_tcp_frame(msg_type: int, payload: bytes = b"") -> bytes:
     return struct.pack("<BI", int(msg_type) & 0xFF, len(payload)) + payload
 
 
+def _stt_alternatives_from_result(result: "SttResult") -> list[dict]:
+    seen: set[str] = set()
+    alternatives: list[dict] = []
+
+    def add(text: object, *, source: str, confidence: object = None) -> None:
+        value = str(text or "").strip()
+        if not value:
+            return
+        key = re.sub(r"\s+", " ", value).strip().lower()
+        if key in seen:
+            return
+        seen.add(key)
+        item: dict[str, object] = {"text": value, "source": source}
+        try:
+            if confidence is not None:
+                item["confidence"] = float(confidence)
+        except (TypeError, ValueError):
+            pass
+        alternatives.append(item)
+
+    understanding = result.understanding if isinstance(result.understanding, dict) else {}
+    for key in ("asr_alternatives", "alternatives", "candidates", "nbest"):
+        raw = understanding.get(key)
+        if not isinstance(raw, list):
+            continue
+        for idx, entry in enumerate(raw[:8]):
+            if isinstance(entry, dict):
+                add(
+                    entry.get("text") or entry.get("transcript") or entry.get("value") or entry.get("sentence"),
+                    source=f"understanding.{key}.{idx}",
+                    confidence=entry.get("confidence") or entry.get("score"),
+                )
+            else:
+                add(entry, source=f"understanding.{key}.{idx}")
+
+    add(result.raw_text, source="raw_text", confidence=result.confidence)
+    add(result.text, source="text", confidence=result.confidence)
+    add(result.user_message, source="user_message", confidence=result.confidence)
+    return alternatives[:8]
+
+
 def _stt_result_payload(result: "SttResult") -> dict:
     return {
         "text": result.text,
@@ -908,6 +957,7 @@ def _stt_result_payload(result: "SttResult") -> dict:
         "hotword_status": result.hotword_status,
         "hotword_sources": list(result.hotword_sources),
         "understanding": result.understanding,
+        "alternatives": _stt_alternatives_from_result(result),
     }
 
 
@@ -1617,6 +1667,15 @@ def warm_audio_models(req: WarmAudioRequest) -> dict:
     if req.sv:
         _warmup_sv_engine()
         warmed["sv"] = True
+        details["sv"] = {
+            "ready": sv_service.ready,
+            "model": sv_service.backend,
+            "sv_dir": str(cfg.sv_dir),
+            "device_request": cfg.torch_device,
+            "effective_device": sv_service.effective_device,
+            "require_gpu": cfg.require_gpu,
+            "load_error": sv_service.load_error,
+        }
     return {"ok": True, "warmed": warmed, "details": details}
 
 

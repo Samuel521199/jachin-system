@@ -40,8 +40,11 @@ class SvService:
     - 不再静默回退到谱统计 MVP，避免声纹过滤“看似可用但实际不准”
     """
 
-    def __init__(self, sv_dir: Path) -> None:
+    def __init__(self, sv_dir: Path, device: str = "auto", require_gpu: bool = False) -> None:
         self.sv_dir = sv_dir
+        self.device_request = (device or "auto").strip().lower()
+        self.require_gpu = bool(require_gpu)
+        self.effective_device = "unresolved"
         self._engine: Any = None
         self._load_error: str | None = None
         self._backend: str = "cam++-modelscope-local"
@@ -59,6 +62,47 @@ class SvService:
     @property
     def load_error(self) -> str | None:
         return self._load_error
+
+    def _resolve_torch_device(self) -> str:
+        request = self.device_request
+        if request in {"gpu", "cuda"}:
+            request = "cuda:0"
+        if request in {"cpu"}:
+            return "cpu"
+        try:
+            import torch
+
+            cuda_ready = bool(torch.cuda.is_available())
+            if request.startswith("cuda"):
+                if cuda_ready:
+                    return request
+                if self.require_gpu:
+                    raise RuntimeError(
+                        f"GPU is required but PyTorch CUDA is unavailable "
+                        f"(torch={getattr(torch, '__version__', 'unknown')}, cuda={getattr(torch.version, 'cuda', None)})"
+                    )
+                logger.warning(
+                    "SV requested CUDA but PyTorch CUDA is unavailable; falling back to CPU "
+                    "(torch=%s, cuda=%s)",
+                    getattr(torch, "__version__", "unknown"),
+                    getattr(torch.version, "cuda", None),
+                )
+                return "cpu"
+            if cuda_ready:
+                return "cuda:0"
+            if self.require_gpu:
+                raise RuntimeError(
+                    f"GPU is required but PyTorch CUDA is unavailable "
+                    f"(torch={getattr(torch, '__version__', 'unknown')}, cuda={getattr(torch.version, 'cuda', None)})"
+                )
+            return "cpu"
+        except RuntimeError:
+            raise
+        except Exception as e:
+            if self.require_gpu:
+                raise RuntimeError(f"GPU is required but torch device detection failed: {e}") from e
+            logger.warning("SV torch device detection failed; falling back to CPU: %s", e)
+            return "cpu"
 
     def warmup(self) -> None:
         self._load_engine()
@@ -88,11 +132,21 @@ class SvService:
             try:
                 from modelscope.pipelines import pipeline
 
-                logger.info("Loading CAM++ speaker-verification pipeline from %s", self.sv_dir)
-                self._engine = pipeline(task="speaker-verification", model=str(self.sv_dir))
+                self.effective_device = self._resolve_torch_device()
+                logger.info(
+                    "Loading CAM++ speaker-verification pipeline from %s (device_request=%s, effective_device=%s)",
+                    self.sv_dir,
+                    self.device_request,
+                    self.effective_device,
+                )
+                self._engine = pipeline(
+                    task="speaker-verification",
+                    model=str(self.sv_dir),
+                    device=self.effective_device,
+                )
                 self._backend = "cam++-modelscope-local"
                 self._load_error = None
-                logger.info("SV CAM++ loaded successfully")
+                logger.info("SV CAM++ loaded successfully on %s", self.effective_device)
                 return self._engine
             except Exception as e:
                 self._load_error = f"{type(e).__name__}: {e}"
@@ -667,6 +721,5 @@ class SvService:
             wf.setframerate(sample_rate)
             wf.writeframes(pcm.tobytes())
         return buf.getvalue()
-
 
 

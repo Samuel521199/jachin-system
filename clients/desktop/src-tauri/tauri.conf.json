@@ -100,27 +100,6 @@
         "skipTaskbar": true,
         "visible": false,
         "url": "english-vocab.html"
-      },
-      {
-        "label": "hud_panel",
-        "title": "Jachin HUD",
-        "width": 360,
-        "height": 460,
-        "minWidth": 300,
-        "minHeight": 240,
-        "maxWidth": 700,
-        "maxHeight": 760,
-        "x": 72,
-        "y": 88,
-        "resizable": true,
-        "fullscreen": false,
-        "transparent": true,
-        "decorations": false,
-        "shadow": false,
-        "alwaysOnTop": true,
-        "skipTaskbar": true,
-        "visible": false,
-        "url": "hud.html"
       }
     ],
     "security": {
@@ -152,6 +131,7 @@
       "../../../dist_jachin_desktop/skills_repo/": "skills_repo/",
       "../../../dist_jachin_desktop/scripts/": "scripts/",
       "../../../dist_jachin_desktop/logs/": "logs/",
+      "../../../dist_jachin_desktop/data/": "data/",
       "../../../dist_jachin_desktop/runtime/": "runtime/",
       "../../../dist_jachin_desktop/.env.example": ".env.example",
       "../../../dist_jachin_desktop/.env": ".env",

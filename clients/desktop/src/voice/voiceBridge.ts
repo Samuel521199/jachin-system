@@ -20,11 +20,41 @@ const JVS_BASE =
 
 const DEFAULT_STT_TIMEOUT_MS = Number(import.meta.env.VITE_JVS_STT_TIMEOUT_MS || 30000);
 
+let lastWarmKey = "";
+let lastWarmAt = 0;
+let warmInFlight: Promise<void> | null = null;
+
+function warmRequestKey(opts: { stt?: boolean; tts?: boolean; sv?: boolean; reason?: string }): string {
+  return JSON.stringify({
+    stt: opts.stt ?? true,
+    tts: opts.tts ?? true,
+    sv: opts.sv ?? false,
+  });
+}
+
+function warmMinIntervalMs(reason?: string): number {
+  const raw = Number(import.meta.env.VITE_JVS_WARM_MIN_INTERVAL_MS || 90_000);
+  const base = Number.isFinite(raw) ? Math.max(10_000, raw) : 90_000;
+  if (reason === "chat_mount") return Math.max(base, 180_000);
+  if (reason === "l3_thinking") return Math.max(base, 120_000);
+  return base;
+}
+
 export type JvsTranscribeOptions = {
   sessionId?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
 };
+
+export type JvsAsrAlternative = {
+  text?: string;
+  transcript?: string;
+  value?: string;
+  sentence?: string;
+  confidence?: number;
+  score?: number;
+  source?: string;
+} | string;
 
 function jvsWsBase(): string {
   const explicit = import.meta.env.VITE_JVS_WS_BASE_URL;
@@ -59,19 +89,35 @@ export async function getJvsHealth(): Promise<{ ok: boolean; base_url: string }>
 }
 
 export async function warmJvsAudioModels(opts: { stt?: boolean; tts?: boolean; sv?: boolean; reason?: string } = {}): Promise<void> {
-  const res = await fetch(`${JVS_BASE}/v1/models/audio/warm`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      stt: opts.stt ?? true,
-      tts: opts.tts ?? true,
-      sv: opts.sv ?? false,
-      reason: opts.reason,
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(await res.text());
+  const key = warmRequestKey(opts);
+  const now = Date.now();
+  const minInterval = warmMinIntervalMs(opts.reason);
+  if (warmInFlight && key === lastWarmKey) {
+    return warmInFlight;
   }
+  if (key === lastWarmKey && lastWarmAt > 0 && now - lastWarmAt < minInterval) {
+    return;
+  }
+  lastWarmKey = key;
+  warmInFlight = (async () => {
+    const res = await fetch(`${JVS_BASE}/v1/models/audio/warm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        stt: opts.stt ?? true,
+        tts: opts.tts ?? true,
+        sv: opts.sv ?? false,
+        reason: opts.reason,
+      }),
+    });
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+    lastWarmAt = Date.now();
+  })().finally(() => {
+    warmInFlight = null;
+  });
+  return warmInFlight;
 }
 export async function transcribeByJvs(audioBlob: Blob, sessionIdOrOptions?: string | JvsTranscribeOptions): Promise<{
   text: string;
@@ -86,6 +132,7 @@ export async function transcribeByJvs(audioBlob: Blob, sessionIdOrOptions?: stri
   hotword_count?: number;
   hotword_status?: string;
   hotword_sources?: string[];
+  alternatives?: JvsAsrAlternative[];
   understanding?: {
     selected?: {
       type?: string;
@@ -160,6 +207,7 @@ export async function transcribeLocalByJvs(audioBlob: Blob, sessionIdOrOptions?:
   hotword_count?: number;
   hotword_status?: string;
   hotword_sources?: string[];
+  alternatives?: JvsAsrAlternative[];
   understanding?: {
     selected?: {
       type?: string;

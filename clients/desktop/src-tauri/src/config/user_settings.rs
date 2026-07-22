@@ -101,6 +101,18 @@ impl UserSettings {
         }
     }
 
+    /// Always-on voice is a per-session switch. If the last session left it on,
+    /// start the next desktop session with the mic closed.
+    pub fn reset_continuous_voice_on_startup() -> Result<bool, String> {
+        let mut settings = Self::load();
+        if settings.sprite_voice_mode.as_deref() != Some("continuous") {
+            return Ok(false);
+        }
+        settings.sprite_voice_mode = Some("push_to_talk".to_string());
+        settings.save()?;
+        Ok(true)
+    }
+
     /// 将当前配置写入 `{root}/settings.json`
     #[allow(dead_code)]
     pub fn save(&self) -> Result<(), String> {

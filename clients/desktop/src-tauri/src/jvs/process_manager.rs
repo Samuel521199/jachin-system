@@ -34,6 +34,27 @@ pub struct JvsHandle {
     config: JvsConfig,
 }
 
+fn default_voice_model_root() -> String {
+    if let Some(root) = l3_spawn::project_root() {
+        let p = root.join("data").join("models").join("voice");
+        if p.exists() {
+            return p.to_string_lossy().into_owned();
+        }
+    }
+    let home = if cfg!(target_os = "windows") {
+        std::env::var("USERPROFILE").ok()
+    } else {
+        std::env::var("HOME").ok()
+    };
+    if let Some(home) = home {
+        let p = PathBuf::from(home).join(".jachin").join("models").join("voice");
+        if p.exists() {
+            return p.to_string_lossy().into_owned();
+        }
+    }
+    "data/models/voice".to_string()
+}
+
 impl JvsHandle {
     pub fn new(config: JvsConfig) -> Self {
         Self {
@@ -118,7 +139,7 @@ pub fn load_jvs_config() -> JvsConfig {
     let base_url = std::env::var("JACHIN_VOICE_SERVER_URL")
         .unwrap_or_else(|_| format!("http://{}:{}", host, port));
     let model_root = std::env::var("JACHIN_VOICE_MODEL_ROOT")
-        .unwrap_or_else(|_| r"D:\project\jachin-system-main\data\models\voice".to_string());
+        .unwrap_or_else(|_| default_voice_model_root());
     // JACHIN_SKIP_VOICE_SPAWN=1 means disable autospawn
     let auto_spawn_enabled = !env_flag_enabled("JACHIN_SKIP_VOICE_SPAWN");
 
@@ -131,7 +152,7 @@ pub fn load_jvs_config() -> JvsConfig {
     }
 }
 
-async fn check_health(url: &str) -> Result<(), String> {
+async fn fetch_health(url: &str) -> Result<serde_json::Value, String> {
     let health_url = format!("{}/health", url.trim_end_matches('/'));
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
@@ -145,6 +166,13 @@ async fn check_health(url: &str) -> Result<(), String> {
     if !resp.status().is_success() {
         return Err(format!("JVS health status {}", resp.status()));
     }
+    resp.json::<serde_json::Value>()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn check_health(url: &str) -> Result<(), String> {
+    let _ = fetch_health(url).await?;
     Ok(())
 }
 
@@ -156,7 +184,7 @@ async fn warm_audio_models(url: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let resp = client
         .post(&warm_url)
-        .json(&serde_json::json!({ "stt": true, "tts": true, "sv": false }))
+        .json(&serde_json::json!({ "stt": true, "tts": true, "sv": true }))
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -239,6 +267,8 @@ pub async fn start_jvs_process(app: &tauri::AppHandle) -> Result<(), String> {
         .env("JACHIN_VOICE_SERVER_PORT", cfg.port.to_string())
         .env("JACHIN_VOICE_SERVER_URL", cfg.base_url.clone())
         .env("JACHIN_VOICE_MODEL_ROOT", cfg.model_root.clone())
+        .env("JACHIN_VOICE_TORCH_DEVICE", "auto")
+        .env("JACHIN_VOICE_TTS_EP", "auto")
         .env("PYTHONUNBUFFERED", "1")
         .env("PYTHONUTF8", "1");
 
@@ -324,9 +354,20 @@ pub async fn jvs_health(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
     let state = app
         .try_state::<std::sync::Arc<JvsHandle>>()
         .ok_or_else(|| "JVS state not initialized".to_string())?;
-    let status = check_health(&state.config.base_url).await.is_ok();
-    Ok(serde_json::json!({
-        "ok": status,
-        "base_url": state.config.base_url,
-    }))
+    match fetch_health(&state.config.base_url).await {
+        Ok(mut value) => {
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "base_url".to_string(),
+                    serde_json::Value::String(state.config.base_url.clone()),
+                );
+            }
+            Ok(value)
+        }
+        Err(e) => Ok(serde_json::json!({
+            "ok": false,
+            "base_url": state.config.base_url,
+            "error": e,
+        })),
+    }
 }

@@ -39,6 +39,31 @@ type ActiveTrace = {
 
 let webviewLabel = "chat";
 let activeTrace: ActiveTrace | null = null;
+const lastTraceStageAt = new Map<string, number>();
+const TRACE_IMPORTANT_STAGE_RE =
+  /(turn\.|stt\.recognized|stt\.fail|stt\.jvs_.*fail|stt\.jvs_.*ok|l3\.send_start|l3\.answer|l3\.timeout|l3\.error|sv\.|guard|task|confirm|cancel|interrupt|replan|tts_first|slow|severe|fail|warn)/i;
+const TRACE_NOISY_STAGE_RE =
+  /(chunk|pcm_chunk|playback_.*chunk|orchestrator\.chunk|coalesce|dequeue|heartbeat|audio_level|meter|stream_idle)/i;
+
+function verboseVoiceTraceEnabled(): boolean {
+  try {
+    if (localStorage.getItem("jachin.voice.verboseTraceLog") === "1") return true;
+  } catch {
+    // ignore
+  }
+  return String(import.meta.env.VITE_JACHIN_VOICE_VERBOSE_TRACE || "").trim() === "1";
+}
+
+function shouldWriteVoiceTrace(stage: string): boolean {
+  if (verboseVoiceTraceEnabled()) return true;
+  if (TRACE_NOISY_STAGE_RE.test(stage) && !TRACE_IMPORTANT_STAGE_RE.test(stage)) return false;
+  const now = Date.now();
+  const minStageMs = TRACE_IMPORTANT_STAGE_RE.test(stage) ? 120 : 1_000;
+  const prev = lastTraceStageAt.get(stage) || 0;
+  if (now - prev < minStageMs) return false;
+  lastTraceStageAt.set(stage, now);
+  return true;
+}
 
 export function truncChatTrace(text: string, max = 320): string {
   const t = text.replace(/\s+/g, " ").trim();
@@ -117,6 +142,7 @@ export function voiceChatTrace(
   stage: string,
   payload: Record<string, unknown> = {},
 ): void {
+  if (!shouldWriteVoiceTrace(stage)) return;
   const traceId = (payload.traceId as string | undefined) ?? activeTrace?.id ?? "none";
   const now = Date.now();
   const elapsedMs = activeTrace ? now - activeTrace.startedAt : undefined;
@@ -136,7 +162,9 @@ export function voiceChatTrace(
     activeTrace.lastAt = now;
   }
   recordVoiceTurnDiagnosticEvent(stage, payload, elapsedMs, sincePrevMs);
-  console.debug(`[voice_chat][${traceId}][${stage}]`, payload);
+  if (verboseVoiceTraceEnabled() || TRACE_IMPORTANT_STAGE_RE.test(stage)) {
+    console.debug(`[voice_chat][${traceId}][${stage}]`, payload);
+  }
   void invoke("voice_chat_trace_log", {
     traceId,
     stage,

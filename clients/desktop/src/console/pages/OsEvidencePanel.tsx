@@ -2720,8 +2720,35 @@ function InputAdapterBlock({ rows }: { rows: Array<Record<string, unknown>> }) {
         : isRecord(payload.voice_language_normalization)
           ? payload.voice_language_normalization
           : {};
+      const voiceEvidence = isRecord(payload.voice_evidence)
+        ? payload.voice_evidence
+        : String(row.event_type || "") === "voice_evidence_snapshot"
+          ? payload
+          : {};
+      const voiceFalseTriggerGuard = isRecord(payload.modality_evidence) && isRecord(payload.modality_evidence.voice_false_trigger_guard)
+        ? payload.modality_evidence.voice_false_trigger_guard
+        : isRecord(payload.voice_false_trigger_guard)
+          ? payload.voice_false_trigger_guard
+          : isRecord(voiceEvidence.false_trigger_guard)
+            ? voiceEvidence.false_trigger_guard
+            : {};
+      const voiceInterruption = isRecord(payload.modality_evidence) && isRecord(payload.modality_evidence.voice_interruption)
+        ? payload.modality_evidence.voice_interruption
+        : isRecord(payload.voice_interruption)
+          ? payload.voice_interruption
+          : isRecord(voiceEvidence.interruption)
+            ? voiceEvidence.interruption
+            : {};
+      const voiceReplan = isRecord(payload.modality_evidence) && isRecord(payload.modality_evidence.voice_task_replan)
+        ? payload.modality_evidence.voice_task_replan
+        : isRecord(payload.voice_task_replan)
+          ? payload.voice_task_replan
+          : isRecord(voiceEvidence.replan)
+            ? voiceEvidence.replan
+            : {};
       return {
-        eventType: String(row.event_type || "input_adapter_finished"),
+        eventType: String(row.event_type || voiceEvidence.type || "input_adapter_finished"),
+        stage: String(voiceEvidence.stage || ""),
         source: String(adapter.source || payload.source || ""),
         channel: String(adapter.channel || payload.channel || ""),
         rawText: String(adapter.raw_text || payload.raw_text || ""),
@@ -2730,10 +2757,14 @@ function InputAdapterBlock({ rows }: { rows: Array<Record<string, unknown>> }) {
         confidence: typeof payload.confidence === "number" ? payload.confidence : undefined,
         steps: Array.isArray(adapter.steps) ? adapter.steps : [],
         voiceNorm,
+        voiceEvidence,
+        voiceFalseTriggerGuard,
+        voiceInterruption,
+        voiceReplan,
         payload,
       };
     })
-    .filter((row) => row.source || row.rawText || row.normalizedText);
+    .filter((row) => row.source || row.rawText || row.normalizedText || Object.keys(row.voiceEvidence).length);
   return (
     <div className="rounded-lg border border-violet-400/20 bg-violet-400/[0.05] p-4">
       <div className="mb-3 text-sm font-medium text-violet-50">Input Adapter / Voice Evidence</div>
@@ -2742,6 +2773,7 @@ function InputAdapterBlock({ rows }: { rows: Array<Record<string, unknown>> }) {
           <div key={`${row.eventType}-${index}`} className="rounded-md border border-slate-800 bg-slate-950/45 p-3 text-xs">
             <div className="mb-2 flex flex-wrap items-center gap-2">
               {row.source ? <span className="rounded bg-violet-400/10 px-2 py-0.5 text-violet-200">{row.source}</span> : null}
+              {row.stage ? <span className="rounded bg-cyan-400/10 px-2 py-0.5 text-cyan-200">{row.stage}</span> : null}
               {row.channel ? <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-300">{row.channel}</span> : null}
               <span className={cn("rounded px-2 py-0.5", row.changed ? "bg-amber-400/10 text-amber-200" : "bg-emerald-400/10 text-emerald-200")}>
                 {row.changed ? "normalized" : "unchanged"}
@@ -2760,6 +2792,26 @@ function InputAdapterBlock({ rows }: { rows: Array<Record<string, unknown>> }) {
             {Object.keys(row.voiceNorm).length ? (
               <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-slate-900 p-2 text-[11px] leading-5 text-slate-500">
                 {JSON.stringify(row.voiceNorm, null, 2)}
+              </pre>
+            ) : null}
+            {Object.keys(row.voiceFalseTriggerGuard).length ? (
+              <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-slate-900 p-2 text-[11px] leading-5 text-slate-500">
+                {JSON.stringify({ voice_false_trigger_guard: row.voiceFalseTriggerGuard }, null, 2)}
+              </pre>
+            ) : null}
+            {Object.keys(row.voiceInterruption).length ? (
+              <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-slate-900 p-2 text-[11px] leading-5 text-slate-500">
+                {JSON.stringify({ voice_interruption: row.voiceInterruption }, null, 2)}
+              </pre>
+            ) : null}
+            {Object.keys(row.voiceReplan).length ? (
+              <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-slate-900 p-2 text-[11px] leading-5 text-slate-500">
+                {JSON.stringify({ voice_task_replan: row.voiceReplan }, null, 2)}
+              </pre>
+            ) : null}
+            {Object.keys(row.voiceEvidence).length ? (
+              <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-slate-900 p-2 text-[11px] leading-5 text-slate-500">
+                {JSON.stringify(row.voiceEvidence, null, 2)}
               </pre>
             ) : null}
           </div>
@@ -3039,6 +3091,7 @@ function ScreenshotStrip({ paths }: { paths: string[] }) {
 
 function cognitiveStageLabel(stage: string): string {
   if (stage === "input_adapter_finished") return "InputAdapter";
+  if (stage === "voice_evidence_snapshot") return "VoiceEvidence";
   if (stage === "review_board_summary") return "ReviewBoard";
   if (stage === "decision_contract" || stage === "arbiter_decision") return "Arbiter";
   if (stage === "confirmation_pending_saved") return "Pending";
@@ -3056,6 +3109,7 @@ function cognitiveStageLabel(stage: string): string {
 function cognitiveStageTone(stage: string): string {
   const label = cognitiveStageLabel(stage);
   if (label === "ReviewBoard") return "border-cyan-400/30 bg-cyan-400/10 text-cyan-200";
+  if (label === "VoiceEvidence") return "border-fuchsia-400/30 bg-fuchsia-400/10 text-fuchsia-200";
   if (label === "Arbiter") return "border-violet-400/30 bg-violet-400/10 text-violet-200";
   if (label === "Pending" || label === "Confirmation") return "border-amber-400/30 bg-amber-400/10 text-amber-200";
   if (label === "WorkOrder") return "border-amber-400/30 bg-amber-400/10 text-amber-200";

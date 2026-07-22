@@ -9,12 +9,12 @@ import { motion } from "framer-motion";
 
 export interface WindowControlsProps {
   /**
-   * Omni 等：关闭改为坍缩到右下角微粒（invoke hide_chat_window），而不是直接 hide 丢陪伴态。
+   * Omni: close hides the unified chat surface. Voice/text stay in the same window.
    * 未传时保持原行为：隐藏当前窗口。
    */
   onCloseOverride?: () => void | Promise<void>;
   /**
-   * Omni：最小化与 Esc 一致，走陪伴圆（invoke hide_chat_window），勿用系统 minimize（任务栏），否则陪伴态与前端不同步。
+   * Omni: minimize can be overridden by the shell; default is system minimize.
    * 未传时：`window.minimize()`。
    */
   onMinimizeOverride?: () => void | Promise<void>;

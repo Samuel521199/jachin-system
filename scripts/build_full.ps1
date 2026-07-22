@@ -34,6 +34,31 @@ function Stop-ProcessTree {
     }
 }
 
+function Copy-VoiceSvModel {
+    param(
+        [string]$RootDir,
+        [string]$OutDir
+    )
+
+    $src = Join-Path $RootDir "data\models\voice\sv"
+    $dst = Join-Path $OutDir "data\models\voice\sv"
+    if (-not (Test-Path -LiteralPath $src)) {
+        Write-Host "  WARN: voice SV model source not found: $src" -ForegroundColor Yellow
+        return
+    }
+    $modelBin = Join-Path $src "speech_campplus_sv_zh-cn_16k-common\campplus_cn_common.bin"
+    if (-not (Test-Path -LiteralPath $modelBin)) {
+        Write-Host "  WARN: CAM++ SV model missing: $modelBin" -ForegroundColor Yellow
+        return
+    }
+    $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst)
+    if (Test-Path -LiteralPath $dst) {
+        Remove-Item -LiteralPath $dst -Recurse -Force
+    }
+    Copy-Item -LiteralPath $src -Destination (Split-Path -Parent $dst) -Recurse -Force
+    Write-Host "  Copied voice SV model: data/models/voice/sv" -ForegroundColor Gray
+}
+
 function Invoke-TauriBuildNonInteractive {
     param(
         [string]$DesktopDir,
@@ -66,12 +91,21 @@ function Invoke-TauriBuildNonInteractive {
     $oldSkipL3Prebuild = $env:JACHIN_SKIP_L3_PREBUILD
     $oldRustFlags = $env:RUSTFLAGS
     $env:JACHIN_SKIP_L3_PREBUILD = "1"
+    $useRustLld = "$env:JACHIN_USE_RUST_LLD".Trim().ToLower() -in @("1", "true", "yes", "on")
     if (-not $env:RUSTFLAGS) {
-        $env:RUSTFLAGS = "-C linker=rust-lld"
-        Write-Host "  RUSTFLAGS: -C linker=rust-lld（规避 Windows link.exe LNK1105 文件占用）" -ForegroundColor Gray
-    } elseif ($env:RUSTFLAGS -notmatch "linker=") {
-        $env:RUSTFLAGS = "$($env:RUSTFLAGS) -C linker=rust-lld"
-        Write-Host "  RUSTFLAGS appended: -C linker=rust-lld" -ForegroundColor Gray
+        $env:RUSTFLAGS = "-C debuginfo=0"
+        Write-Host "  RUSTFLAGS: -C debuginfo=0（规避 Windows rust-lld/PDB 崩溃）" -ForegroundColor Gray
+    } elseif ($env:RUSTFLAGS -notmatch "debuginfo") {
+        $env:RUSTFLAGS = "$($env:RUSTFLAGS) -C debuginfo=0"
+        Write-Host "  RUSTFLAGS appended: -C debuginfo=0（规避 Windows rust-lld/PDB 崩溃）" -ForegroundColor Gray
+    }
+    if ($useRustLld) {
+        if ($env:RUSTFLAGS -notmatch "linker=") {
+            $env:RUSTFLAGS = "$($env:RUSTFLAGS) -C linker=rust-lld"
+            Write-Host "  RUSTFLAGS appended: -C linker=rust-lld（JACHIN_USE_RUST_LLD=1）" -ForegroundColor Gray
+        }
+    } else {
+        Write-Host "  Rust linker: project Cargo config（rust-lld + debuginfo=0）" -ForegroundColor Gray
     }
     try {
         $proc = Start-Process `
@@ -260,6 +294,9 @@ if (Test-Path (Join-Path $root "config\im_channels.yaml.example")) {
     Copy-Item (Join-Path $root "config\im_channels.yaml.example") -Destination (Join-Path $outConfig "im_channels.yaml.example") -Force
 }
 Write-Host "  Copied config/" -ForegroundColor Gray
+
+# Copy local speaker-verification model used by always-on owner voice gating.
+Copy-VoiceSvModel -RootDir $root -OutDir $outDir
 
 # Copy .env.example（模板）；.env 与 clients/desktop/scripts/prepare-installer-payload.mjs 同优先级
 $envExamplePath = Join-Path $root ".env.example"

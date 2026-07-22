@@ -170,9 +170,9 @@ class TtsService:
                 if self._session is not None:
                     return True
                 execution_provider = "CPUExecutionProvider"
-                ep_env = str(os.getenv("JACHIN_VOICE_TTS_EP", "cpu")).strip().lower()
+                ep_env = str(os.getenv("JACHIN_VOICE_TTS_EP", "auto")).strip().lower()
                 providers = ort.get_available_providers()
-                if ep_env == "cuda" and "CUDAExecutionProvider" in providers:
+                if ep_env in {"auto", "cuda", "gpu"} and "CUDAExecutionProvider" in providers:
                     execution_provider = "CUDAExecutionProvider"
                 sess_opts = ort.SessionOptions()
                 raw_threads = str(os.getenv("JACHIN_VOICE_TTS_THREADS", str(DEFAULT_CPU_THREADS))).strip()

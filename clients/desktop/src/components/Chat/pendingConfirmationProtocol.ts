@@ -33,6 +33,7 @@ export function shouldShowMissionConfirmationControls(
   body: string,
   protocol: PendingConfirmationControl | null,
 ): boolean {
+  if (protocol?.choices?.length) return true;
   if (protocol) return true;
   const text = body || "";
   return CONFIRMATION_CUE_RE.test(text) && MISSION_CUE_RE.test(text);

@@ -4,7 +4,7 @@
 
 import React, { useRef, useEffect, useLayoutEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, Mic, Square, Radio, LayoutDashboard, Settings2 } from "lucide-react";
+import { Send, Mic, Square, LayoutDashboard, Settings2 } from "lucide-react";
 import { WindowControls } from "../Chat/WindowControls";
 import { AssistantMessageContent } from "../Chat/AssistantMessageContent";
 import { VoiceWaveform, type WavePhase } from "../Chat/VoiceWaveform";
@@ -19,7 +19,10 @@ export interface OmniBarProps {
   messages: StoredMessage[];
   input: string;
   onInputChange: (value: string) => void;
-  onSend: () => void;
+  onSend: (
+    overrideText?: string,
+    options?: { bypassLocalFallback?: boolean; interactionSource?: "user_text" | "quick_reply" | "voice" | "pending_resume" },
+  ) => void;
   onVoiceStart: () => void;
   onVoiceStop: () => void;
   isVadActive?: boolean;
@@ -106,10 +109,9 @@ export const OmniBar: React.FC<OmniBarProps> = ({
   const handleQuickReply = useCallback(
     (text: string) => {
       if (disabled || isLoading || isTyping) return;
-      onInputChange(text);
-      window.setTimeout(() => onSend(), 0);
+      onSend(text, { bypassLocalFallback: true, interactionSource: "quick_reply" });
     },
-    [disabled, isLoading, isTyping, onInputChange, onSend],
+    [disabled, isLoading, isTyping, onSend],
   );
 
   const riskBorder =
@@ -249,7 +251,7 @@ export const OmniBar: React.FC<OmniBarProps> = ({
           <div className="flex flex-col gap-1 mx-3 mb-1 flex-shrink-0 text-[10px] relative z-10">
             {isVadActive && (
               <div className="text-amber-300/90 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/25">
-                VAD 监听中…
+                常开语音已开启…
               </div>
             )}
             {recordingStatus && (
@@ -314,15 +316,15 @@ export const OmniBar: React.FC<OmniBarProps> = ({
                     e.stopPropagation();
                     onVadToggle();
                   }}
-                  disabled={disabled || isLoading}
+                  disabled={disabled || (!isVadActive && isLoading)}
                   className={`flex h-10 shrink-0 items-center gap-1 rounded-full border px-3 ${
                     isVadActive
                       ? "border-amber-500/40 bg-amber-500/25 text-amber-300"
                       : "border-white/20 bg-white/10 text-slate-400"
                   }`}
                 >
-                  <Radio className="h-4 w-4 shrink-0" />
-                  <span className="text-[10px] font-medium uppercase">VAD</span>
+                  <Mic className="h-4 w-4 shrink-0" />
+                  <span className="text-[10px] font-medium">{isVadActive ? "关麦" : "开麦"}</span>
                 </button>
               )}
 

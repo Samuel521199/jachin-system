@@ -79,6 +79,39 @@ from l3_node.cognitive_kernel.runtime import close_turn, close_turn_waiting_user
 logger = logging.getLogger(__name__)
 
 
+def _looks_like_global_stop_control_text(text: str) -> bool:
+    t = str(text or "").strip().lower()
+    if not t:
+        return False
+    compact = re.sub(r"[\s\u3000,，.。!！?？;；:：、\"'“”‘’`]+", "", t)
+    exact = {
+        "停",
+        "停止",
+        "停下",
+        "停一下",
+        "先停",
+        "停掉",
+        "取消",
+        "取消任务",
+        "取消当前任务",
+        "中断",
+        "中断任务",
+        "别执行",
+        "不要执行",
+        "不用了",
+        "算了",
+        "stop",
+        "cancel",
+        "abort",
+        "halt",
+    }
+    if compact in exact:
+        return True
+    if re.fullmatch(r"(先)?(停止|停下|停掉|取消|中断)(当前|这个|这次)?(任务|执行|操作)?", compact):
+        return True
+    return bool(re.search(r"\b(stop|cancel|abort|halt)\b", t)) and len(t) <= 24
+
+
 def _gateway_prior_brief(prior_messages: list[dict[str, Any]], max_chars: int = 1200) -> str:
     """Bounded chat recap helper; main-loop memory enters via MemoryRecallAgent."""
     parts: list[str] = []
@@ -2775,6 +2808,53 @@ async def _paraphrase_abort_slot_reply_async(
         return base_msg
 
 
+def _conversation_fallback_reply_from_messages(messages: list[dict[str, Any]] | None) -> str:
+    """Natural user-facing fallback when pure conversation generation fails."""
+    last_user = ""
+    for msg in reversed(messages or []):
+        if not isinstance(msg, dict):
+            continue
+        if str(msg.get("role") or "").strip().lower() != "user":
+            continue
+        last_user = str(msg.get("content") or "").strip()
+        if last_user:
+            break
+
+    if not last_user:
+        return "我在。你是想和我聊聊，还是要我帮你做一件具体的事？"
+
+    lowered = last_user.lower()
+    greeting_terms = ("你好", "在吗", "hello", "hi")
+    task_terms = (
+        "打开",
+        "关闭",
+        "发送",
+        "发给",
+        "搜索",
+        "查找",
+        "查一下",
+        "文件",
+        "计算",
+        "总结",
+        "open",
+        "close",
+        "send",
+        "search",
+        "find",
+        "file",
+        "calculate",
+        "summarize",
+    )
+
+    if any(term in lowered for term in greeting_terms):
+        return "我在。你可以直接和我聊天，也可以告诉我要打开哪个应用、查什么资料或处理哪个文件。"
+
+    if len(last_user) <= 16 and not any(term in lowered for term in task_terms):
+        return "我在。你是想和我聊聊这个，还是要我帮你执行一个具体任务？"
+
+    return "我在，但这句话还没有形成明确任务。你可以继续补充一下：是想聊天，还是让我帮你打开应用、查资料、发消息或处理文件？"
+
+
 async def _close_kernel_plan_without_text_transport(
     *,
     plan: Any,
@@ -2818,7 +2898,7 @@ async def _close_kernel_plan_without_text_transport(
             )
         except Exception as exc:
             logger.warning("[CognitiveKernel] UserFacingReplyAgent kernel-only reply failed: %s", exc)
-            final_text = "我已理解你的问题，但当前回复生成失败；没有执行任何外部操作。"
+            final_text = _conversation_fallback_reply_from_messages(messages)
         close_turn(turn_id=turn_id, final_text=final_text, executed_work_orders=[], verification_reports=[], aborted=False)
         return final_text
 
@@ -2962,6 +3042,84 @@ async def run_agent(
         (implicit_signals and isinstance(implicit_signals, dict) and implicit_signals.get("desktop_companion"))
         or (((_lark_cid or "").strip() == "") and str(_bg_channel or "").startswith("websocket_"))
     )
+    _run_cancel_event = asyncio.Event()
+    _session_key = ""
+    if implicit_attribution and isinstance(implicit_attribution, dict):
+        _session_key = str(
+            implicit_attribution.get("session_id")
+            or implicit_attribution.get("chat_id")
+            or implicit_attribution.get("lark_chat_id")
+            or ""
+        ).strip()
+    _session_key = _lark_cid or _session_key
+    try:
+        from l3_node.primitives.agent_tasks.agent_cancel import register_cancel_event
+        from l3_node.global_task_registry import register_task
+        from l3_node.voice_task_handle_registry import register_voice_task_handle
+
+        _voice_aliases: list[str] = [run_id, run_id[:8]]
+        _resource_tags: list[str] = []
+        if _session_key:
+            _resource_tags.append(f"session:{_session_key}")
+        if _bg_channel:
+            _resource_tags.append(f"channel:{_bg_channel}")
+        _active_ctx = _desktop_companion_ctx.get("voice_active_task_context")
+        if isinstance(_active_ctx, dict):
+            _focused = str(_active_ctx.get("focused_task_id") or "").strip()
+            if _focused:
+                _voice_aliases.append(_focused)
+            _tasks = _active_ctx.get("active_tasks")
+            if isinstance(_tasks, list):
+                for _item in _tasks[:8]:
+                    if isinstance(_item, dict):
+                        for _key in ("id", "run_id", "task_id"):
+                            _val = str(_item.get(_key) or "").strip()
+                            if _val:
+                                _voice_aliases.append(_val)
+                                _resource_tags.append(f"task:{_val}")
+        register_cancel_event(run_id, _run_cancel_event)
+        register_task(
+            run_id,
+            channel=_bg_channel or "",
+            session_key=_session_key,
+            priority="P1",
+            resource_tags=_resource_tags,
+            extra={
+                "source": "run_agent",
+                "voice_controllable": bool(_desktop_companion_ctx),
+                "title": (user_input or "")[:120],
+            },
+        )
+        register_voice_task_handle(
+            run_id,
+            channel=_bg_channel or "",
+            session_id=_session_key,
+            aliases=_voice_aliases,
+            title=(user_input or "")[:120],
+        )
+    except Exception:
+        pass
+
+    def _cleanup_voice_run_handles() -> None:
+        try:
+            from l3_node.primitives.agent_tasks.agent_cancel import unregister_cancel_event
+
+            unregister_cancel_event(run_id)
+        except Exception:
+            pass
+        try:
+            from l3_node.global_task_registry import unregister_task
+
+            unregister_task(run_id)
+        except Exception:
+            pass
+        try:
+            from l3_node.voice_task_handle_registry import unregister_voice_task_handle
+
+            unregister_voice_task_handle(run_id)
+        except Exception:
+            pass
+
     def _looks_like_voice_fast_lane_text(_text: str) -> bool:
         _t = (_text or "").strip()
         if not _t or len(_t) > 60:
@@ -3025,6 +3183,180 @@ async def run_agent(
     )
     _turn_dbg: dict[str, Any] = {}
     _original_user_input = user_input or ""
+    _cognitive_kernel_plan = None
+    _cognitive_ctx_for_voice: Any = None
+
+    def _reply_with_voice_runtime_ui(
+        reply: str,
+        *,
+        stage: str,
+        status: str | None = None,
+        reason_code: str | None = None,
+        plan: Any | None = None,
+        closure: Any | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> str:
+        try:
+            from l3_node.voice_evidence_agent import attach_voice_runtime_ui_protocol
+
+            ui_extra = dict(extra or {})
+            if status:
+                ui_extra["status"] = status
+            if reason_code:
+                ui_extra["reason_code"] = reason_code
+            return attach_voice_runtime_ui_protocol(
+                reply,
+                turn_id=run_id,
+                stage=stage,
+                companion=_desktop_companion_ctx,
+                envelope=getattr(_cognitive_ctx_for_voice, "envelope", None),
+                plan=plan if plan is not None else _cognitive_kernel_plan,
+                closure=closure,
+                extra=ui_extra,
+            )
+        except Exception:
+            return reply
+
+    def _voice_status_from_reply(reply: str) -> str:
+        low = str(reply or "").lower()
+        if "没有通过验证" in reply or "未通过" in reply or "failed" in low or "error" in low:
+            return "failed"
+        if "等待" in reply or "还不知道" in reply or "请选择" in reply:
+            return "wait"
+        return "done"
+
+    if _looks_like_global_stop_control_text(user_input or ""):
+        _cancel_result: dict[str, Any] = {}
+        _cancel_ok = False
+        try:
+            from l3_node.voice_task_handle_registry import (
+                cancel_resolved_voice_targets,
+                resolve_voice_task_handles,
+            )
+
+            _resolution = resolve_voice_task_handles(
+                voice_context=_desktop_companion_ctx,
+                session_id=_session_key,
+                channel=_bg_channel or "",
+                exclude_run_ids=[run_id],
+            )
+            _cancel_result = cancel_resolved_voice_targets(_resolution)
+            _cancel_ok = bool(_cancel_result.get("ok"))
+        except Exception as _stop_ex:
+            _cancel_result = {"ok": False, "error": type(_stop_ex).__name__, "message": str(_stop_ex)[:200]}
+            _cancel_ok = False
+        if _cancel_ok:
+            _stop_reply = "已停止当前正在执行的任务；我没有执行新的外部操作。"
+        else:
+            _stop_reply = "当前没有找到正在执行的任务；我没有执行新的外部操作。"
+        close_turn(
+            turn_id=run_id,
+            final_text=_stop_reply,
+            executed_work_orders=[],
+            verification_reports=[],
+            aborted=not _cancel_ok,
+        )
+        try:
+            from l3_node.cognitive_kernel.ledger import append_event
+
+            append_event(
+                "global_stop_control_handled",
+                run_id,
+                {
+                    "input_preview": str(user_input or "")[:120],
+                    "cancel_ok": _cancel_ok,
+                    "cancel_result": _cancel_result,
+                    "session_id_present": bool(_session_key),
+                    "channel": _bg_channel or "",
+                },
+            )
+        except Exception:
+            pass
+        try:
+            from l3_node.voice_evidence_agent import record_voice_evidence_snapshot
+
+            record_voice_evidence_snapshot(
+                turn_id=run_id,
+                stage="global_stop_control_handled",
+                companion=_desktop_companion_ctx,
+                extra={"cancel_ok": _cancel_ok, "cancel_result": _cancel_result},
+            )
+        except Exception:
+            pass
+        _cleanup_voice_run_handles()
+        return _reply_with_voice_runtime_ui(
+            _stop_reply,
+            stage="global_stop_control_handled",
+            status="done" if _cancel_ok else "idle",
+            reason_code="global_stop_control",
+            extra={"cancel_ok": _cancel_ok, "cancel_result": _cancel_result},
+        )
+
+    try:
+        from l3_node.cognitive_kernel.voice_pending_confirmation import resolve_pending_voice_confirmation
+
+        _voice_pending_resolution = resolve_pending_voice_confirmation(
+            reply_text=user_input or "",
+            session_id=_lark_cid or "",
+            channel=_bg_channel or "",
+            turn_id=run_id,
+        )
+        if isinstance(_voice_pending_resolution, dict):
+            _voice_pending_action = str(_voice_pending_resolution.get("action") or "")
+            _voice_pending_payload = (
+                _voice_pending_resolution.get("pending")
+                if isinstance(_voice_pending_resolution.get("pending"), dict)
+                else {}
+            )
+            if _voice_pending_action == "cancel":
+                _voice_cancel_reply = "已取消上一段低置信度语音任务，未执行任何操作。"
+                close_turn(
+                    turn_id=run_id,
+                    final_text=_voice_cancel_reply,
+                    executed_work_orders=[],
+                    verification_reports=[],
+                    aborted=False,
+                )
+                _cleanup_voice_run_handles()
+                return _reply_with_voice_runtime_ui(
+                    _voice_cancel_reply,
+                    stage="pending_cancelled",
+                    status="drop",
+                    reason_code="voice_pending_cancelled",
+                )
+            if _voice_pending_action == "update":
+                _voice_update_reply = str(
+                    _voice_pending_resolution.get("reply")
+                    or "我已更新上一段待确认语音任务。请回复“确认执行”或“取消”。"
+                )
+                close_turn(
+                    turn_id=run_id,
+                    final_text=_voice_update_reply,
+                    executed_work_orders=[],
+                    verification_reports=[],
+                    aborted=False,
+                )
+                _cleanup_voice_run_handles()
+                return _reply_with_voice_runtime_ui(
+                    _voice_update_reply,
+                    stage="pending_updated",
+                    status="wait",
+                    reason_code="voice_pending_updated",
+                )
+            if _voice_pending_action == "confirm":
+                _restored = str(
+                    _voice_pending_payload.get("normalized_text")
+                    or _voice_pending_payload.get("original_user_input")
+                    or ""
+                ).strip()
+                if _restored:
+                    user_input = _restored
+                    _desktop_companion_ctx["voice_false_trigger_confirmed"] = True
+                    _desktop_companion_ctx["voice_false_trigger_skip_once"] = True
+                    _desktop_companion_ctx["voice_false_trigger_restored_input"] = _restored
+                    _desktop_companion_ctx["voice_false_trigger_restored_pending"] = _voice_pending_payload
+    except Exception as _voice_pending_ex:
+        logger.debug("[VoiceFalseTrigger] pending resume skipped: %s", _voice_pending_ex)
     try:
         from l3_node.cognitive_kernel.input_adapter import adapt_input_for_cognitive_kernel
 
@@ -3140,13 +3472,370 @@ async def run_agent(
             desktop_companion_context=_desktop_companion_ctx,
             gateway_system_state=_gateway_sniffer_ws,
         )
+        _cognitive_ctx_for_voice = _cognitive_ctx
         try:
             from l3_node.terminal_turn_debug_log import log_cognitive_mainline_context
 
             log_cognitive_mainline_context(_cognitive_ctx)
         except Exception:
             pass
+        _voice_guard = dict(_desktop_companion_ctx.get("voice_false_trigger_guard") or {})
+        _pending_slot_reply_bypass = False
+        if _voice_guard and str(_voice_guard.get("action") or "allow") in ("drop", "confirm"):
+            try:
+                from l3_node.cognitive_kernel.direct_mainline import pending_slot_reply_available
+
+                _pending_slot_reply_bypass = pending_slot_reply_available(
+                    user_input=user_input or "",
+                    session_id=_lark_cid or "",
+                    channel=_bg_channel or "",
+                )
+                if _pending_slot_reply_bypass:
+                    _desktop_companion_ctx["voice_false_trigger_skip_once"] = True
+                    try:
+                        from l3_node.cognitive_kernel.ledger import append_event
+
+                        append_event(
+                            "voice_false_trigger_guard_bypassed_for_pending_slot_reply",
+                            run_id,
+                            {
+                                "guard_action": _voice_guard.get("action"),
+                                "reason_code": _voice_guard.get("reason_code"),
+                                "input_preview": str(user_input or "")[:80],
+                                "session_id_present": bool(_lark_cid),
+                                "channel": _bg_channel or "",
+                            },
+                        )
+                    except Exception:
+                        pass
+            except Exception as _pending_slot_bypass_ex:
+                logger.debug("[VoiceFalseTrigger] pending slot bypass check skipped: %s", _pending_slot_bypass_ex)
+        if (
+            _voice_guard
+            and str(_voice_guard.get("action") or "allow") in ("drop", "confirm")
+            and not _pending_slot_reply_bypass
+        ):
+            _guard_action = str(_voice_guard.get("action") or "drop")
+            _guard_reply = str(_voice_guard.get("user_visible_reply") or "").strip()
+            if not _guard_reply:
+                if _guard_action == "confirm":
+                    _guard_reply = "我听到了一段可能要执行任务的语音，但置信度不够高。请回复“确认执行”或“取消”。"
+                else:
+                    _guard_reply = "已忽略一段可能的噪声语音，未执行任何操作。"
+            if _guard_action == "confirm":
+                try:
+                    from l3_node.cognitive_kernel.voice_pending_confirmation import save_pending_voice_confirmation
+
+                    save_pending_voice_confirmation(
+                        original_user_input=user_input or "",
+                        normalized_text=str(_desktop_companion_ctx.get("input_adapter_normalized_text") or user_input or ""),
+                        guard=_voice_guard,
+                        turn_id=run_id,
+                        session_id=_lark_cid or "",
+                        channel=_bg_channel or "",
+                    )
+                except Exception as _voice_pending_save_ex:
+                    logger.debug("[VoiceFalseTrigger] pending save skipped: %s", _voice_pending_save_ex)
+                close_turn_waiting_user(
+                    turn_id=run_id,
+                    final_text=_guard_reply,
+                    pending_decision={
+                        "type": "voice_false_trigger_confirmation",
+                        "voice_false_trigger_guard": _voice_guard,
+                        "original_user_input": user_input or "",
+                        "normalized_text": str(_desktop_companion_ctx.get("input_adapter_normalized_text") or user_input or ""),
+                    },
+                    next_turn_hints=["voice_false_trigger_requires_confirmation"],
+                )
+            else:
+                close_turn(
+                    turn_id=run_id,
+                    final_text=_guard_reply,
+                    executed_work_orders=[],
+                    verification_reports=[],
+                    aborted=False,
+                )
+            try:
+                from l3_node.cognitive_kernel.ledger import append_event
+
+                append_event(
+                    "voice_false_trigger_guard_handled",
+                    run_id,
+                    {
+                        "action": _guard_action,
+                        "reason_code": _voice_guard.get("reason_code"),
+                        "decision": _voice_guard,
+                        "reply_preview": _guard_reply[:200],
+                    },
+                )
+            except Exception:
+                pass
+            try:
+                from l3_node.voice_evidence_agent import record_voice_evidence_snapshot
+
+                record_voice_evidence_snapshot(
+                    turn_id=run_id,
+                    stage="noise_guard_blocked",
+                    companion=_desktop_companion_ctx,
+                    envelope=getattr(_cognitive_ctx, "envelope", None),
+                    extra={
+                        "action": _guard_action,
+                        "reason_code": _voice_guard.get("reason_code"),
+                        "reply_preview": _guard_reply[:200],
+                    },
+                )
+            except Exception:
+                pass
+            _cleanup_voice_run_handles()
+            return _reply_with_voice_runtime_ui(
+                _guard_reply,
+                stage="noise_guard_blocked",
+                status=_guard_action,
+                reason_code=str(_voice_guard.get("reason_code") or ""),
+            )
+        _voice_interrupt = dict(_desktop_companion_ctx.get("voice_interruption_decision") or {})
+        if _voice_interrupt.get("should_intercept"):
+            _action = str(_voice_interrupt.get("action") or "none")
+            _target_task_id = str(_voice_interrupt.get("target_task_id") or "").strip()
+            _cancel_ok = False
+            _cancel_result: dict[str, Any] = {}
+            if bool(_voice_interrupt.get("should_cancel_run")):
+                try:
+                    from l3_node.voice_task_handle_registry import (
+                        cancel_resolved_voice_targets,
+                        resolve_voice_task_handles,
+                    )
+
+                    _resolution = resolve_voice_task_handles(
+                        target_task_id=_target_task_id,
+                        voice_context=_desktop_companion_ctx,
+                        session_id=_session_key,
+                        channel=_bg_channel or "",
+                        exclude_run_ids=[run_id],
+                    )
+                    _cancel_result = cancel_resolved_voice_targets(_resolution)
+                    _cancel_ok = bool(_cancel_result.get("ok"))
+                except Exception:
+                    _cancel_ok = False
+            if _action in ("cancel", "pause", "confirm_required"):
+                _base_reply = str(_voice_interrupt.get("user_visible_reply") or "").strip()
+                if not _base_reply:
+                    _base_reply = "收到，我先按你的语音指令处理当前任务。"
+                if _action in ("cancel", "pause"):
+                    _base_reply += " 已发出停止请求。" if _cancel_ok else " 当前没有找到可直接取消的运行句柄，但我已经记录这次打断。"
+                close_turn(
+                    turn_id=run_id,
+                    final_text=_base_reply,
+                    executed_work_orders=[],
+                    verification_reports=[],
+                    aborted=False,
+                )
+                try:
+                    from l3_node.cognitive_kernel.ledger import append_event
+
+                    append_event(
+                        "voice_interruption_handled",
+                        run_id,
+                        {
+                            "action": _action,
+                            "target_task_id": _target_task_id,
+                            "cancel_requested": bool(_voice_interrupt.get("should_cancel_run")),
+                            "cancel_ok": _cancel_ok,
+                            "cancel_result": _cancel_result,
+                            "decision": _voice_interrupt,
+                        },
+                    )
+                except Exception:
+                    pass
+                try:
+                    from l3_node.voice_evidence_agent import record_voice_evidence_snapshot
+
+                    record_voice_evidence_snapshot(
+                        turn_id=run_id,
+                        stage="interruption_handled",
+                        companion=_desktop_companion_ctx,
+                        envelope=getattr(_cognitive_ctx, "envelope", None),
+                        extra={
+                            "action": _action,
+                            "cancel_ok": _cancel_ok,
+                            "cancel_result": _cancel_result,
+                        },
+                    )
+                except Exception:
+                    pass
+                _cleanup_voice_run_handles()
+                return _reply_with_voice_runtime_ui(
+                    _base_reply,
+                    stage="interruption_handled",
+                    status="done" if _cancel_ok or _action not in ("cancel", "pause") else "failed",
+                    reason_code=str(_voice_interrupt.get("reason_code") or _action),
+                    extra={"current_task": _target_task_id, "stage_detail": str(_voice_interrupt.get("user_visible_reply") or "")[:120]},
+                )
+            if _action == "side_chat":
+                _messages = list(prior_messages or [])
+                _messages.append({"role": "user", "content": user_input or ""})
+                _side_ctx = dict(_desktop_companion_ctx)
+                _side_ctx["voice_side_chat_during_task"] = True
+                _side_ctx["voice_interruption_decision"] = _voice_interrupt
+                try:
+                    _side_reply = await _run_direct_llm_completion(
+                        messages=_messages,
+                        engine=engine,
+                        prompt_cycle=None,
+                        json_mode=False,
+                        on_chunk=on_chunk,
+                        run_id=run_id,
+                        token_acc={},
+                        token_budget=None,
+                        cancel_event=_run_cancel_event,
+                        general_chitchat=True,
+                        desktop_companion_mode=_desktop_companion_mode,
+                        desktop_companion_context=_side_ctx,
+                    )
+                except Exception as exc:
+                    logger.debug("[VoiceInterruption] side chat reply failed: %s", exc)
+                    _side_reply = "我在，当前任务先不打断。你可以继续问，或者说“停一下”来取消。"
+                close_turn(
+                    turn_id=run_id,
+                    final_text=_side_reply,
+                    executed_work_orders=[],
+                    verification_reports=[],
+                    aborted=False,
+                )
+                try:
+                    from l3_node.cognitive_kernel.ledger import append_event
+
+                    append_event(
+                        "voice_side_chat_handled",
+                        run_id,
+                        {"decision": _voice_interrupt, "reply_preview": _side_reply[:200]},
+                    )
+                except Exception:
+                    pass
+                try:
+                    from l3_node.voice_evidence_agent import record_voice_evidence_snapshot
+
+                    record_voice_evidence_snapshot(
+                        turn_id=run_id,
+                        stage="side_chat_handled",
+                        companion=_desktop_companion_ctx,
+                        envelope=getattr(_cognitive_ctx, "envelope", None),
+                        extra={"reply_preview": _side_reply[:200]},
+                    )
+                except Exception:
+                    pass
+                _cleanup_voice_run_handles()
+                return _reply_with_voice_runtime_ui(
+                    _side_reply,
+                    stage="side_chat_handled",
+                    status="done",
+                    reason_code="voice_side_chat_during_task",
+                )
+        _voice_replan = dict(_desktop_companion_ctx.get("voice_task_replan_patch") or {})
+        if _voice_replan.get("is_replan"):
+            if bool(_voice_replan.get("requires_confirmation")):
+                _reply = (
+                    "我听到你想修正当前任务，但还不够确定。请把修正说完整一点，"
+                    "例如：改成发给 Neil，内容换成你好。"
+                )
+                close_turn_waiting_user(
+                    turn_id=run_id,
+                    final_text=_reply,
+                    pending_decision={
+                        "type": "voice_task_replan_confirmation",
+                        "voice_task_replan_patch": _voice_replan,
+                    },
+                    next_turn_hints=["voice_task_replan_requires_clearer_patch"],
+                )
+                try:
+                    from l3_node.cognitive_kernel.ledger import append_event
+
+                    append_event(
+                        "voice_task_replan_waiting_user",
+                        run_id,
+                        {"patch": _voice_replan, "reason": "low_confidence_or_missing_slots"},
+                    )
+                except Exception:
+                    pass
+                try:
+                    from l3_node.voice_evidence_agent import record_voice_evidence_snapshot
+
+                    record_voice_evidence_snapshot(
+                        turn_id=run_id,
+                        stage="replan_waiting_user",
+                        companion=_desktop_companion_ctx,
+                        envelope=getattr(_cognitive_ctx, "envelope", None),
+                        extra={"patch": _voice_replan, "reason": "low_confidence_or_missing_slots"},
+                    )
+                except Exception:
+                    pass
+                _cleanup_voice_run_handles()
+                return _reply_with_voice_runtime_ui(
+                    _reply,
+                    stage="replan_waiting_user",
+                    status="wait",
+                    reason_code="voice_task_replan_requires_clearer_patch",
+                    extra={"stage_detail": "等待更明确的任务修正"},
+                )
+            try:
+                from l3_node.voice_task_replan import apply_voice_task_replan_to_input
+
+                _replanned_input = apply_voice_task_replan_to_input(user_input or "", _voice_replan)
+            except Exception:
+                _replanned_input = str(_voice_replan.get("replanned_instruction") or user_input or "")
+            if _replanned_input and _replanned_input != (user_input or ""):
+                user_input = _replanned_input
+                _desktop_companion_ctx["voice_task_replan_applied"] = True
+                _desktop_companion_ctx["voice_task_replan_effective_input"] = _replanned_input
+                _desktop_companion_ctx["input_adapter_normalized_text"] = _replanned_input
+                try:
+                    _cognitive_ctx.envelope.normalized_text = _replanned_input
+                    _cognitive_ctx.envelope.modality_evidence.setdefault("voice_task_replan", _voice_replan)
+                    _cognitive_ctx.envelope.modality_evidence["voice_task_replan_applied"] = {
+                        "effective_input": _replanned_input,
+                        "patch_type": _voice_replan.get("patch_type"),
+                        "confidence": _voice_replan.get("confidence"),
+                    }
+                except Exception:
+                    pass
+                try:
+                    from l3_node.cognitive_kernel.ledger import append_event
+
+                    append_event(
+                        "voice_task_replan_applied",
+                        run_id,
+                        {
+                            "patch": _voice_replan,
+                            "effective_input_preview": _replanned_input[:500],
+                        },
+                    )
+                except Exception:
+                    pass
+                try:
+                    from l3_node.voice_evidence_agent import record_voice_evidence_snapshot
+
+                    record_voice_evidence_snapshot(
+                        turn_id=run_id,
+                        stage="replan_applied",
+                        companion=_desktop_companion_ctx,
+                        envelope=getattr(_cognitive_ctx, "envelope", None),
+                        extra={"effective_input_preview": _replanned_input[:500]},
+                    )
+                except Exception:
+                    pass
         _cognitive_kernel_plan = plan_cognitive_turn(_cognitive_ctx, emit_non_execution_closure=False)
+        try:
+            from l3_node.voice_evidence_agent import record_voice_evidence_snapshot
+
+            record_voice_evidence_snapshot(
+                turn_id=run_id,
+                stage="planning_finished",
+                companion=_desktop_companion_ctx,
+                envelope=getattr(_cognitive_ctx, "envelope", None),
+                plan=_cognitive_kernel_plan,
+            )
+        except Exception:
+            pass
         try:
             from l3_node.terminal_turn_debug_log import log_cognitive_mainline_plan
 
@@ -3228,7 +3917,13 @@ async def run_agent(
                 )
             except Exception:
                 pass
-            return _template_reply
+            _cleanup_voice_run_handles()
+            return _reply_with_voice_runtime_ui(
+                _template_reply,
+                stage="voice_template_reply",
+                status="done",
+                reason_code="voice_exact_template",
+            )
 
     # ── 改造点 B：弱化历史摘要的指令性 ─────────────────────────────────────
     # 对 messages 里已有的 role=system 消息（由上游 memory / summary 注入的历史摘要）
@@ -3273,6 +3968,7 @@ async def run_agent(
         if _session_messages is not None:
             _session_messages.clear()
         logger.info("[L3 Agent] /clear：已清空会话消息缓冲 run_id=%s", run_id[:12])
+        _cleanup_voice_run_handles()
         return "[System] 后端上下文已强制清空。"
 
     if (
@@ -3682,12 +4378,18 @@ async def run_agent(
     except Exception:
         pass
 
+    _kernel_effective_user_input = str(
+        (_desktop_companion_ctx or {}).get("input_adapter_normalized_text")
+        or user_input
+        or ""
+    )
+
     _mainline_direct_reply = await try_execute_cognitive_direct_plan(
         plan=_cognitive_kernel_plan,
         tools=tools,
         allowed_skills=allowed,
         run_tool_func=run_tool,
-        user_input=user_input or "",
+        user_input=_kernel_effective_user_input,
         session_id=_lark_cid or "",
         channel=_bg_channel or "",
     )
@@ -3710,7 +4412,14 @@ async def run_agent(
         except Exception:
             pass
         _turn_dbg["answer"] = _mainline_direct_reply
-        return _mainline_direct_reply
+        _cleanup_voice_run_handles()
+        return _reply_with_voice_runtime_ui(
+            _mainline_direct_reply,
+            stage="direct_mainline_finished",
+            status=_voice_status_from_reply(_mainline_direct_reply),
+            reason_code="cognitive_kernel_direct_mainline",
+            plan=_cognitive_kernel_plan,
+        )
 
     _capability_work_order_reply = await try_execute_capability_work_order(
         user_input=user_input or "",
@@ -3739,7 +4448,14 @@ async def run_agent(
         except Exception:
             pass
         _turn_dbg["answer"] = _capability_work_order_reply
-        return _capability_work_order_reply
+        _cleanup_voice_run_handles()
+        return _reply_with_voice_runtime_ui(
+            _capability_work_order_reply,
+            stage="capability_work_order_finished",
+            status=_voice_status_from_reply(_capability_work_order_reply),
+            reason_code="cognitive_kernel_capability_work_order",
+            plan=_cognitive_kernel_plan,
+        )
 
     _kernel_only_reply = await _close_kernel_plan_without_text_transport(
         plan=_cognitive_kernel_plan,
@@ -3766,7 +4482,14 @@ async def run_agent(
     except Exception:
         pass
     _turn_dbg["answer"] = _kernel_only_reply
-    return _kernel_only_reply
+    _cleanup_voice_run_handles()
+    return _reply_with_voice_runtime_ui(
+        _kernel_only_reply,
+        stage="kernel_turn_closed",
+        status=_voice_status_from_reply(_kernel_only_reply),
+        reason_code="cognitive_kernel_turn_closure",
+        plan=_cognitive_kernel_plan,
+    )
 
 # ---------------------------------------------------------------------------
 # 记忆：主路径为 Cognitive Kernel Memory Growth 与 MemoryRecallAgent。

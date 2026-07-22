@@ -22,6 +22,10 @@ import { getActiveSkillCanvasFromMessages, SkillCanvasPane } from "../skills-ui"
 import { expandChatWindowForSkillCanvas, SKILL_CHAT_COLUMN_WIDTH } from "../skills-ui/skillCanvasWindow";
 import { typewriterAnimation } from "../utils/typewriter";
 import { AssistantMessageContent } from "./Chat/AssistantMessageContent";
+import {
+  extractPendingConfirmationProtocol,
+  stripAssistantUiProtocol,
+} from "./Chat/pendingConfirmationProtocol";
 import { CHAT_RESPONSE_TIMEOUT_MS, CHAT_RESPONSE_TIMEOUT_SEC } from "../constants/chatResponseTimeout";
 
 export default function ChatPanel() {
@@ -331,6 +335,8 @@ export default function ChatPanel() {
     }, CHAT_RESPONSE_TIMEOUT_MS);
 
     const cleanup = (finalContent: string, source?: "L3" | "L2", opts?: { skipContentUpdate?: boolean }) => {
+      const protocol = extractPendingConfirmationProtocol(finalContent || "");
+      const visibleContent = stripAssistantUiProtocol(finalContent || "");
       clearTimeout(timeoutId);
       registerChunkHandler(null);
       registerAnswerHandler(null);
@@ -340,9 +346,18 @@ export default function ChatPanel() {
         const last = updated[updated.length - 1];
         if (last?.role === "assistant") {
           if (!opts?.skipContentUpdate) {
-            updated[updated.length - 1] = { ...last, content: finalContent || last.content, source };
+            updated[updated.length - 1] = {
+              ...last,
+              content: visibleContent || last.content,
+              source,
+              pending_confirmation: protocol ?? last.pending_confirmation,
+            };
           } else {
-            updated[updated.length - 1] = { ...last, source };
+            updated[updated.length - 1] = {
+              ...last,
+              source,
+              pending_confirmation: protocol ?? last.pending_confirmation,
+            };
           }
         }
         saveMessages(updated);
@@ -836,7 +851,7 @@ export default function ChatPanel() {
             ) : (
               <Mic className="w-3.5 h-3.5" />
             )}
-            <span>VAD</span>
+            <span>{isVoiceCaptureRunning ? "关麦" : "开麦"}</span>
           </button>
           {/* 原有语音录制按钮 */}
           <button

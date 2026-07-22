@@ -8,7 +8,6 @@ import {
   Send,
   Mic,
   Square,
-  Radio,
   LayoutDashboard,
   Settings2,
   Plus,
@@ -23,10 +22,10 @@ import { AssistantMessageContent } from "../Chat/AssistantMessageContent";
 import type { ToolUiSubmitPayload } from "../../skills-ui/types";
 import { WindowControls } from "../Chat/WindowControls";
 import { VoiceWaveform, type WavePhase } from "../Chat/VoiceWaveform";
-import { JachinCore, type JachinCoreMachineState } from "./JachinCore";
+import type { JachinCoreMachineState } from "./JachinCore";
 import { OmniReasoningChain } from "./OmniReasoningChain";
 import type { RiskLevel } from "../Chat/ChatUI";
-import type { CoreVisualState, ToolFlashKind } from "../../hooks/useJachinCoreState";
+import type { ToolFlashKind } from "../../hooks/useJachinCoreState";
 import type { SensoryPayload } from "../../hooks/useSensoryWebSocket";
 import { desktopOmniUi, type DesktopOmniUiStrings } from "../../utils/desktopUiI18n";
 import { getAssistantReasoningForDisplay } from "../../utils/reasoningStreamSplit";
@@ -35,23 +34,6 @@ export enum CorePhase {
   THINKING = "THINKING",
   HEALING = "HEALING",
   STREAMING = "STREAMING",
-}
-
-function phaseToCoreVisual(
-  phase: CorePhase,
-  hitlPending: SensoryPayload | null
-): CoreVisualState {
-  if (hitlPending) return "hitl";
-  switch (phase) {
-    case CorePhase.HEALING:
-      return "self_heal";
-    case CorePhase.THINKING:
-      return "thinking";
-    case CorePhase.STREAMING:
-      return "streaming";
-    default:
-      return "idle";
-  }
 }
 
 /** 全息角标 — 四角 ⌜⌝ 细线锚定，无封闭卡片框 */
@@ -70,7 +52,7 @@ function OmniHologramCorners() {
 
 export interface OmniCyberChatShellProps {
   phase: CorePhase;
-  /** 与气泡 Thought Process / 正文流式同步，驱动 JachinCore 呼吸环 */
+  /** 与气泡 Thought Process / 正文流式同步，用于停止/流式状态判断 */
   jachinMachineState: JachinCoreMachineState;
   thinkingToolFlash: ToolFlashKind;
   messages: StoredMessage[];
@@ -78,7 +60,10 @@ export interface OmniCyberChatShellProps {
   onInputChange: (value: string) => void;
   /** Esc 收起 Omni / 陪伴圆（与 window 捕获监听双保险，避免 WebView 吞键） */
   onRequestDismiss?: () => void | Promise<void>;
-  onSend: () => void;
+  onSend: (
+    overrideText?: string,
+    options?: { bypassLocalFallback?: boolean; interactionSource?: "user_text" | "quick_reply" | "voice" | "pending_resume" },
+  ) => void;
   /** 思考/流式过程中停止生成（与发送按钮同位） */
   onStopGeneration?: () => void;
   placeholder?: string;
@@ -132,9 +117,7 @@ export interface OmniCyberChatShellProps {
 }
 
 export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
-  phase,
   jachinMachineState,
-  thinkingToolFlash,
   input,
   onInputChange,
   onRequestDismiss,
@@ -281,15 +264,21 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
     (jachinMachineState === "THINKING" || jachinMachineState === "STREAMING");
   const voiceGate = voiceBackendOk !== undefined ? voiceBackendOk : !disabled;
   const canVoice = voiceGate && !isLoading;
-  const voiceVisual = interactionPhase !== "text";
+  const voiceVisual = isRecording && interactionPhase !== "text";
   const wavePhase: WavePhase = voiceVisual ? interactionPhase : "mic_listen";
+  const voiceModeLabel = isRecording ? "点击说话" : isVadActive ? "常开听取" : "文字输入";
+  const voiceModeHint = isRecording
+    ? "正在录音，点结束后进入同一条 Omni 任务链"
+    : isVadActive
+      ? "已并入 Omni：你可以继续打字，也可以直接说任务"
+      : "文字、点击说话、常开语音共用同一个上下文";
+  const voiceStatusText = recordingStatus || listeningText || (isVadActive ? "常开语音已开启，正在监听任务…" : "");
   const handleQuickReply = useCallback(
     (text: string) => {
       if (disabled || isLoading || isTyping) return;
-      onInputChange(text);
-      window.setTimeout(() => onSend(), 0);
+      onSend(text, { bypassLocalFallback: true, interactionSource: "quick_reply" });
     },
-    [disabled, isLoading, isTyping, onInputChange, onSend],
+    [disabled, isLoading, isTyping, onSend],
   );
 
   const riskBorder =
@@ -298,8 +287,6 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
       : riskLevel === "warning"
         ? "border-2 border-amber-500/60"
         : "";
-
-  const coreState = phaseToCoreVisual(phase, hitlPending);
 
   const clipMain = "rounded-xl";
 
@@ -692,6 +679,86 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
               </div>
             )}
 
+            <div className="mb-2 flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-lg border border-cyan-300/[0.08] bg-cyan-300/[0.025] px-2.5 py-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <span
+                  className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md border ${
+                    isRecording
+                      ? "border-red-300/30 bg-red-400/12 text-red-100"
+                      : isVadActive
+                        ? "border-emerald-300/30 bg-emerald-300/12 text-emerald-100"
+                        : "border-cyan-200/16 bg-slate-950/30 text-cyan-100/75"
+                  }`}
+                >
+                  <Mic className="h-3.5 w-3.5" />
+                </span>
+                <div className="min-w-0">
+                  <div className="truncate text-[11px] font-semibold text-cyan-50">{voiceModeLabel}</div>
+                  <div className="truncate text-[10px] text-slate-400">{voiceModeHint}</div>
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5">
+                {isRecording ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onVoiceStop();
+                    }}
+                    title="结束录音并发送"
+                    aria-label="结束录音"
+                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-red-300/[0.24] bg-red-400/10 px-2.5 text-[11px] font-medium text-red-100 transition hover:bg-red-400/[0.16]"
+                  >
+                    <Square className="h-3.5 w-3.5 shrink-0" />
+                    结束
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (canVoice) onVoiceStart();
+                    }}
+                    disabled={!canVoice}
+                    title="点击说话"
+                    aria-label="点击说话"
+                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-cyan-300/20 bg-cyan-300/[0.055] px-2.5 text-[11px] font-medium text-cyan-100 transition hover:bg-cyan-300/[0.1] disabled:opacity-35"
+                  >
+                    <Mic className="h-3.5 w-3.5" />
+                    点击说话
+                  </button>
+                )}
+                {onVadToggle != null && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onVadToggle();
+                    }}
+                    disabled={disabled || (!isVadActive && isLoading)}
+                    title={isVadActive ? "关闭常开语音" : "开启常开语音"}
+                    aria-pressed={isVadActive}
+                    className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-[11px] font-medium transition disabled:opacity-35 ${
+                      isVadActive
+                        ? "border-emerald-300/30 bg-emerald-300/[0.12] text-emerald-100"
+                        : "border-white/12 bg-white/[0.045] text-slate-300 hover:border-cyan-300/18 hover:text-cyan-100"
+                    }`}
+                  >
+                    <span className={`h-2 w-2 rounded-full ${isVadActive ? "bg-emerald-300 shadow-[0_0_10px_rgba(110,231,183,0.8)]" : "bg-slate-600"}`} />
+                    {isVadActive ? "关麦" : "常开"}
+                  </button>
+                )}
+              </div>
+              {voiceStatusText ? (
+                <div className={`basis-full truncate text-[10px] ${voiceStatusText.includes("错误") ? "text-red-300" : "text-cyan-200/70"}`}>
+                  {voiceStatusText}
+                </div>
+              ) : null}
+            </div>
+
             <div className="flex min-h-0 min-w-0 w-full flex-row items-stretch gap-1.5 sm:gap-2">
               <div className="flex shrink-0 flex-col justify-end gap-1 pb-1 sm:gap-1.5">
                 {onMergePendingFiles != null && (
@@ -709,72 +776,9 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                     <Plus className="h-4 w-4" strokeWidth={2.25} />
                   </button>
                 )}
-                {onVadToggle != null && (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      onVadToggle();
-                    }}
-                    disabled={disabled || isLoading}
-                    className={`omni-icon-button flex h-9 w-9 shrink-0 items-center justify-center disabled:opacity-20 ${
-                      isVadActive
-                        ? "text-amber-100 opacity-100 shadow-[0_0_16px_rgba(251,191,36,0.16)]"
-                        : "text-slate-400/70"
-                    }`}
-                    title="VAD"
-                  >
-                    <Radio className="h-3.5 w-3.5 shrink-0" />
-                  </button>
-                )}
-                {isRecording ? (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      onVoiceStop();
-                    }}
-                    title="结束录音并发送"
-                    aria-label="结束录音"
-                    className="flex h-9 shrink-0 items-center gap-1 rounded-lg border border-red-300/[0.24] bg-red-400/10 px-2 text-red-100 opacity-100 transition duration-200 hover:bg-red-400/[0.16]"
-                  >
-                    <Square className="h-3.5 w-3.5 shrink-0" />
-                    <span className="text-[10px] font-medium tracking-wide">结束</span>
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      if (canVoice) onVoiceStart();
-                    }}
-                    disabled={!canVoice}
-                    title="开始录音"
-                    aria-label="开始录音"
-                    className="omni-icon-button flex h-9 w-9 shrink-0 items-center justify-center disabled:opacity-20"
-                  >
-                    <Mic className="h-3.5 w-3.5" />
-                  </button>
-                )}
               </div>
 
               <div className="min-w-0 flex-1 flex flex-col gap-1">
-                <div className="flex min-w-0 flex-wrap items-center justify-center gap-1.5 pb-0.5 sm:gap-2">
-                  <JachinCore
-                    state={coreState}
-                    machineState={jachinMachineState}
-                    toolFlash={thinkingToolFlash}
-                    className="!h-9 !w-9 shrink-0 scale-95"
-                  />
-                  {placeholder.includes("·") ? (
-                    <span className="min-w-0 max-w-full truncate text-center text-[9px] tracking-normal text-sky-200/[0.38] sm:max-w-[min(220px,50vw)]">
-                      {placeholder.split("·")[0]?.trim()}
-                    </span>
-                  ) : null}
-                </div>
                 {voiceVisual ? (
                   <div className="relative flex min-h-[48px] w-full items-center justify-center rounded-lg border border-sky-300/10 bg-sky-300/[0.025] py-2">
                     <div className="relative z-[2] w-full">

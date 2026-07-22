@@ -240,7 +240,7 @@ class AppControlExecutor(RoleExecutionAdapter):
         tool = (context.tool or "").strip()
         payload = _json_obj(context.work_order_input)
         args = payload if isinstance(payload, dict) else {}
-        if not context.metadata.get("mainline"):
+        if not _native_role_adapter_enabled(context):
             return await tool_transport_executor(work_order)
         if tool == "mcp:windows_open_app":
             from l3_client.local_mcps.windows_uia_mcp import server as windows_uia_server
@@ -336,7 +336,7 @@ class FileExecutor(RoleExecutionAdapter):
                 },
                 ensure_ascii=False,
             )
-        if context.metadata.get("mainline") and tool in {
+        if _native_role_adapter_enabled(context) and tool in {
             "mcp:windows_file_open",
             "mcp:windows_file_reveal_in_explorer",
         }:
@@ -511,7 +511,20 @@ class MessageExecutor(RoleExecutionAdapter):
         tool_transport_executor: ToolTransportExecutor,
         context: RoleExecutionContext,
     ) -> str:
-        self._validate_send_payload(context)
+        payload_gap = self._send_payload_gap(context)
+        if payload_gap:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "reason": f"missing_{payload_gap}",
+                    "verification_failure": f"message_send_missing_{payload_gap}",
+                    "user_visible_reply": _message_payload_gap_reply(payload_gap),
+                    "channel": "MessageExecutorAgent.preflight",
+                    "recipients": _extract_recipient_like_values(context.work_order_input),
+                    "message_preview": _extract_message_preview(context.work_order_input)[:200],
+                },
+                ensure_ascii=False,
+            )
         delivery_mode = _message_delivery_mode(context.work_order_input)
         if delivery_mode == "dry_run":
             quality_report = _extract_web_research_quality_report(context.work_order_input)
@@ -564,15 +577,16 @@ class MessageExecutor(RoleExecutionAdapter):
             _MESSAGE_SEND_DEDUPE.add(dedupe_key)
         return first
 
-    def _validate_send_payload(self, context: RoleExecutionContext) -> None:
+    def _send_payload_gap(self, context: RoleExecutionContext) -> str:
         recipients = _extract_recipient_like_values(context.work_order_input)
         message = _extract_message_preview(context.work_order_input)
         low_tool = (context.tool or "").lower()
         if any(x in low_tool for x in ("lark", "send", "smtp", "post", "publish")):
             if not recipients and "publish" not in low_tool and "upload" not in low_tool:
-                raise ValueError("message send requires recipient/chat_id/to")
+                return "recipient"
             if not message and "upload" not in low_tool:
-                raise ValueError("message send requires non-empty message/text/content")
+                return "message"
+        return ""
 
     def enrich_evidence(
         self,
@@ -891,6 +905,14 @@ def _extract_message_preview(work_order_input: str) -> str:
     return ""
 
 
+def _message_payload_gap_reply(slot_gap: str) -> str:
+    if slot_gap == "recipient":
+        return "我还不知道这条消息要发给谁。请补充一个明确联系人或群名。"
+    if slot_gap == "message":
+        return "我还不知道要发送什么内容。请补充消息正文。"
+    return "这条消息缺少必要信息，请补充后再执行。"
+
+
 def _extract_web_research_quality_report(work_order_input: str) -> dict[str, object]:
     obj = _json_obj(work_order_input)
     if not isinstance(obj, dict):
@@ -960,9 +982,11 @@ def _web_research_send_preview_policy(report: dict[str, object]) -> dict[str, ob
 def _message_dedupe_key(work_order: WorkOrder, context: RoleExecutionContext) -> str:
     recipients = sorted(x.strip().lower() for x in _extract_recipient_like_values(context.work_order_input) if x.strip())
     preview = _extract_message_preview(context.work_order_input).strip()
+    kernel_home = os.environ.get("JACHIN_COGNITIVE_KERNEL_HOME", "").strip()
     digest = hashlib.sha256(
         json.dumps(
             {
+                "kernel_home": kernel_home,
                 "work_order_id": work_order.work_order_id,
                 "recipients": recipients,
                 "message": preview,
@@ -972,6 +996,13 @@ def _message_dedupe_key(work_order: WorkOrder, context: RoleExecutionContext) ->
         ).encode("utf-8")
     ).hexdigest()[:24]
     return f"msg:{digest}"
+
+
+def _native_role_adapter_enabled(context: RoleExecutionContext) -> bool:
+    if not context.metadata.get("mainline"):
+        return False
+    disabled = os.environ.get("JACHIN_DISABLE_ROLE_NATIVE_ADAPTERS", "").strip().lower()
+    return disabled not in {"1", "true", "yes", "on"}
 
 
 def _extract_memory_payload(work_order_input: str) -> tuple[str, list[str] | None]:

@@ -1,4 +1,12 @@
-# LLD 替代 link.exe，可规避 LNK1105（错误 1224）
-# 若仍失败，可注释掉以下配置恢复默认
+# Windows linker policy for Jachin Desktop.
+#
+# The default MSVC link.exe can fail on this machine with LNK1105 / error 1224
+# while closing Rust build-script executables. Plain rust-lld avoids that lock
+# path, but can crash when producing debug info. The stable local combination is:
+#   rust-lld + debuginfo=0
+#
+# Keep this project-local so it does not affect other Rust workspaces.
+
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld"
+rustflags = ["-C", "debuginfo=0"]

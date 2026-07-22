@@ -20,6 +20,7 @@ pub struct WakeListenerState {
 struct WakeStartRequest {
     app: AppHandle,
     wake_word: String,
+    mode: String,
 }
 
 impl WakeListenerState {
@@ -58,6 +59,7 @@ impl WakeListenerState {
 
                 let cfg = WakePipelineConfig {
                     wake_word: req.wake_word,
+                    mode: req.mode.clone(),
                 };
                 let guard = match start_wake_pipeline(req.app.clone(), cfg, manual_rx) {
                     Ok(g) => {
@@ -65,7 +67,7 @@ impl WakeListenerState {
                             "rust",
                             "wake.listener_started",
                             "ok",
-                            "",
+                            &format!("mode={}", req.mode),
                         );
                         running_holder.store(true, Ordering::Relaxed);
                         g
@@ -100,11 +102,11 @@ impl WakeListenerState {
         }
     }
 
-    pub fn start(&self, app: AppHandle, wake_word: String) -> Result<(), String> {
+    pub fn start(&self, app: AppHandle, wake_word: String, mode: String) -> Result<(), String> {
         self.stop_inner();
         let guard = self.start_tx.lock().map_err(|e| e.to_string())?;
         if let Some(ref tx) = *guard {
-            tx.send(WakeStartRequest { app, wake_word })
+            tx.send(WakeStartRequest { app, wake_word, mode })
                 .map_err(|e| e.to_string())?;
             Ok(())
         } else {

@@ -33,7 +33,7 @@ type ProgressStore = Record<string, WordProgress>;
 const LOOKUP_CACHE_KEY = "jachin.english_vocab.lookup_cache.v28";
 const REMOTE_LOOKUP_UI_TIMEOUT_MS = 8000;
 const TOKEN_LOOKUP_UI_TIMEOUT_MS = 6000;
-const UPCOMING_MODEL_PREFETCH_COUNT = 3;
+const UPCOMING_MODEL_PREFETCH_COUNT = 8;
 const CURRENT_CARD_RETRY_LIMIT = 20;
 const pendingLookups = new Map<string, Promise<LookupResult>>();
 
@@ -2015,7 +2015,8 @@ function isForegroundQualityLookup(result?: LookupResult | null): boolean {
 }
 
 function canUseWithoutRemote(result?: LookupResult | null): boolean {
-  return isForegroundQualityLookup(result);
+  if (isForegroundQualityLookup(result)) return true;
+  return Boolean(result && result.source === "local_ecdict" && hasDisplayableExample(result) && !isWeakLookupResult(result));
 }
 
 function preferLookupResult(incoming: LookupResult, existing: LookupResult | null | undefined, book: EnglishWordBook) {
@@ -2370,6 +2371,49 @@ export function EnglishVocabCoach() {
     [activeBook.id],
   );
 
+  const immediateDisplayResult = React.useCallback(
+    (word: string): LookupResult | null => {
+      const clean = cleanToken(word) || word;
+      const cached = lookupCacheRef.current[lookupCacheKey(activeBook.id, clean)];
+      if (isModelReadyCard(cached)) return normalizeLookupResult(cached, activeBook);
+      const local = localLookupResult(clean, activeBook);
+      return local && isModelReadyCard(local) ? normalizeLookupResult(local, activeBook) : null;
+    },
+    [activeBook],
+  );
+
+  const prefetchWords = React.useCallback(
+    (words: string[], reason: string) => {
+      const unique = Array.from(new Set(words.map((word) => cleanToken(word) || word).filter(Boolean)));
+      unique.forEach((word, offset) => {
+        window.setTimeout(() => {
+          traceFrontend("next_card_prefetch_started", { book_id: activeBook.id, target_word: word, reason, offset });
+          void loadDetail(word, undefined, REMOTE_LOOKUP_UI_TIMEOUT_MS, true, true)
+            .then((result) => {
+              traceFrontend("next_card_prefetch_finished", {
+                book_id: activeBook.id,
+                target_word: word,
+                reason,
+                offset,
+                ...lookupTraceSummary(result),
+              });
+            })
+            .catch((error) => {
+              traceFrontend("next_card_prefetch_failed", {
+                book_id: activeBook.id,
+                target_word: word,
+                reason,
+                offset,
+                error: errorText(error) || String(error ?? ""),
+              });
+              console.warn("[EnglishVocab] word prefetch skipped:", word, error);
+            });
+        }, offset * 220);
+      });
+    },
+    [activeBook.id, loadDetail],
+  );
+
   React.useEffect(() => {
     let cancelled = false;
     const cached = lookupCacheRef.current[lookupCacheKey(activeBook.id, currentWord)];
@@ -2381,9 +2425,10 @@ export function EnglishVocabCoach() {
         cancelled = true;
       };
     }
-    setDetail(null);
+    const seed = immediateDisplayResult(currentWord);
+    setDetail(seed);
     setDetailError(null);
-    setDetailLoading(true);
+    setDetailLoading(!seed);
     void loadDetail(currentWord, undefined, REMOTE_LOOKUP_UI_TIMEOUT_MS, true, true)
       .then((result) => {
         if (!cancelled) {
@@ -2405,7 +2450,7 @@ export function EnglishVocabCoach() {
     return () => {
       cancelled = true;
     };
-  }, [activeBook.id, currentWord, loadDetail]);
+  }, [activeBook.id, currentWord, immediateDisplayResult, loadDetail]);
 
   React.useEffect(() => {
     if (!effectiveExample || detailLoading) return;
@@ -2417,23 +2462,26 @@ export function EnglishVocabCoach() {
         const nextIndex = (index + offset + 1) % activeBook.words.length;
         return activeBook.words[nextIndex];
       }).filter(Boolean);
-      upcoming.forEach((word, offset) => {
-        window.setTimeout(() => {
-          if (cancelled) return;
-          // Prepare model-grade examples before the word is shown. The card has
-          // only one real display chance, so upcoming words must be generated
-          // in advance instead of falling back to templates at display time.
-          void loadDetail(word, undefined, REMOTE_LOOKUP_UI_TIMEOUT_MS, true, true).catch((error) => {
-            console.warn("[EnglishVocab] upcoming word prefetch skipped:", word, error);
-          });
-        }, offset * 450);
-      });
+      if (!cancelled) prefetchWords(upcoming, "current_card_ready");
     }, 350);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [activeBook.id, activeBook.words, currentWord, detailLoading, effectiveExample, loadDetail]);
+  }, [activeBook.id, activeBook.words, currentWord, detailLoading, effectiveExample, prefetchWords]);
+
+  React.useEffect(() => {
+    const index = activeBook.words.indexOf(currentWord);
+    if (index < 0 || activeBook.words.length <= 1) return;
+    const timer = window.setTimeout(() => {
+      const upcoming = Array.from({ length: Math.min(UPCOMING_MODEL_PREFETCH_COUNT, activeBook.words.length - 1) }, (_, offset) => {
+        const nextIndex = (index + offset + 1) % activeBook.words.length;
+        return activeBook.words[nextIndex];
+      }).filter(Boolean);
+      prefetchWords(upcoming, "current_word_changed");
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [activeBook.id, activeBook.words, currentWord, prefetchWords]);
 
   const retryCurrent = React.useCallback(() => {
     setDetail(null);
@@ -2640,6 +2688,26 @@ export function EnglishVocabCoach() {
       setCardPreparing(true);
       setPreparingWord(word);
       setDetailError(null);
+      const seed = immediateDisplayResult(word);
+      currentWordRef.current = word;
+      setCurrentWord(word);
+      setDetail(seed);
+      setDetailLoading(!seed);
+      setRevealed(false);
+      revealedRef.current = false;
+      setReviewed(false);
+      setSelectedWord(null);
+      setSelectedError(null);
+      setSelectedStatus(null);
+      setFeedback(seed ? UI.readyHint : UI.preparingCard);
+      setCardPreparing(false);
+      setPreparingWord(null);
+      traceFrontend(seed ? "next_card_rendered_immediately" : "next_card_switched_before_example_ready", {
+        book_id: activeBook.id,
+        target_word: word,
+        had_seed: Boolean(seed),
+        ...(seed ? lookupTraceSummary(seed) : {}),
+      });
       try {
         const result = await loadDetail(word, undefined, REMOTE_LOOKUP_UI_TIMEOUT_MS, true, true);
         if (cardTransitionRef.current !== transitionId) return false;
@@ -2658,14 +2726,27 @@ export function EnglishVocabCoach() {
         setSelectedError(null);
         setSelectedStatus(null);
         setFeedback(UI.readyHint);
+        traceFrontend("next_card_model_ready", {
+          book_id: activeBook.id,
+          target_word: word,
+          ...lookupTraceSummary(result),
+        });
         return true;
       } catch (error) {
         if (cardTransitionRef.current === transitionId) {
           console.warn("[EnglishVocab] next card preparation failed:", word, error);
+          traceFrontend("next_card_model_failed_after_switch", {
+            book_id: activeBook.id,
+            word,
+            had_seed: Boolean(seed),
+            error: errorText(error) || String(error ?? ""),
+          });
           setFeedback(`下一张 ${word} 暂未准备好，请重试。`);
+          setDetailLoading(false);
           setDetailError(null);
+          setFeedback(seed ? UI.readyHint : "例句正在生成，稍后会自动刷新。");
         }
-        return false;
+        return Boolean(seed);
       } finally {
         if (cardTransitionRef.current === transitionId) {
           setCardPreparing(false);
@@ -2673,7 +2754,7 @@ export function EnglishVocabCoach() {
         }
       }
     },
-    [loadDetail],
+    [activeBook.id, immediateDisplayResult, loadDetail],
   );
 
   const moveNext = React.useCallback(
@@ -2695,6 +2776,14 @@ export function EnglishVocabCoach() {
     setSelectedError(null);
     setSelectedStatus(null);
     setFeedback(feedbackFor(rating));
+    const currentIndex = activeBook.words.indexOf(currentWord);
+    if (currentIndex >= 0 && activeBook.words.length > 1) {
+      const upcoming = Array.from({ length: Math.min(UPCOMING_MODEL_PREFETCH_COUNT, activeBook.words.length - 1) }, (_, offset) => {
+        const nextIndex = (currentIndex + offset + 1) % activeBook.words.length;
+        return activeBook.words[nextIndex];
+      }).filter(Boolean);
+      prefetchWords(upcoming, "review_clicked");
+    }
     void invoke<VocabState>("english_vocab_state_record_review", {
       input: {
         book_id: activeBook.id,

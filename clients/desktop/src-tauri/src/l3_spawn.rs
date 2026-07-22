@@ -11,6 +11,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
+const VOICE_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+fn rotate_voice_log_if_needed(path: &PathBuf) {
+    let Ok(meta) = fs::metadata(path) else {
+        return;
+    };
+    if meta.len() < VOICE_LOG_MAX_BYTES {
+        return;
+    }
+    let backup = path.with_extension("log.1");
+    let _ = fs::remove_file(&backup);
+    let _ = fs::rename(path, backup);
+}
+
 /// 主程序 exe 所在目录（dist_jachin_desktop 或 target/release）
 pub fn exe_dir() -> Option<PathBuf> {
     std::env::current_exe()
@@ -91,6 +105,7 @@ pub fn write_voice_companion_debug(webview: &str, stage: &str, message: &str, de
         return;
     }
     let path = dir.join("voice_companion.log");
+    rotate_voice_log_if_needed(&path);
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -107,7 +122,6 @@ pub fn write_voice_companion_debug(webview: &str, stage: &str, message: &str, de
             if let Err(e) = f.write_all(line.as_bytes()) {
                 eprintln!("[voice_companion_debug] write {}: {}", path.display(), e);
             }
-            let _ = f.flush();
         }
         Err(e) => eprintln!("[voice_companion_debug] open {}: {}", path.display(), e),
     }
@@ -121,6 +135,7 @@ pub fn write_voice_chat_trace(trace_id: &str, stage: &str, message: &str, detail
         return;
     }
     let path = dir.join("voice_chat.log");
+    rotate_voice_log_if_needed(&path);
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -139,7 +154,6 @@ pub fn write_voice_chat_trace(trace_id: &str, stage: &str, message: &str, detail
             if let Err(e) = f.write_all(line.as_bytes()) {
                 eprintln!("[voice_chat_trace] write {}: {}", path.display(), e);
             }
-            let _ = f.flush();
         }
         Err(e) => eprintln!("[voice_chat_trace] open {}: {}", path.display(), e),
     }

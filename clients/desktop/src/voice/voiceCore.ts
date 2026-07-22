@@ -4,6 +4,7 @@
  */
 
 import { getJvsHealth, startJvsProcess, transcribeByJvs, transcribeLocalByJvs } from "./voiceBridge";
+import type { JvsAsrAlternative } from "./voiceBridge";
 import type { VoiceUxProfile } from "./voiceProfiles";
 import { voiceChatTrace, voiceChatTraceIfActive } from "./voiceChatTraceLog";
 
@@ -38,6 +39,7 @@ export interface VoiceTranscriptionResult {
   hotwordStatus?: string;
   hotwordSources?: string[];
   hotwordDominated?: boolean;
+  alternatives?: JvsAsrAlternative[];
 }
 
 export interface VoiceTranscriptionOptions {
@@ -170,6 +172,7 @@ export async function transcribeBlobDetailed(
     const rawText = (stt.raw_text || stt.text || "").trim();
     const text = sanitizeSttText(correctedText);
     const understanding = stt.understanding ?? {};
+    const alternatives = stt.alternatives || ((understanding as any).asr_alternatives as JvsAsrAlternative[] | undefined) || [];
     const cloudDiagnostics = Array.isArray((understanding as any).cloud_diagnostics)
       ? ((understanding as any).cloud_diagnostics as Array<Record<string, unknown>>)
       : [];
@@ -205,6 +208,7 @@ export async function transcribeBlobDetailed(
       hotwordCount: stt.hotword_count,
       hotwordStatus: stt.hotword_status,
       hotwordSources: stt.hotword_sources,
+      alternatives,
       latencyMs: Date.now() - sttStarted,
       pipelineMs: Date.now() - pipelineStartedAt,
     });
@@ -236,6 +240,7 @@ export async function transcribeBlobDetailed(
       hotwordCount: stt.hotword_count,
       hotwordStatus: stt.hotword_status,
       hotwordSources: stt.hotword_sources,
+      alternatives,
     };
   } catch (e) {
     if (e instanceof VoiceServiceError) {

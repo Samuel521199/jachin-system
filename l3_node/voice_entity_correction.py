@@ -63,13 +63,101 @@ class VoiceCorrectionResult:
 
 
 _BUILTIN_ENTITIES: tuple[LexiconEntity, ...] = (
-    LexiconEntity("app", "Lark", ("lark", "feishu", "flybook", "\u98de\u4e66", "luck", "lock", "\u62c9\u514b", "\u62c9")),
+    LexiconEntity(
+        "app",
+        "Lark",
+        (
+            "lark",
+            "l a r k",
+            "lark app",
+            "feishu",
+            "flybook",
+            "\u98de\u4e66",
+            "luck",
+            "lucky",
+            "lock",
+            "locker",
+            "log",
+            "look",
+            "loc",
+            "lok",
+            "larkk",
+            "lark.",
+            "lock.",
+            "logs",
+            "logue",
+            "\u62c9\u514b",
+            "\u62c9\u5ba2",
+            "\u5566\u5ba2",
+            "\u4e50\u5ba2",
+            "\u6d1b\u514b",
+            "\u62c9",
+        ),
+    ),
+    LexiconEntity(
+        "app",
+        "WeChat",
+        (
+            "wechat",
+            "wechat.",
+            "we chat",
+            "wei chat",
+            "wet chat",
+            "we chats",
+            "wechat app",
+            "we chat app",
+            "\u5fae\u4fe1",
+            "\u5fae \u4fe1",
+            "weixin",
+            "wx",
+        ),
+    ),
     LexiconEntity("app", "Chrome", ("chrome", "google chrome", "clone", "\u6d4f\u89c8\u5668")),
     LexiconEntity("app", "VS Code", ("vs code", "vscode", "visual studio code", "ws code", "w s code")),
     LexiconEntity("app", "Codex", ("codex", "code x", "\u6263\u5f97\u514b\u65af")),
+    LexiconEntity("project", "Qwen", ("qwen", "q wen", "qw en", "\u901a\u4e49\u5343\u95ee", "\u5343\u95ee")),
+    LexiconEntity("project", "PMO", ("pmo", "p m o", "pm o", "\u9879\u76ee\u6cbb\u7406", "\u9879\u76ee\u7ba1\u7406")),
     LexiconEntity("contact", "Vivian", ("vivian", "vivi", "viian", "vivan", "vivien", "\u8587\u8587\u5b89", "\u5fae\u5fae\u5b89", "v\u8587m", "v\u8587 m", "v \u8587 m", "V\u8587")),
-    LexiconEntity("contact", "Neil", ("neil", "neal", "niel", "kneel")),
+    LexiconEntity(
+        "contact",
+        "Neil",
+        (
+            "neil",
+            "neal",
+            "niel",
+            "nil",
+            "kneel",
+            "near",
+            "new",
+            "new.",
+            "niu",
+            "niu.",
+            "nail",
+            "nile",
+            "neal.",
+            "niel.",
+            "neil.",
+            "\u5c3c\u5c14",
+            "\u5185\u5c14",
+            "\u59ae\u5c14",
+            "\u5948\u5c14",
+            "\u4f60\u5c14",
+        ),
+    ),
+    LexiconEntity("contact", "Samuel", ("samuel", "sam", "\u8428\u7f2a\u5c14")),
     LexiconEntity("contact", "Ethan", ("ethan", "eason", "e than")),
+    LexiconEntity(
+        "contact",
+        "\u6d4b\u8bd5\u5907\u6ce8\u5192\u70df\u8349\u7a3f",
+        (
+            "\u6d4b\u8bd5\u5907\u6ce8\u5192\u70df\u8349\u7a3f",
+            "\u5192\u70df\u8349\u7a3f",
+            "\u6d4b\u8bd5\u7fa4",
+            "\u70df\u8349\u7a3f",
+            "test group",
+            "smoke draft",
+        ),
+    ),
     LexiconEntity("project", "Jachin", ("jachin", "jacking", "\u52a0\u52e4", "\u5609\u94a6")),
 )
 
@@ -87,6 +175,17 @@ _MESSAGE_START_RE = re.compile(r"(?:\u5185\u5bb9\u662f|\u6d88\u606f\u662f|\u6b63
 _NOISE_LEADING_RE = re.compile(r"^(?:\u90a3\u4e2a|\u55ef|\u5443|\u989d|\u554a|\u5c31\u662f|\u8bf7\u4f60|\u9ebb\u70e6\u4f60)\s*(?:\u90a3\u4e2a|\u55ef|\u5443|\u989d|\u554a|\u5c31\u662f)?\s*")
 _EMOJI_TAIL_RE = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]+$")
 _SPLIT_CUT_RE = re.compile(r"(?:\u7136\u540e|\u4e4b\u540e|\u518d|\u5e76\u4e14|\u5e76|\u7ed9|\u5411|\u5185\u5bb9\u662f|\u6d88\u606f\u662f|\u6b63\u6587\u662f|message|content|\u53d1|\u53d1\u9001|\u8bf4|\u544a\u8bc9)", re.I)
+_AMBIGUOUS_CONTACT_RECIPIENTS = {
+    "\u5973\u53cb",
+    "\u7537\u53cb",
+    "\u597d\u53cb",
+    "\u670b\u53cb",
+    "\u540c\u4e8b",
+    "\u5979",
+    "\u4ed6",
+    "\u5bf9\u65b9",
+}
+_CONTACT_CANDIDATE_PRIORITY = ("Neil", "Vivian", "Samuel", "Ethan")
 
 
 def _repo_root() -> Path:
@@ -167,12 +266,14 @@ def _merge_entities(entities: list[LexiconEntity]) -> tuple[LexiconEntity, ...]:
         if not entity.active:
             continue
         key = (entity.kind, entity.canonical.lower())
-        slot = by_key.setdefault(key, {"kind": entity.kind, "canonical": entity.canonical, "aliases": [], "source": entity.source})
+        slot = by_key.setdefault(key, {"kind": entity.kind, "canonical": entity.canonical, "aliases": [], "sources": []})
         slot["aliases"].extend(entity.aliases)
+        slot["sources"].append(entity.source)
     out: list[LexiconEntity] = []
     for item in by_key.values():
         aliases = tuple(dict.fromkeys(_clean_word(x) for x in item["aliases"] if _clean_word(x)))
-        out.append(LexiconEntity(item["kind"], item["canonical"], aliases, source=item["source"]))
+        sources = "|".join(dict.fromkeys(str(x) for x in item.get("sources") or [] if str(x)))
+        out.append(LexiconEntity(item["kind"], item["canonical"], aliases, source=sources or "builtin"))
     return tuple(out)
 
 
@@ -290,6 +391,20 @@ def _entities_for(kind: EntityKind) -> tuple[LexiconEntity, ...]:
     return tuple(e for e in load_entities() if e.kind == kind)
 
 
+def _contact_candidate_names(token: str = "") -> list[str]:
+    contacts = {e.canonical: e for e in _entities_for("contact")}
+    ordered: list[str] = [name for name in _CONTACT_CANDIDATE_PRIORITY if name in contacts]
+    if token:
+        rest = sorted(
+            (name for name in contacts if name not in ordered),
+            key=lambda name: SequenceMatcher(None, _norm(token), _norm(name)).ratio(),
+            reverse=True,
+        )
+    else:
+        rest = sorted(name for name in contacts if name not in ordered)
+    return [*ordered, *rest][:5]
+
+
 def _context_windows(text: str, kind: EntityKind, protected_start: int) -> list[tuple[int, int]]:
     regexes = (_APP_CONTEXT_RE,) if kind == "app" else ((_CONTACT_CONTEXT_RE,) if kind == "contact" else (_PROJECT_CONTEXT_RE,))
     windows: list[tuple[int, int]] = []
@@ -327,6 +442,15 @@ def _best_fuzzy_entity(token: str, kind: EntityKind) -> tuple[LexiconEntity | No
     return None, best[1], best[2]
 
 
+def _entity_source_label(entity: LexiconEntity) -> str:
+    source = str(entity.source or "").replace("\\", "/").lower()
+    if "voice_user_aliases" in source or ".jachin" in source or "user_aliases" in source:
+        return "user_memory"
+    if source == "builtin":
+        return "builtin"
+    return "domain_lexicon"
+
+
 def _replace_in_windows(text: str, *, kind: EntityKind, protected_start: int) -> tuple[str, list[EntityCorrection], list[SuspectToken]]:
     windows = _context_windows(text, kind, protected_start)
     replacements: list[tuple[int, int, str, EntityCorrection]] = []
@@ -345,12 +469,27 @@ def _replace_in_windows(text: str, *, kind: EntityKind, protected_start: int) ->
                     continue
                 abs_start = start + match.start()
                 abs_end = start + match.end()
-                replacements.append((abs_start, abs_end, entity.canonical, EntityCorrection(kind, original, entity.canonical, abs_start, abs_end, f"{kind}_slot_alias", 0.92)))
+                source_label = _entity_source_label(entity)
+                replacements.append((abs_start, abs_end, entity.canonical, EntityCorrection(kind, original, entity.canonical, abs_start, abs_end, f"{kind}_slot_alias:{source_label}", 0.92)))
         if not direct_hit:
             token = window.strip()
+            if kind == "contact" and _norm(token) in {_norm(x) for x in _AMBIGUOUS_CONTACT_RECIPIENTS}:
+                suspects.append(
+                    SuspectToken(
+                        token=token,
+                        kind=kind,
+                        candidates=_contact_candidate_names(token),
+                        reason="ambiguous_generic_contact_recipient",
+                        confidence=0.25,
+                        start=start,
+                        end=end,
+                    )
+                )
+                continue
             entity, score, alias = _best_fuzzy_entity(token, kind)
             if entity is not None:
-                replacements.append((start, end, entity.canonical, EntityCorrection(kind, token, entity.canonical, start, end, f"{kind}_slot_fuzzy:{alias}", round(float(score), 3))))
+                source_label = _entity_source_label(entity)
+                replacements.append((start, end, entity.canonical, EntityCorrection(kind, token, entity.canonical, start, end, f"{kind}_slot_fuzzy:{source_label}:{alias}", round(float(score), 3))))
             elif token:
                 candidates = [e.canonical for e in sorted(_entities_for(kind), key=lambda e: SequenceMatcher(None, _norm(token), _norm(e.canonical)).ratio(), reverse=True)[:3]]
                 if candidates:
@@ -404,12 +543,56 @@ def export_hotwords() -> dict[str, int]:
     """Return a compact hotword view for STT integrations."""
     weights: dict[str, int] = {}
     for entity in load_entities():
-        weight = 20 if entity.kind in {"app", "contact"} else 15
+        if entity.kind == "contact":
+            weight = 80
+        elif entity.kind == "app":
+            weight = 60
+        else:
+            weight = 35
         weights[entity.canonical] = max(weights.get(entity.canonical, 0), weight)
         for alias in entity.aliases:
             if alias and alias != entity.canonical:
-                weights[alias] = max(weights.get(alias, 0), max(5, weight - 10))
+                weights[alias] = max(weights.get(alias, 0), max(20, weight - 20))
     return weights
+
+
+def find_hotword_hits(text: str, *, limit: int = 12) -> list[dict[str, Any]]:
+    """Return hotwords that visibly appear in a noisy STT candidate.
+
+    This is intentionally lexical and cheap. It is used before task planning to
+    choose among ASR alternatives, not as final intent evidence.
+    """
+
+    raw = str(text or "")
+    if not raw.strip():
+        return []
+    compact = _norm(raw)
+    low = raw.lower()
+    hits: list[dict[str, Any]] = []
+    for word, weight in export_hotwords().items():
+        clean = _clean_word(word)
+        if not clean:
+            continue
+        norm = _norm(clean)
+        if len(norm) < 2:
+            continue
+        matched = False
+        if re.fullmatch(r"[a-z0-9_.-]+", norm):
+            matched = bool(re.search(rf"(?<![a-z0-9]){re.escape(norm)}(?![a-z0-9])", low))
+        else:
+            matched = norm in compact
+        if matched:
+            hits.append({"word": clean, "weight": int(weight), "kind": _hotword_kind(clean)})
+    hits.sort(key=lambda item: (int(item.get("weight") or 0), len(str(item.get("word") or ""))), reverse=True)
+    return hits[: max(1, int(limit))]
+
+
+def _hotword_kind(word: str) -> str:
+    norm = _norm(word)
+    for entity in load_entities():
+        if norm == _norm(entity.canonical) or any(norm == _norm(alias) for alias in entity.aliases):
+            return entity.kind
+    return ""
 
 
 def correction_payload(result: VoiceCorrectionResult) -> dict[str, Any]:

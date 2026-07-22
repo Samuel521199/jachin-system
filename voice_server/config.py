@@ -27,6 +27,7 @@ class VoiceServerConfig:
     stt_model: str
     stt_realtime_model: str
     stt_hotword_model: str
+    stt_hotword_mode: str
     stt_file_model: str
     stt_vocabulary_id: str
     stt_vocabulary_prefix: str
@@ -41,6 +42,8 @@ class VoiceServerConfig:
     stt_dir: Path
     tts_dir: Path
     sv_dir: Path
+    torch_device: str
+    require_gpu: bool
     tts_voice: str
     tts_speed: float
     log_level: str
@@ -190,20 +193,45 @@ def _dashscope_ws_api_base(compatible_base: str) -> str:
     return base.rstrip("/") + "/api-ws/v1/inference"
 
 
+def _has_camplus_sv_model(model_root: Path, sv_rel: str) -> bool:
+    sv_dir = model_root / sv_rel
+    return (
+        (sv_dir / "configuration.json").is_file()
+        and (sv_dir / "campplus_cn_common.bin").is_file()
+        and (sv_dir / "campplus_cn_common.bin").stat().st_size > 1024 * 1024
+    )
+
+
+def _resolve_voice_model_root(sv_rel: str) -> Path:
+    explicit = os.getenv("JACHIN_VOICE_MODEL_ROOT", "").strip()
+    if explicit:
+        return Path(explicit)
+
+    root = _project_root()
+    candidates = [
+        root / "data" / "models" / "voice",
+        root.parent / "data" / "models" / "voice",
+        Path.home() / ".jachin" / "models" / "voice",
+        Path.home() / "Desktop" / "voice",
+    ]
+    for candidate in candidates:
+        if _has_camplus_sv_model(candidate, sv_rel):
+            return candidate
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return root / "data" / "models" / "voice"
+
+
 def load_config() -> VoiceServerConfig:
     _merge_dotenv_into_environ()
-    model_root = Path(
-        os.getenv(
-            "JACHIN_VOICE_MODEL_ROOT",
-            r"D:\project\jachin-system-main\data\models\voice",
-        )
-    )
     stt_rel = os.getenv("JACHIN_VOICE_STT_DIR", r"stt\sherpa-onnx-zipformer-zh-en-2023-11-22")
     tts_rel = os.getenv("JACHIN_VOICE_TTS_DIR", r"tts")
     sv_rel = os.getenv(
         "JACHIN_VOICE_SV_DIR",
         r"sv\speech_campplus_sv_zh-cn_16k-common",
     )
+    model_root = _resolve_voice_model_root(sv_rel)
     voice_backend = os.getenv("JACHIN_VOICE_BACKEND", "cloud").strip().lower() or "cloud"
     stt_backend = os.getenv("JACHIN_STT_BACKEND", voice_backend).strip().lower() or voice_backend
     tts_backend = os.getenv("JACHIN_TTS_BACKEND", voice_backend).strip().lower() or voice_backend
@@ -225,6 +253,7 @@ def load_config() -> VoiceServerConfig:
         stt_model=os.getenv("JACHIN_STT_MODEL", "fun-asr-realtime").strip() or "fun-asr-realtime",
         stt_realtime_model=os.getenv("JACHIN_STT_REALTIME_MODEL", "fun-asr-realtime").strip() or "fun-asr-realtime",
         stt_hotword_model=os.getenv("JACHIN_STT_HOTWORD_MODEL", "fun-asr-realtime").strip() or "fun-asr-realtime",
+        stt_hotword_mode=os.getenv("JACHIN_STT_HOTWORD_MODE", "adaptive").strip().lower() or "adaptive",
         stt_file_model=os.getenv("JACHIN_STT_FILE_MODEL", "fun-asr").strip() or "fun-asr",
         stt_vocabulary_id=_first_env(("JACHIN_STT_VOCABULARY_ID", "JACHIN_ASR_VOCABULARY_ID", "DASHSCOPE_ASR_VOCABULARY_ID")),
         stt_vocabulary_prefix=os.getenv("JACHIN_STT_VOCABULARY_PREFIX", "jachin").strip() or "jachin",
@@ -239,6 +268,8 @@ def load_config() -> VoiceServerConfig:
         stt_dir=model_root / stt_rel,
         tts_dir=model_root / tts_rel,
         sv_dir=model_root / sv_rel,
+        torch_device=os.getenv("JACHIN_VOICE_TORCH_DEVICE", "auto").strip().lower() or "auto",
+        require_gpu=_env_bool("JACHIN_VOICE_REQUIRE_GPU", False),
         tts_voice=os.getenv("JACHIN_VOICE_TTS_VOICE", DEFAULT_KOKORO_TTS_VOICE),
         tts_speed=_env_float("JACHIN_VOICE_TTS_SPEED", DEFAULT_KOKORO_TTS_SPEED),
         log_level=os.getenv("JACHIN_VOICE_LOG_LEVEL", "info"),

@@ -77,6 +77,7 @@ class CloudSttService:
         vocabulary_id: str = "",
         vocabulary_prefix: str = "jachin",
         auto_sync_vocabulary: bool = True,
+        hotword_mode: str = "adaptive",
         workspace: str = "",
         language: str = "",
     ) -> None:
@@ -90,6 +91,7 @@ class CloudSttService:
         self.vocabulary_id = vocabulary_id.strip()
         self.vocabulary_prefix = self._clean_vocabulary_prefix(vocabulary_prefix)
         self.auto_sync_vocabulary = bool(auto_sync_vocabulary)
+        self.hotword_mode = self._clean_hotword_mode(hotword_mode)
         self.workspace = workspace.strip()
         self.language = language.strip()
         self.model_path = f"cloud:{self.model_name}"
@@ -205,10 +207,24 @@ class CloudSttService:
                 return _attach_cloud_diagnostics(self._error_result(self._load_error, duration_ms), diag_events)
             payload = resp.json()
             raw_text = self._extract_text(payload)
+            alternatives = self._extract_text_alternatives(payload)
             corrected = self._sanitize_transcript_text(raw_text)
             elapsed_ms = int((time.perf_counter() - started) * 1000)
-            logger.info("DashScope ASR ok model=%s elapsed_ms=%s text_len=%s", self.model_name, elapsed_ms, len(corrected))
-            _diag_event(diag_events, "cloud_result", diag_started, elapsed_ms=elapsed_ms, text_len=len(corrected))
+            logger.info(
+                "DashScope ASR ok model=%s elapsed_ms=%s text_len=%s alternatives=%s",
+                self.model_name,
+                elapsed_ms,
+                len(corrected),
+                len(alternatives),
+            )
+            _diag_event(
+                diag_events,
+                "cloud_result",
+                diag_started,
+                elapsed_ms=elapsed_ms,
+                text_len=len(corrected),
+                alternatives=len(alternatives),
+            )
             return _attach_cloud_diagnostics(CloudSttResult(
                 text=corrected,
                 raw_text=raw_text,
@@ -219,7 +235,10 @@ class CloudSttService:
                 duration_ms=duration_ms,
                 language=self.language or "auto",
                 backend=f"dashscope:{self.model_name}",
-                understanding={},
+                understanding={
+                    "asr_alternatives": alternatives,
+                    "asr_candidate_source": "dashscope_compatible_choices",
+                },
             ), diag_events)
         except Exception as e:
             self._load_error = str(e)
@@ -234,14 +253,15 @@ class CloudSttService:
         diag_events: list[dict[str, Any]],
         diag_started: float,
     ) -> CloudSttResult:
-        _diag_event(diag_events, "cloud_hotwords_snapshot_start", diag_started)
-        snapshot = self._hotwords.snapshot()
+        _diag_event(diag_events, "cloud_hotwords_snapshot_start", diag_started, hotword_mode=self.hotword_mode)
+        snapshot = self._hotword_snapshot_for_mode()
         _diag_event(
             diag_events,
             "cloud_hotwords_snapshot_done",
             diag_started,
             hotword_count=snapshot.count,
             source_count=len(snapshot.sources),
+            hotword_mode=self.hotword_mode,
         )
         model = self.hotword_model or self.realtime_model or self.model_name
         audio_format = self._audio_format_from_mime(self._guess_mime(audio_bytes))
@@ -293,9 +313,6 @@ class CloudSttService:
             )
 
             call_kwargs: dict[str, Any] = {}
-            raw_input = self._build_fun_asr_raw_input(snapshot)
-            if raw_input:
-                call_kwargs["raw_input"] = raw_input
             # DashScope older SDKs call this "phrase_id"; current docs call it
             # "vocabulary_id". Passing both places keeps native hotwords wired
             # across SDK/API naming changes.
@@ -399,7 +416,7 @@ class CloudSttService:
             api_base=self.api_base,
             ws_api_base=self.ws_api_base,
         )
-        snapshot = self._hotwords.snapshot()
+        snapshot = self._hotword_snapshot_for_mode()
         self._probe_network(self.ws_api_base or self.api_base, diag_events, diag_started, label="cloud_stream_ws")
         self._configure_dashscope_sdk()
         Recognition = self._recognition_class()
@@ -469,7 +486,7 @@ class CloudSttService:
                 self.completed.set()
                 self.events.put({"type": "error", "message": self.error})
 
-            def on_close(self) -> None:
+            def on_close(self, *_args: Any, **_kwargs: Any) -> None:
                 _diag_event(diag_events, "cloud_stream_close", diag_started)
                 self.events.put({"type": "close"})
 
@@ -489,9 +506,6 @@ class CloudSttService:
             **kwargs,
         )
         call_kwargs: dict[str, Any] = {}
-        raw_input = self._build_fun_asr_raw_input(snapshot)
-        if raw_input:
-            call_kwargs["raw_input"] = raw_input
         if vocabulary_id:
             call_kwargs["vocabulary_id"] = vocabulary_id
         recognition.start(phrase_id=vocabulary_id or None, **call_kwargs)
@@ -523,6 +537,20 @@ class CloudSttService:
             language=self.language or "zh",
             backend=f"dashscope:{self.model_name}",
         )
+
+    def _hotword_snapshot_for_mode(self) -> HotwordSnapshot:
+        if self.hotword_mode in {"off", "disabled", "none", "0", "false"}:
+            return HotwordSnapshot(words={}, sources=["disabled:stt_hotword_mode"])
+        return self._hotwords.snapshot()
+
+    @staticmethod
+    def _clean_hotword_mode(value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized in {"off", "disabled", "none", "0", "false"}:
+            return "off"
+        if normalized in {"force", "always", "on", "1", "true"}:
+            return "force"
+        return "adaptive"
 
     @staticmethod
     def _uses_fun_asr_sdk(model: str) -> bool:
@@ -585,6 +613,17 @@ class CloudSttService:
         diag_events: list[dict[str, Any]] | None = None,
         diag_started: float | None = None,
     ) -> str:
+        if self.hotword_mode == "off":
+            if diag_events is not None and diag_started is not None:
+                _diag_event(
+                    diag_events,
+                    "cloud_vocabulary_sync_skipped",
+                    diag_started,
+                    reason="hotword_mode_off",
+                    vocabulary_id_set=False,
+                    hotword_count=0,
+                )
+            return ""
         current_id = self.vocabulary_id or self._synced_vocabulary_id
         signature = self._snapshot_signature(snapshot)
         if current_id and (not self.auto_sync_vocabulary or not snapshot.words):
@@ -848,48 +887,24 @@ class CloudSttService:
         except Exception:
             return 16000
 
-    @staticmethod
-    def _build_fun_asr_raw_input(snapshot: HotwordSnapshot) -> dict[str, Any]:
-        if not snapshot.words:
-            return {}
-        ordered = sorted(snapshot.words.items(), key=lambda item: (-item[1], item[0].lower()))
-        parts: list[str] = []
-        char_budget = 360
-        for word, _weight in ordered:
-            candidate = str(word).strip()
-            if not candidate:
-                continue
-            next_text = ", ".join([*parts, candidate])
-            if len(next_text) > char_budget:
-                break
-            parts.append(candidate)
-        if not parts:
-            return {}
-        text = "Prioritize recognizing these domain terms and names: " + ", ".join(parts)
-        return {
-            "context": [
-                {
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": text[:400]}],
-                }
-            ]
-        }
-
     def _fun_asr_hotword_status(self, snapshot: HotwordSnapshot, vocabulary_id: str) -> str:
+        if self.hotword_mode == "off":
+            return "disabled"
         if vocabulary_id and snapshot.words:
-            return "native_vocabulary_id+context_terms"
+            prefix = "adaptive_" if self.hotword_mode == "adaptive" else ""
+            return f"{prefix}native_vocabulary_id"
         if vocabulary_id:
-            return "native_vocabulary_id"
+            prefix = "adaptive_" if self.hotword_mode == "adaptive" else ""
+            return f"{prefix}native_vocabulary_id"
         if snapshot.words:
-            return "context_terms_only"
+            return "snapshot_ready_no_native_vocabulary"
         return "not_configured"
 
     def _fun_asr_hotword_sources(self, snapshot: HotwordSnapshot, vocabulary_id: str) -> list[str]:
         sources = list(snapshot.sources)
+        sources.append(f"mode:{self.hotword_mode}")
         if vocabulary_id:
             sources.append("dashscope:vocabulary_id")
-        if snapshot.words:
-            sources.append("dashscope:raw_input.context")
         return sources
 
     @staticmethod
@@ -934,12 +949,69 @@ class CloudSttService:
             pass
         return ""
 
+    @classmethod
+    def _extract_text_alternatives(cls, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        seen: set[str] = set()
+        out: list[dict[str, Any]] = []
+
+        def add(text: Any, *, source: str, confidence: Any = None) -> None:
+            value = cls._sanitize_transcript_text(str(text or ""))
+            if not value:
+                return
+            key = re.sub(r"\s+", " ", value).strip().lower()
+            if key in seen:
+                return
+            seen.add(key)
+            item: dict[str, Any] = {"text": value, "source": source}
+            try:
+                if confidence is not None:
+                    item["confidence"] = float(confidence)
+            except (TypeError, ValueError):
+                pass
+            out.append(item)
+
+        choices = payload.get("choices") if isinstance(payload, dict) else None
+        if isinstance(choices, list):
+            for idx, choice in enumerate(choices[:8]):
+                if not isinstance(choice, dict):
+                    continue
+                confidence = choice.get("confidence") or choice.get("score") or choice.get("logprob")
+                msg = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+                content = msg.get("content")
+                if isinstance(content, str):
+                    add(content, source=f"choice.{idx}.message.content", confidence=confidence)
+                elif isinstance(content, list):
+                    for part_idx, part in enumerate(content[:8]):
+                        if isinstance(part, dict):
+                            add(
+                                part.get("text") or part.get("content") or part.get("transcript"),
+                                source=f"choice.{idx}.message.content.{part_idx}",
+                                confidence=confidence,
+                            )
+                add(choice.get("text") or choice.get("transcript") or choice.get("sentence"), source=f"choice.{idx}", confidence=confidence)
+        return out
+
     @staticmethod
     def _sanitize_transcript_text(text: str) -> str:
         cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+        cleaned = CloudSttService._strip_leaked_fun_asr_prompt(cleaned)
         if not cleaned or not _MEANINGFUL_CHAR_RE.search(cleaned):
             return ""
         return cleaned
+
+    @staticmethod
+    def _strip_leaked_fun_asr_prompt(text: str) -> str:
+        value = str(text or "").strip()
+        if not value:
+            return ""
+        leaked_prompt_re = re.compile(
+            r"^\s*(?:[\U0001f3a4\ufe0f\s]*)?prioriti[sz]e\s+recognizing\s+these\s+domain\s+term(?:s)?(?:\s+and\s+names)?[:.，,]?\s*",
+            re.I,
+        )
+        value = leaked_prompt_re.sub("", value).strip()
+        if value and not _MEANINGFUL_CHAR_RE.search(value):
+            return ""
+        return value
 
     @staticmethod
     def _guess_mime(audio_bytes: bytes) -> str:

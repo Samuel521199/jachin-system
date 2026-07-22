@@ -1,5 +1,10 @@
 import asyncio
 import json
+import re
+
+
+def _visible_reply(text: str | None) -> str:
+    return re.sub(r"\n*\s*<!-- jachin-ui:[\s\S]*?-->\s*$", "", str(text or "")).strip()
 
 
 def _ctx(text, *, turn_id="ck-arch-1", source=None, active_window=None, risk_state=None, recent_actions=None, confidence=None):
@@ -54,6 +59,20 @@ def _ctx(text, *, turn_id="ck-arch-1", source=None, active_window=None, risk_sta
             memory_bundle=memory,
         ),
     )
+
+
+def test_conversation_fallback_reply_is_natural_and_not_internal_error():
+    from l3_node.agent_core import _conversation_fallback_reply_from_messages
+
+    greeting_reply = _conversation_fallback_reply_from_messages([{"role": "user", "content": "你好"}])
+    vague_reply = _conversation_fallback_reply_from_messages([{"role": "user", "content": "嗯"}])
+
+    combined = greeting_reply + vague_reply
+    assert "生成失败" not in combined
+    assert "外部操作" not in combined
+    assert "没有执行" not in combined
+    assert "我在" in greeting_reply
+    assert "聊天" in vague_reply or "具体任务" in vague_reply
 
 
 def test_role_agent_registry_matches_memory_first_design_doc():
@@ -393,6 +412,39 @@ def test_mainline_lark_voice_spelled_alias_open_app_to_work_order(tmp_path, monk
     assert result.work_orders[0].inputs["tool"] == "mcp:windows_open_app"
 
 
+def test_mainline_lark_open_app_real_chinese_is_not_message_delivery(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+
+    for text in ("\u6253\u5f00 Lark", "\u6253\u5f00lark", "open lark"):
+        result = plan_cognitive_turn(_ctx(text, turn_id=f"ck-arch-open-lark-{abs(hash(text))}"))
+
+        assert result.review_summary.top_intent == "open_app"
+        assert result.review_summary.task_type == "app_control"
+        assert result.review_summary.target["name"] == "Lark"
+        assert result.review_summary.needs_clarification is False
+        assert result.decision_contract.execution_allowed is True
+        assert [wo.inputs["tool"] for wo in result.work_orders] == ["mcp:windows_open_app"]
+
+
+def test_mainline_lark_open_then_send_real_chinese_stays_message_delivery(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+
+    result = plan_cognitive_turn(
+        _ctx("\u6253\u5f00lark\u7ed9Neil\u53d1\u9001\u4f60\u597d", turn_id="ck-arch-open-lark-send-real-cn")
+    )
+
+    assert result.review_summary.top_intent == "message_send"
+    assert result.review_summary.task_type == "message_delivery"
+    assert result.review_summary.target["app"] == "Lark"
+    assert result.review_summary.target["recipients"] == ["Neil"]
+    assert result.review_summary.target["message"] == "\u4f60\u597d"
+    assert [wo.inputs["tool"] for wo in result.work_orders] == ["mcp:windows_open_app", "mcp:windows_lark_send_message"]
+
+
 def test_mainline_lark_voice_spelled_alias_message_to_work_order(tmp_path, monkeypatch):
     monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
 
@@ -426,8 +478,9 @@ def test_mainline_lark_message_missing_slots_asks_clarification_before_tool(tmp_
     assert result.review_summary.needs_clarification is True
     assert "发给谁" in result.review_summary.clarification_question or "什么内容" in result.review_summary.clarification_question
     assert result.decision_contract.execution_allowed is False
-    assert result.decision_contract.tool_policy.allowed_tools == []
-    assert result.work_orders == []
+    assert result.decision_contract.tool_policy.allowed_tools == ["mcp:windows_lark_send_message"]
+    assert result.work_orders
+    assert result.work_orders[-1].role_agent == "MessageExecutorAgent"
     assert result.closure is not None
     assert result.closure.final_user_message_intent == "ask_clarification"
 
@@ -698,6 +751,7 @@ def test_mainline_calculator_direct_entry_executes_calculate_tool(tmp_path, monk
 
 def test_mainline_message_direct_entry_uses_work_order_dispatcher(tmp_path, monkeypatch):
     monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+    monkeypatch.setenv("JACHIN_DISABLE_ROLE_NATIVE_ADAPTERS", "1")
 
     from l3_node.cognitive_kernel.direct_mainline import try_execute_cognitive_direct_plan
     from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
@@ -724,14 +778,15 @@ def test_mainline_message_direct_entry_uses_work_order_dispatcher(tmp_path, monk
             allowed_skills=None,
             run_tool_func=fake_run_tool,
         )
-        assert reply == "已发送消息给 Neil。"
-        assert calls["tools"] == ["mcp:windows_lark_send_message"]
+        assert _visible_reply(reply) == "已发送消息给 Neil。"
+        assert calls["tools"] == ["mcp:windows_open_app", "mcp:windows_lark_send_message"]
 
     asyncio.run(_run())
 
 
 def test_mainline_message_direct_entry_rejects_unverified_tool_success(tmp_path, monkeypatch):
     monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+    monkeypatch.setenv("JACHIN_DISABLE_ROLE_NATIVE_ADAPTERS", "1")
 
     from l3_node.cognitive_kernel.direct_mainline import try_execute_cognitive_direct_plan
     from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
@@ -821,7 +876,7 @@ def test_mainline_file_direct_entry_uses_file_executor(tmp_path, monkeypatch):
             allowed_skills=None,
             run_tool_func=transport_should_not_run,
         )
-        assert reply == "已完成文件操作：README.md。"
+        assert _visible_reply(reply) == "已完成文件操作：README.md。"
 
     asyncio.run(_run())
 
@@ -881,6 +936,7 @@ def test_message_executor_dedupe_skips_repeat_send(tmp_path, monkeypatch):
 
 def test_run_agent_message_direct_mainline_bypasses_role_execution_transport(tmp_path, monkeypatch):
     monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+    monkeypatch.setenv("JACHIN_DISABLE_ROLE_NATIVE_ADAPTERS", "1")
 
     import l3_node.agent_core as agent_core
 
@@ -917,7 +973,7 @@ def test_run_agent_message_direct_mainline_bypasses_role_execution_transport(tmp
         )
     )
 
-    assert reply == "已发送消息给 Neil。"
+    assert _visible_reply(reply) == "已发送消息给 Neil。"
 
 
 def test_run_agent_appcontrol_direct_mainline_open_switch_close(tmp_path, monkeypatch):
@@ -955,14 +1011,14 @@ def test_run_agent_appcontrol_direct_mainline_open_switch_close(tmp_path, monkey
 
     monkeypatch.setattr(agent_core, "build_cognitive_turn_context", _open_context)
     open_reply = asyncio.run(agent_core.run_agent("open calculator", object(), max_iterations=1))
-    assert open_reply == "已打开 Calculator。"
+    assert _visible_reply(open_reply) == "已打开 Calculator。"
 
     async def _switch_context(**kwargs):
         return _ctx(kwargs["user_input"], turn_id=kwargs["run_id"])
 
     monkeypatch.setattr(agent_core, "build_cognitive_turn_context", _switch_context)
     switch_reply = asyncio.run(agent_core.run_agent("switch to calculator", object(), max_iterations=1))
-    assert switch_reply == "已切换到 Calculator。"
+    assert _visible_reply(switch_reply) == "已切换到 Calculator。"
 
     async def _close_context(**kwargs):
         return _ctx(
@@ -973,7 +1029,7 @@ def test_run_agent_appcontrol_direct_mainline_open_switch_close(tmp_path, monkey
 
     monkeypatch.setattr(agent_core, "build_cognitive_turn_context", _close_context)
     close_reply = asyncio.run(agent_core.run_agent("close", object(), max_iterations=1))
-    assert close_reply == "已关闭 Calculator。"
+    assert _visible_reply(close_reply) == "已关闭 Calculator。"
 
 
 def test_run_agent_appcontrol_confirmation_pending_then_resume(tmp_path, monkeypatch):
@@ -1100,7 +1156,7 @@ def test_run_agent_asr_entity_correction_yes_resume_opens_lark(tmp_path, monkeyp
             implicit_attribution={"lark_chat_id": session, "channel": "websocket_terminal"},
         )
     )
-    assert third_reply == "已打开 Lark。"
+    assert _visible_reply(third_reply) == "已打开 Lark。"
     assert calls == {"open": 2, "app": "Lark"}
     assert load_pending_confirmation(session_id=session, channel="websocket_terminal") is None
 
@@ -1160,10 +1216,10 @@ def test_run_agent_file_direct_mainline_read_open_reveal(tmp_path, monkeypatch):
     monkeypatch.setattr(windows_uia_server, "windows_file_reveal_in_explorer", fake_file_reveal)
 
     read_reply = asyncio.run(agent_core.run_agent("read file README.md", object(), max_iterations=1))
-    assert read_reply == "已完成文件操作：README.md。"
+    assert _visible_reply(read_reply) == "已完成文件操作：README.md。"
 
     open_reply = asyncio.run(agent_core.run_agent("open file README.md", object(), max_iterations=1))
-    assert open_reply == "已完成文件操作：README.md。"
+    assert _visible_reply(open_reply) == "已完成文件操作：README.md。"
 
     reveal_reply = asyncio.run(agent_core.run_agent("reveal file README.md in explorer", object(), max_iterations=1))
-    assert reveal_reply == "已完成文件操作：README.md。"
+    assert _visible_reply(reveal_reply) == "已完成文件操作：README.md。"

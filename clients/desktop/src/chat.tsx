@@ -52,7 +52,18 @@ import {
   summarizeForSentryNotify,
   type SentryNotifyVariant,
 } from "./lib/jachinSentryNotify";
-import { stripAssistantUiProtocol } from "./components/Chat/pendingConfirmationProtocol";
+import {
+  extractPendingConfirmationProtocol,
+  stripAssistantUiProtocol,
+} from "./components/Chat/pendingConfirmationProtocol";
+import {
+  extractTaskSessionProtocol,
+  stripTaskSessionProtocol,
+} from "./components/Chat/taskSessionProtocol";
+import {
+  extractVoiceRuntimeProtocol,
+  stripVoiceRuntimeProtocol,
+} from "./components/Chat/voiceRuntimeProtocol";
 import { desktopDiagLog } from "./lib/desktopDiagLog";
 import { mergeStreamChunk } from "./utils/streamChunkMerge";
 import {
@@ -103,15 +114,67 @@ import { OmniDynamicHud } from "./components/Omni/OmniDynamicHud";
 import { OmniTacticalVoidDecor } from "./components/Omni/OmniTacticalVoidDecor";
 import type { JachinCoreMachineState } from "./components/Omni/JachinCore";
 import { WindowResizeHandles } from "./components/Omni/WindowResizeHandles";
-import { CompanionOverlay } from "./components/Omni/CompanionOverlay";
-import type { AiState } from "./components/Omni/JachinOrb";
 import { useCompanionMode } from "./hooks/useCompanionMode";
 
 type VoiceTaskRef = {
   id: string;
   title?: string;
 };
-import { scheduleCompanionLayoutSyncWithRetry } from "./components/Omni/companionLayoutCheck";
+
+type AiState = "idle" | "listening" | "thinking" | "speaking";
+
+type ChatSendOptions = {
+  bypassLocalFallback?: boolean;
+  interactionSource?: "user_text" | "quick_reply" | "voice" | "pending_resume";
+};
+
+const EXTERNAL_VOICE_TASK_PROTECTION_MS = 30_000;
+
+function looksLikeGlobalStopControl(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  if (!t) return false;
+  const compact = t.replace(/[\s\u3000,，.。!！?？;；:：、"'“”‘’`]+/g, "");
+  if (
+    [
+      "停",
+      "停止",
+      "停下",
+      "停一下",
+      "先停",
+      "停掉",
+      "取消",
+      "取消任务",
+      "取消当前任务",
+      "中断",
+      "中断任务",
+      "别执行",
+      "不要执行",
+      "不用了",
+      "算了",
+      "stop",
+      "cancel",
+      "abort",
+      "halt",
+    ].includes(compact)
+  ) {
+    return true;
+  }
+  if (/^(先)?(停止|停下|停掉|取消|中断)(当前|这个|这次)?(任务|执行|操作)?$/.test(compact)) {
+    return true;
+  }
+  return /\b(stop|cancel|abort|halt)\b/.test(t) && t.length <= 24;
+}
+
+function isLikelyExternalVoiceTask(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  if (!t) return false;
+  return (
+    looksLikeGlobalStopControl(t) ||
+    /(打开|开启|启动|关闭|退出|切换|发送|发给|发消息|计算|算一下|打开文件|打开目录|显示文件|定位文件|复制|移动|重命名|删除)/.test(t) ||
+    /\b(open|launch|start|close|switch|send|calculate|copy|move|rename|delete)\b/.test(t)
+  );
+}
+
 import { SensoryOverlay } from "./console/components/SensoryOverlay";
 import { useJachinCoreState } from "./hooks/useJachinCoreState";
 import { useDesktopUiLang } from "./hooks/useDesktopUiLang";
@@ -145,6 +208,48 @@ function stripDefaultSadEmojiSuffix(text: string): string {
   if (!t) return t;
   const cleaned = t.replace(/(?:\s*[😔😢😭☹️🙁😞])+$/u, "").trim();
   return cleaned || t;
+}
+
+function looksLikeActionRequest(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  if (!t) return false;
+  return (
+    looksLikeGlobalStopControl(t) ||
+    /(打开|开启|启动|关闭|退出|切换|发送|发给|发消息|计算|查找|搜索|总结|整理|复制|移动|重命名|删除|上传|下载|安装|发布|运行|执行|帮我|给我)/.test(t) ||
+    /\b(open|launch|start|close|switch|send|message|calculate|search|summarize|copy|move|rename|delete|run|install|publish)\b/.test(t)
+  );
+}
+
+function looksLikeShortConversationOrUncertainInput(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (/^(你好|您好|hello|hi|hey|在吗|我在|谢谢|thank you|thanks)[。.!！\s]*$/i.test(t)) return true;
+  return t.length <= 18 && !looksLikeActionRequest(t);
+}
+
+function buildNoVisibleAssistantFallback(userText: string, kind: "soft_wait" | "timeout" | "error"): string {
+  const t = userText.trim();
+  if (looksLikeShortConversationOrUncertainInput(t)) {
+    return "我在。刚才这句话没有形成明确的系统任务，所以我没有执行外部操作。你可以继续聊天，也可以直接说要我打开、发送、查找或计算什么。";
+  }
+  if (kind === "timeout") {
+    return "这轮没有拿到有效回复，已停止等待；没有执行新的外部操作。你可以重说一遍任务，或检查 Layer 3 是否正常运行。";
+  }
+  if (kind === "error") {
+    return "这轮请求没有生成有效回复，我没有执行新的外部操作。你可以换一种更明确的说法再试。";
+  }
+  return "我听到了，但这轮暂时没有生成可见回复；我会继续等后端结果。如果这是语音识别不准，可以换一种说法或直接输入文字。";
+}
+
+function hasPendingChatControl(messages: StoredMessage[]): boolean {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i];
+    if (msg.role === "assistant") {
+      return Boolean(msg.pending_confirmation || extractPendingConfirmationProtocol(msg.content));
+    }
+    if (msg.role === "user") return false;
+  }
+  return false;
 }
 
 function resolveCompanionJvsVoice(_voice: string): string {
@@ -395,6 +500,9 @@ function ChatApp() {
   const justBargedInRef = useRef(false);
   /** 防抖：避免毫秒级重复 barge-in 把刚入队音频反复停掉，造成“始终不播报”的体感。 */
   const lastBargeInAtRef = useRef(0);
+  /** 最近一次语音任务注入时间：刚注入后的尾音/环境声不应立刻取消本轮任务。 */
+  const lastVoiceCommandInjectedAtRef = useRef(0);
+  const protectedExternalVoiceTaskRef = useRef<{ text: string; until: number } | null>(null);
   /** 最近一次唤醒时间：用于告知 L3 当前可能处于唤醒首句场景。 */
   const lastWakeUpAtRef = useRef(0);
   /** 语音会话中的后台任务上下文：只作为 L3 证据，不做前端路由。 */
@@ -564,30 +672,15 @@ function ChatApp() {
     void desktopDiagLog("react_hide_chat_request", { phase: "before_invoke" });
     try {
       const r = await invoke<HideChatWindowResult>("hide_chat_window");
-      if (!r?.companion) {
-        throw new Error("hide_chat_window returned companion=false");
-      }
-      setCompanionMode(true);
-      scheduleCompanionLayoutSyncWithRetry();
+      setCompanionMode(false);
       void desktopDiagLog("react_hide_chat_ok", {
         companion: r.companion,
         fullyHidden: r.fullyHidden,
+        mode: "unified_omni_hidden",
       });
     } catch (err) {
       console.error("[Omni] hide_chat_window failed:", err);
       void desktopDiagLog("react_hide_chat_err", { err: String(err) });
-      try {
-        const rustCompanion = await invoke<boolean>("is_chat_companion_mode");
-        if (rustCompanion) {
-          setCompanionMode(true);
-          await invoke("companion_restore_surface");
-          await getCurrentWindow().show().catch(() => {});
-          scheduleCompanionLayoutSyncWithRetry();
-          return;
-        }
-      } catch {
-        // fall through
-      }
       setCompanionMode(false);
     }
   }, [setCompanionMode]);
@@ -653,11 +746,13 @@ function ChatApp() {
         const autoEnv =
           typeof import.meta !== "undefined" &&
           (import.meta as { env?: Record<string, string> }).env?.VITE_JACHIN_AUTO_WAKE === "1";
-        if (mode !== "wake_up" && !autoEnv) return;
+        const normalizedMode = mode === "continuous" ? "continuous" : "wake_up";
+        if (mode !== "wake_up" && mode !== "continuous" && !autoEnv) return;
         await invoke("stt_start_wake_listener", {
           wake_word: settings?.wake_word?.trim() || undefined,
+          mode: normalizedMode,
         });
-        voiceCompanionDebug("chat.wake_auto_start", { mode, wake_word: settings?.wake_word ?? "" });
+        voiceCompanionDebug("chat.wake_auto_start", { mode: normalizedMode, wake_word: settings?.wake_word ?? "" });
       } catch {
         /* ambient 未编译或 VAD 缺失时忽略 */
       }
@@ -931,6 +1026,8 @@ function ChatApp() {
       displayContent?: string;
       assistantCueText?: string;
       assistantCueReason?: string;
+      bypassLocalFallback?: boolean;
+      interactionSource?: ChatSendOptions["interactionSource"];
     },
   ) => {
     if (content.trim() === "/clear") {
@@ -954,11 +1051,40 @@ function ChatApp() {
       setState("idle");
       setLocalStreamChunkKind(null);
       l3ActiveRunIdRef.current = "";
+      protectedExternalVoiceTaskRef.current = null;
       sendSessionClearControl();
       return;
     }
 
     const filesSnapshot = [...attachmentFiles];
+    const shouldBypassLocalFallback =
+      Boolean(opts?.bypassLocalFallback) ||
+      opts?.interactionSource === "quick_reply" ||
+      opts?.interactionSource === "pending_resume" ||
+      hasPendingChatControl(messages);
+    if (
+      filesSnapshot.length === 0 &&
+      !shouldBypassLocalFallback &&
+      looksLikeShortConversationOrUncertainInput(content)
+    ) {
+      const turnSessionId = currentSessionIdRef.current;
+      const userBubbleText = opts?.displayContent ?? content.trim();
+      const now = Date.now();
+      const userMessage: StoredMessage = { role: "user", content: userBubbleText, timestamp: now };
+      const assistantMessage: StoredMessage = {
+        role: "assistant",
+        content: buildNoVisibleAssistantFallback(content, "soft_wait"),
+        timestamp: now + 1,
+      };
+      updateSessionMessagesById(turnSessionId, (prev) => [...prev, userMessage, assistantMessage]);
+      setInput("");
+      setIsLoading(false);
+      setIsTyping(false);
+      setLocalStreamChunkKind(null);
+      setRiskLevel("safe");
+      setState("idle");
+      return;
+    }
     /** 大附件 Base64 期间须先进入加载态，否则主线程长时间无反馈像「卡死」 */
     const hasAttachments = filesSnapshot.length > 0;
     if (hasAttachments) {
@@ -994,7 +1120,20 @@ function ChatApp() {
     const displayContent = opts?.displayContent?.trim() || content.trim();
     const userBubbleText = [displayContent, namesLine].filter(Boolean).join("\n\n");
     const userMessage: StoredMessage = { role: "user", content: userBubbleText, timestamp: Date.now() };
-    const assistantMessage: StoredMessage = { role: "assistant", content: "", reasoning: "", timestamp: Date.now() };
+    const initialTaskStatus =
+      shouldBypassLocalFallback || looksLikeActionRequest(content)
+        ? "已收到任务，正在识别目标、拆解步骤并选择可用能力。"
+        : "";
+    const initialReasoning =
+      shouldBypassLocalFallback || looksLikeActionRequest(content)
+        ? "[task] Goal Interpreter -> Task Decomposer -> Dispatcher -> Verification\n"
+        : "";
+    const assistantMessage: StoredMessage = {
+      role: "assistant",
+      content: initialTaskStatus,
+      reasoning: initialReasoning,
+      timestamp: Date.now(),
+    };
     updateSessionMessagesById(turnSessionId, (m) => [...m, userMessage, assistantMessage]);
     setInput("");
     setPendingFiles([]);
@@ -1112,9 +1251,13 @@ function ChatApp() {
         skipContentUpdate?: boolean;
         ttsUseFinalOnly?: boolean;
         sentryVariant?: SentryNotifyVariant;
+        pendingConfirmation?: StoredMessage["pending_confirmation"] | null;
+        taskSession?: StoredMessage["task_session"] | null;
+        voiceRuntime?: StoredMessage["voice_runtime"] | null;
       },
     ) => {
       const sanitizedFinal = stripDefaultSadEmojiSuffix(finalContent || "");
+      const noVisibleFallback = buildNoVisibleAssistantFallback(content, opts?.sentryVariant === "error" ? "error" : "timeout");
       if (myTurnToken !== chatTurnTokenRef.current) return;
       if (timeoutCleared) return;
       timeoutCleared = true;
@@ -1153,21 +1296,32 @@ function ChatApp() {
           if (opts?.skipContentUpdate) {
             const combined = [last.reasoning ?? "", last.content ?? ""].filter(Boolean).join("\n\n");
             const n = normalizeAssistantOutput(
-              combined.trim() ? combined : (sanitizedFinal || finalContent || last.content || ""),
+              combined.trim() ? combined : (sanitizedFinal || finalContent || last.content || noVisibleFallback),
             );
             updated[updated.length - 1] = {
               ...last,
-              content: stripDefaultSadEmojiSuffix(n.content),
+              content: stripDefaultSadEmojiSuffix(n.content) || noVisibleFallback,
               reasoning: n.reasoning,
               source,
+              pending_confirmation: opts?.pendingConfirmation ?? last.pending_confirmation,
+              task_session: opts?.taskSession ?? last.task_session,
+              voice_runtime: opts?.voiceRuntime ?? last.voice_runtime,
             };
           } else {
-            let newContent = sanitizedFinal || finalContent || last.content;
+            let newContent = sanitizedFinal || finalContent || last.content || noVisibleFallback;
             let newReasoning = last.reasoning ?? "";
             const n = normalizeAssistantOutput(newContent ?? "");
-            newContent = stripDefaultSadEmojiSuffix(n.content);
+            newContent = stripDefaultSadEmojiSuffix(n.content) || noVisibleFallback;
             newReasoning = [newReasoning, n.reasoning].filter(Boolean).join("\n\n").trim();
-            updated[updated.length - 1] = { ...last, content: newContent, reasoning: newReasoning, source };
+            updated[updated.length - 1] = {
+              ...last,
+              content: newContent,
+              reasoning: newReasoning,
+              source,
+              pending_confirmation: opts?.pendingConfirmation ?? last.pending_confirmation,
+              task_session: opts?.taskSession ?? last.task_session,
+              voice_runtime: opts?.voiceRuntime ?? last.voice_runtime,
+            };
           }
         }
         return updated;
@@ -1185,6 +1339,7 @@ function ChatApp() {
       setIsTyping(false);
       setLocalStreamChunkKind(null);
       setRiskLevel("safe");
+      protectedExternalVoiceTaskRef.current = null;
       chatJvsVoiceActiveRef.current = false;
       if (!ttsQueue) setTimeout(() => setState("idle"), 2000);
       registerAnswerHandler(null);
@@ -1222,6 +1377,7 @@ function ChatApp() {
         : companionVisibleAcc;
       companionVisibleStreamAcc = companionVisibleAcc;
       const firstChunkLatencyMs = firstContentChunkSeen ? undefined : Date.now() - l3StartedAt;
+      const shouldClearInitialTaskStatusForChunk = !firstContentChunkSeen;
       firstContentChunkSeen = true;
       voiceChatTraceIfActive("l3.chunk", {
         runId: runId ?? "",
@@ -1264,7 +1420,11 @@ function ChatApp() {
         const updated = [...prev];
         const last = updated[updated.length - 1];
         if (last?.role === "assistant") {
-          const merged = mergeAssistantFlatAndSplitFinalAnswer(last, delta, {
+          const baseLast =
+            shouldClearInitialTaskStatusForChunk && last.content === initialTaskStatus
+              ? { ...last, content: "" }
+              : last;
+          const merged = mergeAssistantFlatAndSplitFinalAnswer(baseLast, delta, {
             ...meta,
             isReasoning: false,
           });
@@ -1312,7 +1472,15 @@ function ChatApp() {
         const updated = [...prev];
         const last = updated[updated.length - 1];
         if (last?.role !== "assistant") return prev;
-        if ((last.content ?? "").trim() || (last.reasoning ?? "").trim()) return prev;
+        if (((last.content ?? "").trim() && last.content !== initialTaskStatus) || (last.reasoning ?? "").trim()) return prev;
+        if (looksLikeShortConversationOrUncertainInput(content)) {
+          pulseShown = true;
+          updated[updated.length - 1] = {
+            ...last,
+            content: buildNoVisibleAssistantFallback(content, "soft_wait"),
+          };
+          return updated;
+        }
         const ts = new Date().toLocaleTimeString();
         const line = `\n[${ts}] [jachin:heartbeat] ${pulseHints[pulseIdx % pulseHints.length]}\n`;
         pulseIdx += 1;
@@ -1321,6 +1489,8 @@ function ChatApp() {
         return updated;
       });
     }, REASONING_PULSE_MS);
+
+    const intentForWire = content.trim() || (filesSnapshot.length > 0 ? "\u8bf7\u67e5\u770b\u9644\u4ef6\u5e76\u56de\u7b54\u3002" : "");
 
     const timeoutId = setTimeout(() => {
       if (myTurnToken !== chatTurnTokenRef.current) return;
@@ -1338,15 +1508,16 @@ function ChatApp() {
       registerChunkHandler(null);
       registerStepHandler(null);
       activeChatTurnTimeoutRef.current = null;
+      protectedExternalVoiceTaskRef.current = null;
       // 保留 answer：L3 可能在 compaction 后晚于本定时器返回，与 Lark 同源的最终包仍应写入气泡
       updateSessionMessagesById(turnSessionId, (prev) => {
         const last = prev[prev.length - 1];
-        if (last?.role === "assistant" && !last.content?.trim() && !(last.reasoning ?? "").trim()) {
+        if (last?.role === "assistant" && (!last.content?.trim() || last.content === initialTaskStatus)) {
           return [
             ...prev.slice(0, -1),
             {
               ...last,
-              content: `响应超时（${CHAT_RESPONSE_TIMEOUT_SEC} 秒），请检查 Layer 3 或 Layer 2 是否正常运行；长任务可在 .env 增大 VITE_CHAT_RESPONSE_TIMEOUT_MS`,
+              content: buildNoVisibleAssistantFallback(intentForWire, "timeout"),
             },
           ];
         }
@@ -1357,13 +1528,18 @@ function ChatApp() {
     }, CHAT_RESPONSE_TIMEOUT_MS);
     activeChatTurnTimeoutRef.current = timeoutId;
 
-    const intentForWire = content.trim() || (filesSnapshot.length > 0 ? "请查看附件并回答。" : "");
     const pendingL3InputRef = { current: intentForWire };
     registerChunkHandler(chunkHandler);
     registerStepHandler(stepHandler);
     registerAnswerHandler((answerContent, meta) => {
       if (myTurnToken !== chatTurnTokenRef.current) return;
-      const safeAnswerContent = stripAssistantUiProtocol(stripDefaultSadEmojiSuffix(String(answerContent ?? "")));
+      const rawAnswerContent = String(answerContent ?? "");
+      const pendingConfirmation = extractPendingConfirmationProtocol(rawAnswerContent);
+      const taskSession = extractTaskSessionProtocol(rawAnswerContent);
+      const voiceRuntime = extractVoiceRuntimeProtocol(rawAnswerContent);
+      const safeAnswerContent = stripVoiceRuntimeProtocol(
+        stripTaskSessionProtocol(stripAssistantUiProtocol(stripDefaultSadEmojiSuffix(rawAnswerContent))),
+      );
       const rid = meta?.runId ?? "";
       if (rid && l3ActiveRunIdRef.current && !l3RunIdsSameTurn(rid, l3ActiveRunIdRef.current)) {
         voiceChatTraceIfActive("l3.answer_stale_ignored", {
@@ -1479,6 +1655,9 @@ function ChatApp() {
           skipContentUpdate: hadStream && !hasServerFinal,
           ttsUseFinalOnly: useServerFinal,
           sentryVariant,
+          pendingConfirmation,
+          taskSession,
+          voiceRuntime,
         });
       }
     });
@@ -1536,6 +1715,12 @@ function ChatApp() {
     // L2 兜底前：若为 BI 等 L3 专用意图，优先尝试 L3 HTTP agent/run（Sensory WS 未连时也能触发）
     const l3Answer = await tryL3AgentForIntent(intentForWire, attExtras);
     if (l3Answer != null && l3Answer.trim()) {
+      const l3HttpPendingConfirmation = extractPendingConfirmationProtocol(l3Answer);
+      const l3HttpTaskSession = extractTaskSessionProtocol(l3Answer);
+      const l3HttpVoiceRuntime = extractVoiceRuntimeProtocol(l3Answer);
+      const safeL3HttpAnswer = stripVoiceRuntimeProtocol(
+        stripTaskSessionProtocol(stripAssistantUiProtocol(stripDefaultSadEmojiSuffix(l3Answer))),
+      );
       voiceChatTraceIfActive("l3.http_agent_hit", {
         answerPreview: truncChatTrace(l3Answer, 400),
         answerLen: l3Answer.length,
@@ -1543,7 +1728,11 @@ function ChatApp() {
       console.debug("[Chat] L3 agent/run 命中 BI 意图，使用 L3 回复");
       clearTimeout(timeoutId);
       activeChatTurnTimeoutRef.current = null;
-      cleanup(l3Answer, "L3");
+      cleanup(safeL3HttpAnswer, "L3", {
+        pendingConfirmation: l3HttpPendingConfirmation,
+        taskSession: l3HttpTaskSession,
+        voiceRuntime: l3HttpVoiceRuntime,
+      });
       return;
     }
 
@@ -1599,7 +1788,7 @@ function ChatApp() {
   };
 
   const buildVoiceAssistantCue = useCallback((
-    source: "sim" | "hud" | "ptt" | "companion_quick_send",
+    source: "sim" | "hud" | "wake" | "continuous" | "ptt" | "companion_quick_send",
   ): { text: string; reason: string } | null => {
     if (source === "companion_quick_send") {
       return { text: "收到。", reason: "voice_companion_quick_reply_ack" };
@@ -1610,12 +1799,14 @@ function ChatApp() {
   const dispatchVoiceUtterance = useCallback(
     async (
       text: string,
-      source: "sim" | "hud" | "ptt" | "companion_quick_send",
+      source: "sim" | "hud" | "wake" | "continuous" | "ptt" | "companion_quick_send",
       sttTrace?: Partial<VoiceTranscriptionResult> & { source?: string },
     ) => {
       const t = stripDefaultSadEmojiSuffix(text.trim());
       if (!t) return;
       const activeTasks = Array.from(activeVoiceTasksRef.current.values());
+      const voiceDiagnostics = getVoiceTurnDiagnosticsSnapshot();
+      const svTrace = (sttTrace as any)?.speaker || voiceDiagnostics?.sv || {};
       const activeTaskContext = activeTasks.length > 0
         ? {
             active_tasks: activeTasks.slice(0, 3).map((task) => ({
@@ -1643,9 +1834,26 @@ function ChatApp() {
         hotwordStatus: sttTrace?.hotwordStatus,
         hotwordDominated: sttTrace?.hotwordDominated,
         hotwordDominationReasons: (sttTrace as any)?.hotwordDominationReasons,
+        speakerAccepted: (svTrace as any)?.accepted,
+        speakerReason: (svTrace as any)?.reason,
+        ownerDurationMs: (svTrace as any)?.ownerDurationMs,
         activeTaskCount: activeTasks.length,
         focusedTaskId: activeTaskContext?.focused_task_id || "",
       });
+      lastVoiceCommandInjectedAtRef.current = Date.now();
+      if (isLikelyExternalVoiceTask(t)) {
+        protectedExternalVoiceTaskRef.current = {
+          text: t,
+          until: Date.now() + EXTERNAL_VOICE_TASK_PROTECTION_MS,
+        };
+        voiceCompanionDebug("chat.voice_external_task_protected", {
+          source,
+          text: truncVoiceLog(t, 120),
+          protectionMs: EXTERNAL_VOICE_TASK_PROTECTION_MS,
+        });
+      } else {
+        protectedExternalVoiceTaskRef.current = null;
+      }
       const assistantCue = buildVoiceAssistantCue(source);
       await doActualSend(t, [], {
         displayContent: t,
@@ -1654,6 +1862,7 @@ function ChatApp() {
         extraImplicitSignals: {
           desktop_companion: true,
           local_voice_session: true,
+          voice_interaction_mode: source === "continuous" ? "continuous_listen" : source === "ptt" ? "push_to_talk" : source === "wake" ? "wake_conversation" : "companion",
           voice_raw_stt_text: t,
           voice_asr_raw_text: sttTrace?.rawText || t,
           voice_corrected_text: sttTrace?.correctedText || sttTrace?.text || t,
@@ -1670,7 +1879,17 @@ function ChatApp() {
           voice_stt_hotword_sources: sttTrace?.hotwordSources,
           voice_stt_hotword_dominated: sttTrace?.hotwordDominated,
           voice_stt_hotword_domination_reasons: (sttTrace as any)?.hotwordDominationReasons,
+          voice_asr_alternatives:
+            (sttTrace as any)?.alternatives || ((sttTrace?.understanding as any)?.asr_alternatives as unknown[]) || [],
+          voice_stt_alternatives: (sttTrace as any)?.alternatives || [],
           voice_stt_understanding: sttTrace?.understanding,
+          voice_speaker_verified: (svTrace as any)?.accepted,
+          voice_speaker_verification_status: (svTrace as any)?.reason,
+          voice_owner_track_accepted: (svTrace as any)?.accepted,
+          voice_owner_track_reason: (svTrace as any)?.reason,
+          voice_owner_duration_ms: (svTrace as any)?.ownerDurationMs,
+          voice_total_duration_ms: (svTrace as any)?.totalDurationMs,
+          voice_owner_skipped_segments_count: (svTrace as any)?.skippedSegmentsCount,
           voice_active_task_context: activeTaskContext,
           source,
         },
@@ -1685,17 +1904,47 @@ function ChatApp() {
     let unlistenSend: (() => void) | undefined;
     let disposed = false;
 
-    const onCompanionInject = (content: string, source: "sim" | "hud") => {
-    const t = stripDefaultSadEmojiSuffix(content.trim());
+    const onCompanionInject = (
+      content: string,
+      source: "sim" | "hud" | "wake" | "continuous",
+      speaker?: {
+        accepted?: boolean;
+        reason?: string;
+        ownerDurationMs?: number | null;
+        totalDurationMs?: number | null;
+        skippedSegmentsCount?: number | null;
+      },
+    ) => {
+      const t = stripDefaultSadEmojiSuffix(content.trim());
       if (!t) return;
       voiceCompanionActiveRef.current = true;
       voiceCompanionDebug(`chat.companion_inject_${source}`, { content: truncVoiceLog(t, 120) });
-      void dispatchVoiceUtterance(t, source);
+      void dispatchVoiceUtterance(t, source, speaker ? ({ speaker, source: "rust_wake_pipeline" } as any) : undefined);
     };
 
-    void listen<{ content?: string }>("voice-sim-user-input", (ev) => {
+    void listen<{
+      content?: string;
+      source?: string;
+      voice_speaker_verified?: boolean;
+      voice_owner_track_accepted?: boolean;
+      voice_owner_track_reason?: string;
+      voice_owner_duration_ms?: number | null;
+      voice_total_duration_ms?: number | null;
+      voice_owner_skipped_segments_count?: number | null;
+    }>("voice-sim-user-input", (ev) => {
       const content = typeof ev.payload?.content === "string" ? ev.payload.content : "";
-      onCompanionInject(content, "sim");
+      const source = ev.payload?.source === "continuous" ? "continuous" : ev.payload?.source === "wake" ? "wake" : "sim";
+      const speaker =
+        ev.payload?.voice_speaker_verified === true || ev.payload?.voice_owner_track_accepted === true
+          ? {
+              accepted: true,
+              reason: ev.payload?.voice_owner_track_reason || "rust_owner_track_ok",
+              ownerDurationMs: ev.payload?.voice_owner_duration_ms ?? null,
+              totalDurationMs: ev.payload?.voice_total_duration_ms ?? null,
+              skippedSegmentsCount: ev.payload?.voice_owner_skipped_segments_count ?? null,
+            }
+          : undefined;
+      onCompanionInject(content, source, speaker);
     })
       .then((fn) => {
         if (disposed) fn();
@@ -1776,6 +2025,21 @@ function ChatApp() {
   const handleVoiceBargeIn = useCallback(async () => {
     if (!voiceCompanionActiveRef.current && !companionModeRef.current) return;
     const now = Date.now();
+    const protectedTask = protectedExternalVoiceTaskRef.current;
+    if (protectedTask && now < protectedTask.until && isLoadingRef.current) {
+      voiceCompanionDebug("chat.barge_in_skipped_external_task_protected", {
+        task: truncVoiceLog(protectedTask.text, 120),
+        remainingMs: protectedTask.until - now,
+      });
+      return;
+    }
+    const sinceVoiceCommandInjected = now - lastVoiceCommandInjectedAtRef.current;
+    if (sinceVoiceCommandInjected >= 0 && sinceVoiceCommandInjected < 1200 && isLoadingRef.current) {
+      voiceCompanionDebug("chat.barge_in_skipped_after_voice_command", {
+        sinceMs: sinceVoiceCommandInjected,
+      });
+      return;
+    }
     if (now - lastBargeInAtRef.current < 180) {
       voiceCompanionDebug("chat.barge_in_skipped_cooldown", {
         sinceMs: now - lastBargeInAtRef.current,
@@ -1803,6 +2067,7 @@ function ChatApp() {
     setLocalStreamChunkKind(null);
     setRiskLevel("safe");
     setState("idle");
+    protectedExternalVoiceTaskRef.current = null;
   }, [
     sendRunAbort,
     registerChunkHandler,
@@ -1843,12 +2108,23 @@ function ChatApp() {
     setLocalStreamChunkKind(null);
     setRiskLevel("safe");
     setState("idle");
+    protectedExternalVoiceTaskRef.current = null;
   }, [sendRunAbort, registerChunkHandler, registerAnswerHandler, registerStepHandler]);
 
-  const handleSend = async () => {
-    const t = input.trim();
-    if ((!t && pendingFiles.length === 0) || isLoading || isTyping) return;
-    await doActualSend(t, pendingFiles);
+  const handleSend = async (overrideText?: string, sendOptions?: ChatSendOptions) => {
+    const t = (overrideText ?? input).trim();
+    const isStopControl = looksLikeGlobalStopControl(t);
+    if ((!t && pendingFiles.length === 0) || ((isLoading || isTyping) && !isStopControl)) return;
+    if (isStopControl && (isLoading || isTyping)) {
+      l2StreamAbortRef.current?.abort();
+      l2StreamAbortRef.current = null;
+      sendRunAbort();
+    }
+    const pendingResume = sendOptions?.bypassLocalFallback || hasPendingChatControl(messages);
+    await doActualSend(t, overrideText != null ? [] : pendingFiles, {
+      bypassLocalFallback: pendingResume,
+      interactionSource: sendOptions?.interactionSource ?? (pendingResume ? "pending_resume" : "user_text"),
+    });
   };
 
   const handleConfirmHighRisk = () => {
@@ -1881,12 +2157,20 @@ function ChatApp() {
     try {
       if (isVadActive) {
         await invoke("stop_voice_capture");
+        const settings = await invoke<Record<string, unknown>>("get_user_settings").catch(() => ({}));
+        await invoke("update_user_settings", {
+          patch: { ...settings, sprite_voice_mode: "push_to_talk" },
+        }).catch(() => {});
         setIsVadActive(false);
         setRecordingStatus("");
       } else {
         await invoke("start_voice_capture");
+        const settings = await invoke<Record<string, unknown>>("get_user_settings").catch(() => ({}));
+        await invoke("update_user_settings", {
+          patch: { ...settings, sprite_voice_mode: "continuous" },
+        }).catch(() => {});
         setIsVadActive(true);
-        setRecordingStatus("VAD 已开启，正在监听…");
+        setRecordingStatus("常开语音已开启，正在监听…");
       }
     } catch (e) {
       setRecordingStatus(String(e));
@@ -1993,8 +2277,17 @@ function ChatApp() {
           voiceCompanionDebug("chat.companion_ptt_surface_arm", { profile, stage: "before_final_stt" });
         }
         let wavForStt = wavBase64;
-        let shouldRunPttOwnerTrack = false;
-        if (useCompanionUi && profile === "chat_ptt") {
+        let shouldRunOwnerTrack = false;
+        let forceStrictOwnerTrack = false;
+        let ownerTrackTrace: {
+          accepted?: boolean;
+          reason?: string;
+          ownerDurationMs?: number | null;
+          totalDurationMs?: number | null;
+          skippedSegmentsCount?: number | null;
+          usedOwnerTrack?: boolean;
+        } | null = null;
+        if (useCompanionUi || profile === "chat_vad") {
           try {
             const settings = await invoke<{
               speaker_verification_enabled?: boolean | null;
@@ -2005,12 +2298,14 @@ function ChatApp() {
               typeof localStorage === "undefined"
                 ? true
                 : localStorage.getItem("jachin.voice.companionOwnerTrackFastBypass") !== "false";
-            shouldRunPttOwnerTrack = Boolean(
+            forceStrictOwnerTrack = profile === "chat_vad";
+            shouldRunOwnerTrack = Boolean(
               settings?.speaker_verification_enabled !== false &&
                 settings?.speaker_owner_track_enabled !== false &&
-                (settings?.speaker_verification_strict === true || !fastOwnerTrackBypass),
+                (forceStrictOwnerTrack || settings?.speaker_verification_strict === true || !fastOwnerTrackBypass),
             );
             if (
+              profile === "chat_ptt" &&
               settings?.speaker_verification_enabled !== false &&
               settings?.speaker_owner_track_enabled !== false &&
               settings?.speaker_verification_strict !== true &&
@@ -2025,10 +2320,11 @@ function ChatApp() {
               });
             }
           } catch {
-            shouldRunPttOwnerTrack = false;
+            forceStrictOwnerTrack = profile === "chat_vad";
+            shouldRunOwnerTrack = forceStrictOwnerTrack;
           }
         }
-        if (shouldRunPttOwnerTrack) {
+        if (shouldRunOwnerTrack) {
           const svStarted = Date.now();
           try {
             const sv = await invoke<{
@@ -2037,29 +2333,44 @@ function ChatApp() {
               wav_base64?: string | null;
               reason: string;
               owner_duration_ms?: number | null;
+              total_duration_ms?: number | null;
               skipped_segments_count?: number | null;
             }>("companion_filter_owner_track_wav", {
               wavBase64,
+              forceStrict: forceStrictOwnerTrack,
             });
-            voiceChatTrace("sv.owner_track_ptt", {
+            ownerTrackTrace = {
+              accepted: sv.accepted,
+              reason: sv.reason,
+              ownerDurationMs: sv.owner_duration_ms ?? null,
+              totalDurationMs: sv.total_duration_ms ?? null,
+              skippedSegmentsCount: sv.skipped_segments_count ?? null,
+              usedOwnerTrack: sv.used_owner_track,
+            };
+            voiceChatTrace("sv.owner_track", {
               profile,
               accepted: sv.accepted,
               usedOwnerTrack: sv.used_owner_track,
               reason: sv.reason,
               ownerDurationMs: sv.owner_duration_ms ?? null,
+              totalDurationMs: sv.total_duration_ms ?? null,
               skippedSegmentsCount: sv.skipped_segments_count ?? null,
+              forceStrict: forceStrictOwnerTrack,
               latencyMs: Date.now() - svStarted,
             });
-            voiceCompanionDebug("chat.sv_owner_track_ptt", {
+            voiceCompanionDebug("chat.sv_owner_track", {
+              profile,
               accepted: sv.accepted,
               usedOwnerTrack: sv.used_owner_track,
               reason: sv.reason,
               ownerDurationMs: sv.owner_duration_ms ?? null,
+              totalDurationMs: sv.total_duration_ms ?? null,
               skippedSegmentsCount: sv.skipped_segments_count ?? null,
+              forceStrict: forceStrictOwnerTrack,
             });
             if (!sv.accepted) {
               endVoiceChatTrace("stt_fail", { error: sv.reason, profile, stage: "sv_owner_track" });
-              setRecordingStatus("未识别到主人的声音，请重试。");
+              setRecordingStatus(profile === "chat_vad" ? "已过滤旁人或环境噪声。" : "未识别到主人声音，请重试。");
               setState("idle");
               return;
             }
@@ -2069,13 +2380,21 @@ function ChatApp() {
             }
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            voiceChatTrace("sv.owner_track_ptt_fail_open", {
+            voiceChatTrace(forceStrictOwnerTrack ? "sv.owner_track_fail_closed" : "sv.owner_track_fail_open", {
               profile,
               error: msg,
+              forceStrict: forceStrictOwnerTrack,
             });
-            voiceCompanionDebug("chat.sv_owner_track_ptt_fail_open", {
+            voiceCompanionDebug(forceStrictOwnerTrack ? "chat.sv_owner_track_fail_closed" : "chat.sv_owner_track_fail_open", {
+              profile,
               error: truncVoiceLog(msg, 200),
             });
+            if (forceStrictOwnerTrack) {
+              endVoiceChatTrace("stt_fail", { error: msg, profile, stage: "sv_owner_track" });
+              setRecordingStatus("声纹过滤暂不可用，常开语音已丢弃本段。");
+              setState("idle");
+              return;
+            }
           }
         }
         const sttStarted = Date.now();
@@ -2092,7 +2411,7 @@ function ChatApp() {
           profile === "chat_ptt" &&
           Boolean(streamText) &&
           preRecognizedFinalized === true &&
-          !shouldRunPttOwnerTrack;
+          !shouldRunOwnerTrack;
         const useLocalFirstFallback = profile === "chat_ptt" && !useRealtimeFinal;
         const finalTrace = useRealtimeFinal
           ? ({
@@ -2130,6 +2449,9 @@ function ChatApp() {
           provisional: false,
           streamText,
         };
+        if (ownerTrackTrace) {
+          (sttTrace as any).speaker = ownerTrackTrace;
+        }
         sttTrace.hotwordDominated = false;
         (sttTrace as Partial<VoiceTranscriptionResult> & { hotwordDominationReasons?: string[] }).hotwordDominationReasons = [];
         const text = sttTrace.text || "";
@@ -2353,13 +2675,7 @@ function ChatApp() {
 
   const openConsole = () => {
     void invoke("show_console_window");
-    setCompanionMode((p) => (p ? p : true));
-    void invoke<HideChatWindowResult>("hide_chat_window")
-      .then((r) => setCompanionMode(Boolean(r?.companion)))
-      .catch((err) => {
-        console.error("[Omni] hide_chat_window (openConsole):", err);
-        setCompanionMode(false);
-      });
+    setCompanionMode(false);
   };
 
   const lastAssistantBubble = [...messages].reverse().find((m) => m.role === "assistant");
@@ -2513,23 +2829,8 @@ function ChatApp() {
   );
 
   return (
-    <div
-      className={`relative flex h-full w-full min-h-0 flex-col bg-transparent ${
-        companionMode ? "items-center justify-start overflow-visible" : "overflow-hidden"
-      }`}
-    >
+    <div className="relative flex h-full w-full min-h-0 flex-col overflow-hidden bg-transparent">
       <AnimatePresence>
-        {companionMode ? (
-          <CompanionOverlay
-            state={companionAiState}
-            isRecording={isRecording}
-            onExpandFull={requestExpandFromSpark}
-            onBargeIn={() => void handleVoiceBargeIn()}
-            onVoiceStart={handleCompanionVoiceStart}
-            onVoiceStop={handleCompanionVoiceStop}
-            onQuickSend={handleCompanionQuickSend}
-          />
-        ) : (
           <motion.div
             key="omni-main"
             initial={{ opacity: 0 }}
@@ -2706,7 +3007,6 @@ function ChatApp() {
         </div>
       </div>
           </motion.div>
-        )}
       </AnimatePresence>
       {/* 高风险操作二次确认弹窗 */}
       {!companionMode && pendingHighRisk && (

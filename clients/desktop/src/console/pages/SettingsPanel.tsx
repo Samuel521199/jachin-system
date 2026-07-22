@@ -12,6 +12,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   Settings,
+  Mic,
   Loader2,
   RefreshCw,
   Save,
@@ -21,6 +22,7 @@ import {
   FolderOpen,
   Plus,
   Trash2,
+  Users,
 } from "lucide-react";
 import { fetchNativeFsPolicy, saveApiKey, saveNativeFsPolicy, type NativeFsPolicyPayload } from "../../lib/api";
 import { cn } from "../../utils/cn";
@@ -47,6 +49,29 @@ export interface UserSettings {
   os_file_dangerous_without_confirm?: boolean | null;
   /** 飞书/Lark 多维表写入是否免确认。默认 false */
   lark_bitable_write_without_confirm?: boolean | null;
+}
+
+interface OwnerVoiceprintStatus {
+  exists: boolean;
+  path: string;
+  sample_count?: number | null;
+  embedding_dim?: number | null;
+  model_id?: string | null;
+  updated_at?: string | null;
+}
+
+interface MessageContact {
+  name: string;
+  kind: string;
+  aliases: string[];
+  shortcut_number: string;
+  shortcut_letter: string;
+  enabled: boolean;
+}
+
+interface MessageContactsBook {
+  version: number;
+  contacts: MessageContact[];
 }
 
 export interface RuntimeConfig {
@@ -78,11 +103,24 @@ const CHAT_STREAM_OPTIONS = [
   { value: false, label: "远程经 Dapr" },
 ] as const;
 
-const SPRITE_VOICE_MODE_OPTIONS = [
-  { value: "push_to_talk", label: "A. 录音模式 (Push-to-Talk)" },
-  { value: "wake_up", label: "B. 唤醒模式 (Wake-Up)" },
-  { value: "continuous", label: "C. 识别模式 (Continuous)" },
+const OWNER_VOICE_SAMPLE_PROMPTS = [
+  "Jachin，打开微信并告诉我当前状态。",
+  "Jachin，帮我总结今天的重要事情。",
+  "Jachin，听到我的声音后再执行任务。",
 ] as const;
+
+const DEFAULT_MESSAGE_CONTACTS: MessageContact[] = [
+  { name: "Neil", kind: "person", aliases: ["Neil", "new", "n"], shortcut_number: "1", shortcut_letter: "A", enabled: true },
+  { name: "Vivian", kind: "person", aliases: ["Vivian", "v"], shortcut_number: "2", shortcut_letter: "B", enabled: true },
+  {
+    name: "测试备注冒烟草稿",
+    kind: "group",
+    aliases: ["测试备注冒烟草稿", "测试备注", "测试群", "群聊", "群"],
+    shortcut_number: "3",
+    shortcut_letter: "C",
+    enabled: true,
+  },
+];
 
 /** L3 不可用时用于展示的内置读取黑名单说明（与 fs_path_blacklist 简述对齐） */
 const READ_BLACKLIST_BUILTIN_FALLBACK: string[] = [
@@ -115,6 +153,91 @@ export function SettingsPanel() {
   const [readPathDraft, setReadPathDraft] = useState("");
   const [fsPolicySaving, setFsPolicySaving] = useState(false);
   const [fsPolicySavedHint, setFsPolicySavedHint] = useState(false);
+  const [voiceprintStatus, setVoiceprintStatus] = useState<OwnerVoiceprintStatus | null>(null);
+  const [voiceprintLoading, setVoiceprintLoading] = useState(false);
+  const [voiceprintSamples, setVoiceprintSamples] = useState<(string | null)[]>([null, null, null]);
+  const [voiceprintStep, setVoiceprintStep] = useState(0);
+  const [voiceprintRecording, setVoiceprintRecording] = useState(false);
+  const [voiceprintSaving, setVoiceprintSaving] = useState(false);
+  const [voiceprintMessage, setVoiceprintMessage] = useState<string | null>(null);
+  const [messageContacts, setMessageContacts] = useState<MessageContact[]>([]);
+  const [messageContactsLoading, setMessageContactsLoading] = useState(false);
+  const [messageContactsSaving, setMessageContactsSaving] = useState(false);
+  const [messageContactsHint, setMessageContactsHint] = useState<string | null>(null);
+
+  const refreshMessageContacts = async () => {
+    setMessageContactsLoading(true);
+    setMessageContactsHint(null);
+    try {
+      const book = await invoke<MessageContactsBook>("get_message_contacts");
+      setMessageContacts(Array.isArray(book.contacts) ? book.contacts : DEFAULT_MESSAGE_CONTACTS);
+    } catch (e) {
+      setMessageContacts(DEFAULT_MESSAGE_CONTACTS);
+      setMessageContactsHint(`读取联系人失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setMessageContactsLoading(false);
+    }
+  };
+
+  const handleSaveMessageContacts = async () => {
+    setMessageContactsSaving(true);
+    setMessageContactsHint(null);
+    try {
+      const book = await invoke<MessageContactsBook>("save_message_contacts", {
+        book: { version: 1, contacts: normalizeMessageContacts(messageContacts) },
+      });
+      setMessageContacts(book.contacts);
+      setMessageContactsHint("已保存，后续语音发消息会使用这份联系人列表。");
+    } catch (e) {
+      setMessageContactsHint(`保存联系人失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setMessageContactsSaving(false);
+    }
+  };
+
+  const updateMessageContact = (index: number, patch: Partial<MessageContact>) => {
+    setMessageContacts((prev) => prev.map((item, i) => (i === index ? { ...item, ...patch } : item)));
+    setMessageContactsHint(null);
+  };
+
+  const addMessageContact = () => {
+    const next = messageContacts.length + 1;
+    setMessageContacts((prev) => [
+      ...prev,
+      {
+        name: "",
+        kind: "person",
+        aliases: [],
+        shortcut_number: String(next),
+        shortcut_letter: String.fromCharCode("A".charCodeAt(0) + Math.min(prev.length, 25)),
+        enabled: true,
+      },
+    ]);
+    setMessageContactsHint(null);
+  };
+
+  const removeMessageContact = (index: number) => {
+    setMessageContacts((prev) => prev.filter((_, i) => i !== index));
+    setMessageContactsHint(null);
+  };
+
+  const resetMessageContacts = () => {
+    setMessageContacts(DEFAULT_MESSAGE_CONTACTS.map((item) => ({ ...item, aliases: [...item.aliases] })));
+    setMessageContactsHint("已恢复默认联系人，点击保存后生效。");
+  };
+
+  const refreshVoiceprintStatus = async () => {
+    setVoiceprintLoading(true);
+    try {
+      const status = await invoke<OwnerVoiceprintStatus>("get_owner_voiceprint_status");
+      setVoiceprintStatus(status);
+    } catch (e) {
+      setVoiceprintStatus(null);
+      setVoiceprintMessage(`读取主人音色状态失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setVoiceprintLoading(false);
+    }
+  };
 
   const loadFsPolicy = async () => {
     setFsPolicyLoading(true);
@@ -145,6 +268,8 @@ export function SettingsPanel() {
       ]);
       setConfig(cfg);
       setSettings(s ?? {});
+      void refreshVoiceprintStatus();
+      void refreshMessageContacts();
     } catch {
       setConfig(null);
       setSettings(null);
@@ -160,9 +285,7 @@ export function SettingsPanel() {
 
   useEffect(() => {
     const unlisten = listen<{ restart_required: boolean }>("settings-updated", (event) => {
-      if (event.payload?.restart_required) {
-        setRestartHint(true);
-      }
+      setRestartHint(Boolean(event.payload?.restart_required));
       void fetchData();
     });
     return () => {
@@ -225,9 +348,12 @@ export function SettingsPanel() {
       await invoke("update_user_settings", {
         patch: { ...settings, sprite_voice_mode: value as UserSettings["sprite_voice_mode"] },
       });
-      if (value === "wake_up") {
+      if (value === "wake_up" || value === "continuous") {
         const word = settings.wake_word?.trim() || undefined;
-        await invoke("stt_start_wake_listener", { wake_word: word }).catch(() => {});
+        await invoke("stt_start_wake_listener", {
+          wake_word: word,
+          mode: value,
+        }).catch(() => {});
       } else {
         await invoke("stt_stop_wake_listener").catch(() => {});
       }
@@ -235,6 +361,107 @@ export function SettingsPanel() {
       setSaving(false);
     }
   };
+
+  const handleAlwaysOnVoiceToggle = async () => {
+    const current = settings?.sprite_voice_mode?.trim() || "push_to_talk";
+    await handleSpriteVoiceModeChange(current === "continuous" ? "push_to_talk" : "continuous");
+  };
+
+  const handleStartVoiceprintSample = async () => {
+    setVoiceprintMessage(null);
+    try {
+      await invoke("stt_stop_wake_listener").catch(() => {});
+      await invoke("start_ptt_capture");
+      setVoiceprintRecording(true);
+      setVoiceprintMessage(`录制中：样本 ${voiceprintStep + 1}/${OWNER_VOICE_SAMPLE_PROMPTS.length}。请清晰朗读下方样本文字，读完后点击“结束并保存”。`);
+    } catch (e) {
+      setVoiceprintMessage(`开始录制失败：${e instanceof Error ? e.message : String(e)}`);
+      setVoiceprintRecording(false);
+    }
+  };
+
+  const handleStopVoiceprintSample = async () => {
+    try {
+      const payload = await invoke<{ wav_base64?: string | null }>("stop_ptt_capture");
+      const wav = payload?.wav_base64?.trim();
+      setVoiceprintRecording(false);
+      if (!wav) {
+        setVoiceprintMessage("没有录到有效声音，请重录当前样本。");
+        return;
+      }
+      const nextSamples = [...voiceprintSamples];
+      nextSamples[voiceprintStep] = wav;
+      const readyCount = nextSamples.filter((sample) => Boolean(sample?.trim())).length;
+      const nextStep = Math.min(OWNER_VOICE_SAMPLE_PROMPTS.length - 1, voiceprintStep + 1);
+      setVoiceprintSamples(nextSamples);
+      setVoiceprintStep(nextStep);
+      if (readyCount >= OWNER_VOICE_SAMPLE_PROMPTS.length) {
+        setVoiceprintMessage("三段样本录制完成。请点击“生成主人音色”，生成后常开语音会用它来识别主人。");
+      } else {
+        setVoiceprintMessage(`样本 ${voiceprintStep + 1} 录制完成。下一条请读：${OWNER_VOICE_SAMPLE_PROMPTS[nextStep]}`);
+      }
+    } catch (e) {
+      setVoiceprintRecording(false);
+      setVoiceprintMessage(`结束录制失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const handleResetVoiceprintSamples = () => {
+    setVoiceprintSamples([null, null, null]);
+    setVoiceprintStep(0);
+    setVoiceprintMessage(`已清空样本。请从样本 1 开始读：${OWNER_VOICE_SAMPLE_PROMPTS[0]}`);
+  };
+
+  const handleReRecordVoiceprintSample = () => {
+    setVoiceprintMessage(`已准备重录样本 ${voiceprintStep + 1}。请读：${OWNER_VOICE_SAMPLE_PROMPTS[voiceprintStep]}`);
+    setVoiceprintSamples((prev) => {
+      const next = [...prev];
+      next[voiceprintStep] = null;
+      return next;
+    });
+  };
+
+  const handleEnrollOwnerVoiceprint = async () => {
+    const samples = voiceprintSamples.filter((sample): sample is string => Boolean(sample?.trim()));
+    if (samples.length < OWNER_VOICE_SAMPLE_PROMPTS.length) {
+      setVoiceprintMessage(`还需要录满 ${OWNER_VOICE_SAMPLE_PROMPTS.length} 段样本。`);
+      return;
+    }
+    setVoiceprintSaving(true);
+    setVoiceprintMessage(null);
+    try {
+      const result = await invoke<{
+        ok: boolean;
+        path: string;
+        sample_count: number;
+        embedding_dim: number;
+      }>("enroll_owner_voiceprint", {
+        req: { sample_wavs_base64: samples },
+      });
+      if (!result?.ok) {
+        setVoiceprintMessage("主人音色生成失败，请重新录制。");
+        return;
+      }
+      setVoiceprintMessage(`主人音色录制完毕，后续常开语音会优先识别你的声音。`);
+      setVoiceprintSamples([null, null, null]);
+      setVoiceprintStep(0);
+      await refreshVoiceprintStatus();
+      if (settings?.sprite_voice_mode === "continuous") {
+        await invoke("stt_start_wake_listener", {
+          wake_word: settings.wake_word?.trim() || undefined,
+          mode: "continuous",
+        }).catch(() => {});
+      }
+    } catch (e) {
+      setVoiceprintMessage(`主人音色生成失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setVoiceprintSaving(false);
+    }
+  };
+
+  const voiceprintReadyCount = voiceprintSamples.filter((sample) => Boolean(sample?.trim())).length;
+  const voiceprintAllSamplesReady = voiceprintReadyCount >= OWNER_VOICE_SAMPLE_PROMPTS.length;
+  const voiceprintCurrentPrompt = OWNER_VOICE_SAMPLE_PROMPTS[voiceprintStep];
 
   const handleOsFileDangerousBypassChange = async (value: boolean) => {
     if (saving || !settings) return;
@@ -458,7 +685,7 @@ export function SettingsPanel() {
             <Settings className="h-4 w-4 text-cyan-100/80" />
             <h2 className="font-mono text-[11px] uppercase tracking-[0.16em] text-cyan-100/80">Runtime Overrides</h2>
           </div>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <SelectControl
               label="LLM"
               value={settings?.llm_provider_override ?? ""}
@@ -511,18 +738,293 @@ export function SettingsPanel() {
               ))}
             </SelectControl>
 
-            <SelectControl
-              label="Voice"
-              value={settings?.sprite_voice_mode ?? "push_to_talk"}
-              onChange={(value) => void handleSpriteVoiceModeChange(value)}
-              disabled={saving}
+          </div>
+
+          <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <ToggleCard
+              title="常开语音"
+              summary={settings?.sprite_voice_mode === "continuous" ? "已开麦，Jachin 会持续监听并判断是否执行" : "默认关闭，需要点击录音或手动打开"}
+              checked={settings?.sprite_voice_mode === "continuous"}
+              disabled={saving || !settings}
+              onChange={() => void handleAlwaysOnVoiceToggle()}
+              tone="cyan"
+              onLabel="open mic"
+              offLabel="mic off"
+              icon={<Mic className="h-4 w-4" />}
+            />
+            <div className="jarvis-tile rounded-[8px] border border-cyan-200/[0.07] bg-slate-950/22 p-4 md:col-span-1 xl:col-span-2">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-slate-100">
+                    <Shield className="h-4 w-4 text-cyan-100/75" />
+                    主人音色
+                  </div>
+                  <div className="mt-2 text-xs text-slate-500">
+                    {voiceprintLoading
+                      ? "正在读取声纹状态..."
+                      : voiceprintStatus?.exists
+                        ? `已录制，可重新录制覆盖旧音色。样本 ${voiceprintStatus.sample_count ?? "-"} 段`
+                        : "未录制。常开语音建议先录入主人声音。"}
+                  </div>
+                </div>
+                <span
+                  className={cn(
+                    "rounded-[7px] border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em]",
+                    voiceprintStatus?.exists
+                      ? "border-emerald-300/25 bg-emerald-300/[0.08] text-emerald-200"
+                      : "border-amber-300/25 bg-amber-300/[0.08] text-amber-200"
+                  )}
+                >
+                  {voiceprintStatus?.exists ? "enrolled" : "empty"}
+                </span>
+              </div>
+
+              <div className="mt-3 text-xs text-slate-300">
+                {voiceprintAllSamplesReady
+                  ? "样本录制完成，可以生成主人音色。"
+                  : `当前样本：${voiceprintStep + 1}/${OWNER_VOICE_SAMPLE_PROMPTS.length}`}
+              </div>
+              <div
+                className={cn(
+                  "mt-3 rounded-[8px] border p-3",
+                  voiceprintRecording
+                    ? "border-rose-300/25 bg-rose-300/[0.07]"
+                    : voiceprintAllSamplesReady
+                      ? "border-emerald-300/25 bg-emerald-300/[0.07]"
+                      : "border-cyan-200/[0.08] bg-cyan-300/[0.035]"
+                )}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-100/70">
+                    {voiceprintRecording ? "recording" : voiceprintAllSamplesReady ? "ready" : "read aloud"}
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    {voiceprintRecording ? "录制中" : voiceprintAllSamplesReady ? "三条已完成" : `样本 ${voiceprintStep + 1}`}
+                  </div>
+                </div>
+                <div className="mt-2 text-sm font-semibold leading-6 text-slate-100">
+                  {voiceprintAllSamplesReady ? "三段样本已录制完成" : voiceprintCurrentPrompt}
+                </div>
+                <div className="mt-1 text-xs text-slate-500">
+                  {voiceprintRecording
+                    ? "读完后点击“结束并保存”，系统会自动提示下一条。"
+                    : voiceprintAllSamplesReady
+                      ? "现在点击“生成主人音色”，后续也可以重新录制覆盖。"
+                      : "点击“录当前样本”后，按上面的文字自然朗读。"}
+                </div>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {OWNER_VOICE_SAMPLE_PROMPTS.map((_, index) => (
+                  <span
+                    key={index}
+                    className={cn(
+                      "rounded border px-2 py-1 text-[11px]",
+                      voiceprintSamples[index]
+                        ? "border-emerald-300/30 bg-emerald-300/[0.08] text-emerald-200"
+                        : index === voiceprintStep
+                          ? "border-cyan-200/30 bg-cyan-300/[0.08] text-cyan-100"
+                          : "border-cyan-200/[0.08] text-slate-500"
+                  )}
+                >
+                    样本 {index + 1}{voiceprintSamples[index] ? " 完成" : index === voiceprintStep && voiceprintRecording ? " 录制中" : ""}
+                  </span>
+                ))}
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {!voiceprintRecording ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleStartVoiceprintSample()}
+                    disabled={saving || voiceprintSaving || voiceprintAllSamplesReady}
+                    className="inline-flex items-center gap-2 rounded-[7px] border border-cyan-200/18 bg-cyan-300/[0.06] px-3 py-2 text-xs text-cyan-100 hover:bg-cyan-300/[0.1] disabled:opacity-45"
+                  >
+                    <Mic className="h-3.5 w-3.5" />
+                    录当前样本 {voiceprintStep + 1}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void handleStopVoiceprintSample()}
+                    className="inline-flex items-center gap-2 rounded-[7px] border border-rose-300/25 bg-rose-300/[0.08] px-3 py-2 text-xs text-rose-100 hover:bg-rose-300/[0.13]"
+                  >
+                    <Mic className="h-3.5 w-3.5" />
+                    结束并保存
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleReRecordVoiceprintSample}
+                  disabled={voiceprintRecording || voiceprintSaving}
+                  className="inline-flex items-center gap-2 rounded-[7px] border border-cyan-200/[0.08] px-3 py-2 text-xs text-slate-300 hover:border-cyan-200/18 hover:text-cyan-100 disabled:opacity-45"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  重录当前
+                </button>
+                <button
+                  type="button"
+                  onClick={handleResetVoiceprintSamples}
+                  disabled={voiceprintRecording || voiceprintSaving}
+                  className="rounded-[7px] border border-cyan-200/[0.08] px-3 py-2 text-xs text-slate-400 hover:border-cyan-200/18 hover:text-cyan-100 disabled:opacity-45"
+                >
+                  清空样本
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleEnrollOwnerVoiceprint()}
+                  disabled={voiceprintRecording || voiceprintSaving || !voiceprintAllSamplesReady}
+                  className="inline-flex items-center gap-2 rounded-[7px] border border-emerald-300/25 bg-emerald-300/[0.08] px-3 py-2 text-xs text-emerald-100 hover:bg-emerald-300/[0.13] disabled:opacity-45"
+                >
+                  {voiceprintSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                  {voiceprintStatus?.exists ? "重新生成主人音色" : "生成主人音色"}
+                </button>
+              </div>
+              {voiceprintMessage && <div className="mt-3 text-xs text-slate-300">{voiceprintMessage}</div>}
+              {voiceprintStatus?.path && (
+                <div className="mt-2 truncate font-mono text-[10px] text-slate-600" title={voiceprintStatus.path}>
+                  {voiceprintStatus.path}
+                </div>
+              )}
+            </div>
+          </div>
+        </motion.section>
+
+        <motion.section
+          className="jarvis-panel rounded-[8px] border border-cyan-200/[0.08] bg-cyan-300/[0.018] p-4"
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: 0.055 }}
+        >
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-2">
+              <Users className="h-4 w-4 text-cyan-100/80" />
+              <div className="min-w-0">
+                <h2 className="font-mono text-[11px] uppercase tracking-[0.16em] text-cyan-100/80">Message Contacts</h2>
+                <p className="mt-1 text-xs text-slate-500">语音发消息时可以说编号或字母，降低 Neil/New 这类识别错误。</p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void refreshMessageContacts()}
+                disabled={messageContactsLoading || messageContactsSaving}
+                className="inline-flex h-9 items-center gap-2 rounded-[7px] border border-cyan-200/[0.1] px-3 text-xs text-slate-300 hover:border-cyan-200/22 hover:text-cyan-100 disabled:opacity-45"
+              >
+                {messageContactsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                刷新
+              </button>
+              <button
+                type="button"
+                onClick={addMessageContact}
+                disabled={messageContactsSaving}
+                className="inline-flex h-9 items-center gap-2 rounded-[7px] border border-cyan-200/15 bg-cyan-300/[0.055] px-3 text-xs text-cyan-50 hover:bg-cyan-300/[0.09] disabled:opacity-45"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                新增联系人
+              </button>
+              <button
+                type="button"
+                onClick={resetMessageContacts}
+                disabled={messageContactsSaving}
+                className="h-9 rounded-[7px] border border-cyan-200/[0.08] px-3 text-xs text-slate-400 hover:border-cyan-200/18 hover:text-cyan-100 disabled:opacity-45"
+              >
+                恢复默认
+              </button>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto rounded-[8px] border border-cyan-200/[0.07]">
+            <div className="grid min-w-[760px] grid-cols-[64px_64px_minmax(140px,1fr)_96px_minmax(180px,1.4fr)_72px] gap-2 border-b border-cyan-200/[0.06] bg-slate-950/35 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.12em] text-slate-500">
+              <span>编号</span>
+              <span>字母</span>
+              <span>联系人</span>
+              <span>类型</span>
+              <span>别名</span>
+              <span>操作</span>
+            </div>
+            <div className="max-h-[320px] overflow-y-auto">
+              {messageContacts.length === 0 ? (
+                <div className="px-3 py-5 text-sm text-slate-500">暂无联系人，点击新增联系人。</div>
+              ) : (
+                messageContacts.map((contact, index) => (
+                  <div
+                    key={`${contact.name}-${index}`}
+                    className="grid min-w-[760px] grid-cols-[64px_64px_minmax(140px,1fr)_96px_minmax(180px,1.4fr)_72px] gap-2 border-b border-cyan-200/[0.045] px-3 py-2 last:border-b-0"
+                  >
+                    <input
+                      value={contact.shortcut_number}
+                      onChange={(e) => updateMessageContact(index, { shortcut_number: e.target.value })}
+                      className="h-9 min-w-0 rounded-[7px] border border-cyan-200/[0.09] bg-slate-950/38 px-2 font-mono text-xs text-slate-100 outline-none focus:border-cyan-200/35"
+                      aria-label="联系人编号"
+                    />
+                    <input
+                      value={contact.shortcut_letter}
+                      onChange={(e) => updateMessageContact(index, { shortcut_letter: e.target.value.toUpperCase().slice(0, 2) })}
+                      className="h-9 min-w-0 rounded-[7px] border border-cyan-200/[0.09] bg-slate-950/38 px-2 font-mono text-xs text-slate-100 outline-none focus:border-cyan-200/35"
+                      aria-label="联系人字母"
+                    />
+                    <input
+                      value={contact.name}
+                      onChange={(e) => updateMessageContact(index, { name: e.target.value })}
+                      placeholder="联系人或群名"
+                      className="h-9 min-w-0 rounded-[7px] border border-cyan-200/[0.09] bg-slate-950/38 px-2 text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-cyan-200/35"
+                      aria-label="联系人名称"
+                    />
+                    <select
+                      value={contact.kind}
+                      onChange={(e) => updateMessageContact(index, { kind: e.target.value })}
+                      className="h-9 min-w-0 rounded-[7px] border border-cyan-200/[0.09] bg-slate-950/38 px-2 text-xs text-slate-100 outline-none focus:border-cyan-200/35"
+                      aria-label="联系人类型"
+                    >
+                      <option value="person">个人</option>
+                      <option value="group">群聊</option>
+                    </select>
+                    <input
+                      value={contact.aliases.join(", ")}
+                      onChange={(e) => updateMessageContact(index, { aliases: splitAliases(e.target.value) })}
+                      placeholder="别名用逗号分隔"
+                      className="h-9 min-w-0 rounded-[7px] border border-cyan-200/[0.09] bg-slate-950/38 px-2 text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-cyan-200/35"
+                      aria-label="联系人别名"
+                    />
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => updateMessageContact(index, { enabled: !contact.enabled })}
+                        className={cn(
+                          "h-8 rounded-[7px] border px-2 text-[11px]",
+                          contact.enabled
+                            ? "border-emerald-300/25 bg-emerald-300/[0.08] text-emerald-200"
+                            : "border-cyan-200/[0.08] text-slate-500"
+                        )}
+                        title={contact.enabled ? "已启用" : "已停用"}
+                      >
+                        {contact.enabled ? "启用" : "停用"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => removeMessageContact(index)}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-[7px] border border-rose-300/15 text-rose-200/75 hover:bg-rose-300/[0.08]"
+                        title="删除联系人"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => void handleSaveMessageContacts()}
+              disabled={messageContactsSaving}
+              className="inline-flex h-10 items-center gap-2 rounded-[8px] border border-cyan-200/[0.13] bg-cyan-300/[0.055] px-4 text-sm text-cyan-50 transition hover:bg-cyan-300/[0.085] disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {SPRITE_VOICE_MODE_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </SelectControl>
+              {messageContactsSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              保存联系人
+            </button>
+            {messageContactsHint && <span className="text-xs text-slate-400">{messageContactsHint}</span>}
           </div>
         </motion.section>
 
@@ -617,6 +1119,30 @@ export function SettingsPanel() {
   );
 }
 
+function splitAliases(value: string): string[] {
+  return value
+    .split(/[,，、]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeMessageContacts(items: MessageContact[]): MessageContact[] {
+  return items
+    .map((item, index) => {
+      const name = item.name.trim();
+      const aliases = Array.from(new Set([name, ...item.aliases.map((alias) => alias.trim())].filter(Boolean)));
+      return {
+        name,
+        kind: item.kind === "group" ? "group" : "person",
+        aliases,
+        shortcut_number: item.shortcut_number.trim() || String(index + 1),
+        shortcut_letter: (item.shortcut_letter.trim() || String.fromCharCode("A".charCodeAt(0) + Math.min(index, 25))).toUpperCase(),
+        enabled: item.enabled,
+      };
+    })
+    .filter((item) => item.name);
+}
+
 function StatusTile({ label, value, icon }: { label: string; value: string; icon: ReactNode }) {
   return (
     <div className="jarvis-tile rounded-[8px] border border-cyan-200/[0.07] bg-slate-950/24 p-3">
@@ -642,6 +1168,9 @@ function ToggleCard({
   disabled,
   onChange,
   tone = "cyan",
+  onLabel = "armed",
+  offLabel = "guarded",
+  icon,
 }: {
   title: string;
   summary: string;
@@ -649,6 +1178,9 @@ function ToggleCard({
   disabled?: boolean;
   onChange: () => void;
   tone?: "cyan" | "amber";
+  onLabel?: string;
+  offLabel?: string;
+  icon?: ReactNode;
 }) {
   const activeClass =
     tone === "amber"
@@ -667,7 +1199,10 @@ function ToggleCard({
     >
       <div className="relative z-10 flex items-start justify-between gap-4">
         <div>
-          <div className="text-sm font-semibold text-slate-100">{title}</div>
+          <div className="flex items-center gap-2 text-sm font-semibold text-slate-100">
+            {icon && <span className="text-cyan-100/75">{icon}</span>}
+            {title}
+          </div>
           <div className="mt-2 text-xs text-slate-500">{summary}</div>
         </div>
         <span
@@ -685,7 +1220,7 @@ function ToggleCard({
         </span>
       </div>
       <div className="relative z-10 mt-4 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-        {checked ? "armed" : "guarded"}
+        {checked ? onLabel : offLabel}
       </div>
     </button>
   );

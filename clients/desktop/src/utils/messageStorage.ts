@@ -34,6 +34,57 @@ export interface StoredMessage {
     tool?: string;
     confirm_text?: string;
     cancel_text?: string;
+    interaction_kind?: "confirmation" | "slot_choice";
+    slot?: string;
+    choices?: Array<{
+      id?: string;
+      label: string;
+      value: string;
+      description?: string;
+      send_text?: string;
+    }>;
+  };
+  /** Structured execution trace emitted by L3 for task-session visibility. */
+  task_session?: {
+    session_id?: string;
+    status?: "waiting_user" | "running" | "done" | "failed" | "dropped" | string;
+    title?: string;
+    current_step?: string;
+    task_type?: string;
+    role_agent?: string;
+    tool?: string;
+    decision_basis?: string[];
+    steps?: Array<{
+      label: string;
+      status?: string;
+      detail?: string;
+    }>;
+    evidence?: Record<string, unknown>;
+  };
+  /** Voice runtime diagnostics shown inline in Omni for voice/text unified ingress. */
+  voice_runtime?: {
+    status?: "allow" | "drop" | "confirm" | "wait" | "running" | "done" | "failed" | string;
+    mode?: string;
+    raw_text?: string;
+    normalized_text?: string;
+    confidence?: number | null;
+    decision?: string;
+    reason_code?: string;
+    current_task?: string;
+    pending_task?: string;
+    speaker?: string;
+    corrections?: Array<{
+      from?: string;
+      to?: string;
+      reason?: string;
+      source?: string;
+    }>;
+    stages?: Array<{
+      label: string;
+      status?: string;
+      detail?: string;
+    }>;
+    evidence?: Record<string, unknown>;
   };
   /** Opt-in：可视化 Skill；未设置时所有现有消息逻辑不变 */
   tool_call?: StoredToolCall;

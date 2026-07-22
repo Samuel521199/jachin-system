@@ -8,6 +8,7 @@ surface form without asking again.
 from __future__ import annotations
 
 import json
+import re
 import time
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -162,6 +163,56 @@ def record_confirmed_entity_correction_from_work_order(*, work_order: Any, turn_
     return True
 
 
+def record_confirmed_entity_correction_from_input_context(
+    *,
+    work_order: Any,
+    turn_id: str = "",
+    source: str = "voice_low_confidence_confirmation",
+) -> bool:
+    """Learn a voice app alias when the user confirmed raw->normalized text.
+
+    Low-confidence voice clarification can be triggered by the generic voice
+    confidence gate instead of an entity-correction WorkOrder. In that case the
+    target app is already resolved, but the WorkOrder target does not carry the
+    explicit ``requires_entity_confirmation`` marker. This helper learns the
+    raw spoken surface anyway after the confirmed action verifies successfully.
+    """
+
+    target = _work_order_target(work_order)
+    input_context = {}
+    try:
+        input_context = dict((getattr(work_order, "inputs", {}) or {}).get("input_context") or {})
+    except Exception:
+        input_context = {}
+    raw_text = str(input_context.get("raw_text") or "").strip()
+    normalized_text = str(input_context.get("normalized_text") or "").strip()
+    if not raw_text or not normalized_text or raw_text == normalized_text:
+        return False
+    app_name = str(target.get("name") or target.get("app") or "").strip()
+    if not app_name:
+        return False
+    heard_as = _extract_spoken_app_surface(raw_text)
+    if not heard_as:
+        return False
+    surface_norm = normalize_entity_surface(heard_as)
+    app_norm = normalize_entity_surface(app_name)
+    if len(surface_norm) < 3 or surface_norm == app_norm:
+        return False
+    fake_work_order = _WorkOrderLike(
+        {
+            "target": {
+                "requires_entity_confirmation": True,
+                "heard_as": heard_as,
+                "name": app_name,
+                "candidate_alias": app_name,
+                "entity_score": 0.82,
+                "source": source,
+            }
+        }
+    )
+    return record_confirmed_entity_correction_from_work_order(work_order=fake_work_order, turn_id=turn_id)
+
+
 def record_entity_correction_usage_from_work_order(
     *,
     work_order: Any,
@@ -223,6 +274,24 @@ def record_entity_correction_usage_from_work_order(
         },
     )
     return changed
+
+
+class _WorkOrderLike:
+    def __init__(self, inputs: dict[str, Any]) -> None:
+        self.inputs = inputs
+
+
+def _extract_spoken_app_surface(text: str) -> str:
+    raw = str(text or "").strip()
+    patterns = [
+        r"(?:打开|启动|运行|切换到|关闭|退出)\s*([A-Za-z][A-Za-z\s._-]{1,32}|[\u4e00-\u9fffA-Za-z\s._-]{1,32})(?=\s*(?:$|给|向|发送|发|说|消息|内容))",
+        r"\b(?:open|launch|start|switch\s+to|close|quit)\s+([A-Za-z][A-Za-z\s._-]{1,32})(?=\s*(?:$|to|send|message|content))",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, raw, re.I)
+        if match:
+            return str(match.group(1) or "").strip(" ,，。._-")
+    return ""
 
 
 def entity_correction_memory_content(surface_norm: str, app_name: str) -> str:

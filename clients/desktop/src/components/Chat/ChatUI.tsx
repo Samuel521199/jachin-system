@@ -9,7 +9,7 @@
  */
 
 import React, { useRef, useEffect, useCallback } from "react";
-import { Send, Mic, Sparkles, Loader2, Square, Radio, LayoutDashboard } from "lucide-react";
+import { Send, Mic, Sparkles, Loader2, Square, LayoutDashboard } from "lucide-react";
 import { WindowControls } from "./WindowControls";
 import { VoiceWaveform, type WavePhase } from "./VoiceWaveform";
 import type { StoredMessage } from "../../utils/messageStorage";
@@ -22,11 +22,14 @@ export interface ChatUIProps {
   messages: StoredMessage[];
   input: string;
   onInputChange: (value: string) => void;
-  onSend: () => void;
+  onSend: (
+    overrideText?: string,
+    options?: { bypassLocalFallback?: boolean; interactionSource?: "user_text" | "quick_reply" | "voice" | "pending_resume" },
+  ) => void;
   /** 按键录音 PTT：按下开始、松开发送 */
   onVoiceStart: () => void;
   onVoiceStop: () => void;
-  /** VAD 监听模式：开启/关闭连续监听 */
+  /** 常开语音：开启/关闭持续监听 */
   isVadActive?: boolean;
   onVadToggle?: () => void;
   isLoading: boolean;
@@ -91,10 +94,9 @@ export const ChatUI: React.FC<ChatUIProps> = ({
   const handleQuickReply = useCallback(
     (text: string) => {
       if (disabled || isLoading || isTyping) return;
-      onInputChange(text);
-      window.setTimeout(() => onSend(), 0);
+      onSend(text, { bypassLocalFallback: true, interactionSource: "quick_reply" });
     },
-    [disabled, isLoading, isTyping, onInputChange, onSend],
+    [disabled, isLoading, isTyping, onSend],
   );
 
   const riskBorder =
@@ -207,7 +209,7 @@ export const ChatUI: React.FC<ChatUIProps> = ({
             {isVadActive && (
               <div className="text-xs px-2 py-1.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-2">
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" aria-hidden />
-                VAD 连续监听中… 说完即自动截断并发送
+                常开语音已开启… 说完即自动截断并发送
               </div>
             )}
             {recordingStatus && (
@@ -227,7 +229,7 @@ export const ChatUI: React.FC<ChatUIProps> = ({
           </div>
         )}
 
-        {/* 输入区：双轨 — VAD 开关 + 按键录音 Mic */}
+        {/* 输入区：双轨 — 常开语音开关 + 按键录音 Mic */}
         <div
           data-chat-interactive
           className="flex items-center gap-2 p-4 pt-2 pb-4 flex-shrink-0 relative z-20"
@@ -241,7 +243,7 @@ export const ChatUI: React.FC<ChatUIProps> = ({
             e.stopPropagation();
           }}
         >
-          {/* 模式 B：VAD 连续监听 Toggle（雷达图标 + VAD 字样，开启时琥珀色高亮） */}
+          {/* 常开语音 Toggle：像游戏开麦一样开启/关闭 */}
           {onVadToggle != null && (
             <button
               type="button"
@@ -252,17 +254,17 @@ export const ChatUI: React.FC<ChatUIProps> = ({
               }}
               onMouseDown={(e) => e.preventDefault()}
               onPointerDown={(e) => e.stopPropagation()}
-              disabled={disabled || isLoading}
-              aria-label={isVadActive ? "关闭 VAD 监听" : "开启 VAD 监听"}
-              title={isVadActive ? "关闭 VAD 连续监听" : "开启 VAD 连续监听（说完自动截断）"}
+              disabled={disabled || (!isVadActive && isLoading)}
+              aria-label={isVadActive ? "关闭常开语音" : "开启常开语音"}
+              title={isVadActive ? "关闭常开语音" : "开启常开语音（说完自动截断）"}
               className={`px-2.5 py-2 rounded-full border transition-all flex-shrink-0 cursor-pointer select-none flex items-center gap-1.5 ${
                 isVadActive
                   ? "bg-amber-500/25 text-amber-300 border-amber-500/40 shadow-[0_0_12px_rgba(245,158,11,0.25)]"
                   : "bg-white/10 border-white/20 text-slate-400 hover:bg-white/15 hover:border-cyan-400/30 disabled:opacity-50"
               }`}
             >
-              <Radio className="w-4 h-4 flex-shrink-0" />
-              <span className="text-xs font-medium uppercase tracking-wider">VAD</span>
+              <Mic className="w-4 h-4 flex-shrink-0" />
+              <span className="text-xs font-medium tracking-wider">{isVadActive ? "关麦" : "开麦"}</span>
             </button>
           )}
           {isRecording ? (

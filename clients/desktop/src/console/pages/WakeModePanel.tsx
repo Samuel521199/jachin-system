@@ -152,7 +152,7 @@ export function WakeModePanel() {
       setWakeWord(word);
       if (isListening) {
         await invoke("stt_stop_wake_listener");
-        await invoke("stt_start_wake_listener", { wake_word: word });
+        await invoke("stt_start_wake_listener", { wake_word: word, mode: "wake_up" });
       }
     } finally {
       setSaving(false);
@@ -168,7 +168,7 @@ export function WakeModePanel() {
     setWakeWordError(null);
     const word = v.value;
     try {
-      await invoke("stt_start_wake_listener", { wake_word: word });
+      await invoke("stt_start_wake_listener", { wake_word: word, mode: "wake_up" });
       setIsListening(true);
       setSavedWakeWord(word);
     } catch (e) {

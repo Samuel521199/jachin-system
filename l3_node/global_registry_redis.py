@@ -307,7 +307,7 @@ def _preempt_listener_loop() -> None:
             if from_node and from_node == _node_id():
                 continue
             try:
-                from l3_node.foreground_run_registry import request_cancel_run
+                from l3_node.primitives.agent_tasks.agent_cancel import request_cancel_run
 
                 ok = bool(request_cancel_run(rid))
                 logger.info(

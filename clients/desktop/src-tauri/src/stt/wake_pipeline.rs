@@ -40,6 +40,17 @@ const BARGE_COOLDOWN_MS: u64 = 450;
 const VAD_MODEL_FILENAME: &str = "silero_vad.onnx";
 const VAD_DEBUG_PATH_ENV: &str = "JACHIN_VAD_DEBUG_PATH";
 const PORTABLE_DATA_DIR: &str = "_portable_data";
+const CONTINUOUS_OWNER_MIN_RATIO: f32 = 0.55;
+const CONTINUOUS_OWNER_MIN_DURATION_MS: u32 = 650;
+const CONTINUOUS_OWNER_MAX_SKIPPED_SEGMENTS: usize = 4;
+
+struct OwnerTrackAudio {
+    wav: Vec<u8>,
+    owner_duration_ms: Option<u32>,
+    total_duration_ms: Option<u32>,
+    skipped_segments_count: Option<usize>,
+    reason: String,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WakePhase {
@@ -51,6 +62,7 @@ enum WakePhase {
 
 pub struct WakePipelineConfig {
     pub wake_word: String,
+    pub mode: String,
 }
 
 fn resolve_vad_model_path() -> PathBuf {
@@ -323,11 +335,28 @@ fn apply_owner_track_filter(
     base_url: &str,
     source_wav: &[u8],
     settings: &UserSettings,
-) -> Result<Option<Vec<u8>>, String> {
+    source: &str,
+    total_duration_ms: u32,
+) -> Result<Option<OwnerTrackAudio>, String> {
     if !sv_gate_enabled(settings) || !sv_owner_track_enabled(settings) {
-        return Ok(Some(source_wav.to_vec()));
+        if source == "continuous" {
+            l3_spawn::write_voice_companion_debug(
+                "rust",
+                "sv.continuous_reject_disabled",
+                "continuous mode requires speaker verification and owner track",
+                "",
+            );
+            return Ok(None);
+        }
+        return Ok(Some(OwnerTrackAudio {
+            wav: source_wav.to_vec(),
+            owner_duration_ms: None,
+            total_duration_ms: Some(total_duration_ms),
+            skipped_segments_count: None,
+            reason: "sv_bypass_disabled".to_string(),
+        }));
     }
-    let strict = sv_strict_mode(settings);
+    let strict = sv_strict_mode(settings) || source == "continuous";
     let profile = match load_owner_voiceprint_profile() {
         Ok(Some(p)) => p,
         Ok(None) => {
@@ -335,7 +364,13 @@ fn apply_owner_track_filter(
             return Ok(if strict {
                 None
             } else {
-                Some(source_wav.to_vec())
+                Some(OwnerTrackAudio {
+                    wav: source_wav.to_vec(),
+                    owner_duration_ms: None,
+                    total_duration_ms: Some(total_duration_ms),
+                    skipped_segments_count: None,
+                    reason: "sv_bypass_profile_missing".to_string(),
+                })
             });
         }
         Err(e) => {
@@ -343,7 +378,13 @@ fn apply_owner_track_filter(
             return Ok(if strict {
                 None
             } else {
-                Some(source_wav.to_vec())
+                Some(OwnerTrackAudio {
+                    wav: source_wav.to_vec(),
+                    owner_duration_ms: None,
+                    total_duration_ms: Some(total_duration_ms),
+                    skipped_segments_count: None,
+                    reason: "sv_bypass_profile_error".to_string(),
+                })
             });
         }
     };
@@ -355,7 +396,13 @@ fn apply_owner_track_filter(
             if strict {
                 return Ok(None);
             }
-            return Ok(Some(source_wav.to_vec()));
+            return Ok(Some(OwnerTrackAudio {
+                wav: source_wav.to_vec(),
+                owner_duration_ms: None,
+                total_duration_ms: Some(total_duration_ms),
+                skipped_segments_count: None,
+                reason: "sv_bypass_filter_error".to_string(),
+            }));
         }
     };
     let Some(owner_wav) = owner_filter.wav else {
@@ -371,17 +418,57 @@ fn apply_owner_track_filter(
         return Ok(None);
     };
 
+    if source == "continuous" {
+        let owner_ratio = if total_duration_ms > 0 {
+            owner_filter.owner_duration_ms as f32 / total_duration_ms as f32
+        } else {
+            0.0
+        };
+        if owner_filter.owner_duration_ms < CONTINUOUS_OWNER_MIN_DURATION_MS
+            || owner_ratio < CONTINUOUS_OWNER_MIN_RATIO
+            || owner_filter.skipped_segments_count > CONTINUOUS_OWNER_MAX_SKIPPED_SEGMENTS
+        {
+            l3_spawn::write_voice_companion_debug(
+                "rust",
+                "sv.continuous_owner_weak",
+                &format!(
+                    "ratio={owner_ratio:.2}, owner_duration_ms={}, total_duration_ms={}, skipped={}",
+                    owner_filter.owner_duration_ms, total_duration_ms, owner_filter.skipped_segments_count
+                ),
+                "",
+            );
+            return Ok(None);
+        }
+    }
+
     let threshold = profile.window_threshold_high();
     match jvs_verify_blocking(base_url, &owner_wav, &profile, threshold) {
         Ok(v) => {
             if v.is_match {
+                let owner_ratio = if total_duration_ms > 0 {
+                    owner_filter.owner_duration_ms as f32 / total_duration_ms as f32
+                } else {
+                    0.0
+                };
                 l3_spawn::write_voice_companion_debug(
                     "rust",
                     "sv.owner_accept",
-                    &format!("score={:.3}", v.score),
+                    &format!(
+                        "score={:.3}, ratio={owner_ratio:.2}, owner_duration_ms={}, total_duration_ms={}, skipped={}",
+                        v.score,
+                        owner_filter.owner_duration_ms,
+                        total_duration_ms,
+                        owner_filter.skipped_segments_count
+                    ),
                     "",
                 );
-                Ok(Some(owner_wav))
+                Ok(Some(OwnerTrackAudio {
+                    wav: owner_wav,
+                    owner_duration_ms: Some(owner_filter.owner_duration_ms),
+                    total_duration_ms: Some(total_duration_ms),
+                    skipped_segments_count: Some(owner_filter.skipped_segments_count),
+                    reason: "sv_owner_track_ok".to_string(),
+                }))
             } else {
                 l3_spawn::write_voice_companion_debug(
                     "rust",
@@ -394,7 +481,17 @@ fn apply_owner_track_filter(
         }
         Err(e) => {
             l3_spawn::write_voice_companion_debug("rust", "sv.owner_verify_fail", &e, "");
-            Ok(if strict { None } else { Some(owner_wav) })
+            Ok(if strict {
+                None
+            } else {
+                Some(OwnerTrackAudio {
+                    wav: owner_wav,
+                    owner_duration_ms: Some(owner_filter.owner_duration_ms),
+                    total_duration_ms: Some(total_duration_ms),
+                    skipped_segments_count: Some(owner_filter.skipped_segments_count),
+                    reason: "sv_bypass_verify_error".to_string(),
+                })
+            })
         }
     }
 }
@@ -436,8 +533,9 @@ fn enter_wake_capture(
     WakePhase::WakeCapture
 }
 
-fn process_utterance(app: &AppHandle, audio: Vec<f32>, wake_word: &str) -> bool {
+fn process_utterance(app: &AppHandle, audio: Vec<f32>, wake_word: &str, source: &str) -> bool {
     let wav = pcm_f32_to_wav(&audio, SAMPLE_RATE);
+    let total_duration_ms = ((audio.len() as u64 * 1000) / SAMPLE_RATE as u64) as u32;
     l3_spawn::write_voice_companion_debug(
         "rust",
         "wake.utterance_ready",
@@ -447,25 +545,31 @@ fn process_utterance(app: &AppHandle, audio: Vec<f32>, wake_word: &str) -> bool 
     match ensure_jvs_blocking(app) {
         Ok(base) => {
             let settings = UserSettings::load();
-            let sv_wav = match apply_owner_track_filter(&base, &wav, &settings) {
-                Ok(Some(v)) => v,
-                Ok(None) => {
-                    play_timeout_earcon();
-                    l3_spawn::write_voice_companion_debug(
-                        "rust",
-                        "sv.owner_drop_utterance",
-                        "owner track missing/rejected",
-                        "",
-                    );
-                    return false;
-                }
-                Err(e) => {
-                    play_timeout_earcon();
-                    l3_spawn::write_voice_companion_debug("rust", "sv.owner_filter_error", &e, "");
-                    return false;
-                }
-            };
-            match blocking_jvs_stt(&base, &sv_wav) {
+            let owner_audio =
+                match apply_owner_track_filter(&base, &wav, &settings, source, total_duration_ms) {
+                    Ok(Some(v)) => v,
+                    Ok(None) => {
+                        play_timeout_earcon();
+                        l3_spawn::write_voice_companion_debug(
+                            "rust",
+                            "sv.owner_drop_utterance",
+                            "owner track missing/rejected",
+                            "",
+                        );
+                        return false;
+                    }
+                    Err(e) => {
+                        play_timeout_earcon();
+                        l3_spawn::write_voice_companion_debug(
+                            "rust",
+                            "sv.owner_filter_error",
+                            &e,
+                            "",
+                        );
+                        return false;
+                    }
+                };
+            match blocking_jvs_stt(&base, &owner_audio.wav) {
                 Ok(text) => {
                     let trimmed = text.trim();
                     if trimmed.is_empty() {
@@ -489,7 +593,15 @@ fn process_utterance(app: &AppHandle, audio: Vec<f32>, wake_word: &str) -> bool 
                         &cmd.chars().take(120).collect::<String>(),
                         "",
                     );
-                    crate::voice_wake_bridge::inject_companion_user(app, &cmd);
+                    crate::voice_wake_bridge::inject_companion_user_with_owner_evidence(
+                        app,
+                        &cmd,
+                        source,
+                        owner_audio.owner_duration_ms,
+                        owner_audio.total_duration_ms,
+                        owner_audio.skipped_segments_count,
+                        Some(&owner_audio.reason),
+                    );
                     true
                 }
                 Err(e) => {
@@ -553,8 +665,14 @@ pub fn start_wake_pipeline(
     });
 
     let wake_word = config.wake_word.clone();
+    let mode = config.mode.trim().to_ascii_lowercase();
+    let continuous_mode = mode == "continuous";
     let join_main = thread::spawn(move || {
-        let mut phase = WakePhase::KwsIdle;
+        let mut phase = if continuous_mode {
+            WakePhase::Conversation
+        } else {
+            WakePhase::KwsIdle
+        };
         let mut kws = SttAssistedKws::new(wake_word.clone());
         let mut endpointing = match SileroVadEngine::new(&vad_path) {
             Ok(v) => EndpointingMachine::new(v),
@@ -637,7 +755,7 @@ pub fn start_wake_pipeline(
                 continue;
             }
 
-            if phase == WakePhase::Conversation {
+            if phase == WakePhase::Conversation && !continuous_mode {
                 if let Some(until) = conversation_until {
                     if Instant::now() >= until
                         && !voice_playback::is_playing()
@@ -692,7 +810,7 @@ pub fn start_wake_pipeline(
                         }
                     }
 
-                    if phase == WakePhase::KwsIdle && !masking && !thinking {
+                    if !continuous_mode && phase == WakePhase::KwsIdle && !masking && !thinking {
                         if let Some(window) = kws.feed(&chunk) {
                             let app_c = app.clone();
                             let ww = wake_word.clone();
@@ -751,14 +869,32 @@ pub fn start_wake_pipeline(
                         {
                             barge_latched = false;
                             barge_latched_until = None;
-                            let ok = process_utterance(&app, audio, &wake_word);
+                            let ok = process_utterance(
+                                &app,
+                                audio,
+                                &wake_word,
+                                if continuous_mode {
+                                    "continuous"
+                                } else {
+                                    "wake"
+                                },
+                            );
                             if ok {
                                 phase = WakePhase::Conversation;
-                                extend_conversation(&mut conversation_until);
+                                if continuous_mode {
+                                    conversation_until = None;
+                                } else {
+                                    extend_conversation(&mut conversation_until);
+                                }
                             } else {
-                                phase = WakePhase::Cooldown;
-                                kws_cooldown_until =
-                                    Some(Instant::now() + Duration::from_millis(COOLDOWN_MS));
+                                if continuous_mode {
+                                    phase = WakePhase::Conversation;
+                                    conversation_until = None;
+                                } else {
+                                    phase = WakePhase::Cooldown;
+                                    kws_cooldown_until =
+                                        Some(Instant::now() + Duration::from_millis(COOLDOWN_MS));
+                                }
                             }
                             wake_capture_started = None;
                             speech_started = false;

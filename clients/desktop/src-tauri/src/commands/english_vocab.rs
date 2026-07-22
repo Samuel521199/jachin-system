@@ -359,7 +359,16 @@ fn english_vocab_lookup_sync(
                 );
             }
         }
-        return Err("final example service failed; qwen-turbo card was not returned".to_string());
+        english_example_chain_trace(
+            "final_example_service_fallthrough_to_remote",
+            json!({
+                "word": word,
+                "book_id": book_id,
+                "remote_enabled": english_vocab_remote_lookup_enabled(),
+                "rust_remote_fallback_enabled": english_vocab_rust_remote_fallback_enabled(),
+                "elapsed_ms": lookup_started.elapsed().as_millis(),
+            }),
+        );
     }
 
     if require_final_example
@@ -1074,11 +1083,11 @@ fn english_vocab_remote_lookup_enabled() -> bool {
 fn english_vocab_rust_remote_fallback_enabled() -> bool {
     let env = merged_env_values();
     let Some(value) = first_non_empty(&env, &["JACHIN_ENGLISH_VOCAB_RUST_REMOTE_FALLBACK"]) else {
-        return false;
+        return english_vocab_remote_lookup_enabled();
     };
-    matches!(
+    !matches!(
         value.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on" | "enabled"
+        "0" | "false" | "no" | "off" | "disabled"
     )
 }
 

@@ -89,6 +89,10 @@ def _lower(text: str) -> str:
     return text.lower()
 
 
+def _compact(text: str) -> str:
+    return re.sub(r"\s+", "", str(text or "")).lower()
+
+
 _APP_MATCH_SEPARATOR_RE = re.compile(r"[\s,，。._\-]+")
 _APP_ENTITY_CORRECTION_THRESHOLD = 0.58
 
@@ -188,7 +192,9 @@ def _has_any(text: str, terms: tuple[str, ...]) -> bool:
 
 def _looks_like_delivery(text: str) -> bool:
     low = _lower(text)
-    if _has_any(low, _CN_MESSAGE_TERMS) or any(term in low for term in ("send to", "message", "lark", "feishu")):
+    if _has_any(low, _CN_MESSAGE_TERMS) or any(
+        term in low for term in ("send to", "send ", "message", "notify", "tell")
+    ):
         return True
     compact = re.sub(r"\s+", "", text)
     return bool(re.search(r"(发|发送|推送|同步|转发)(给|到|至)?[A-Za-z0-9_\-\u4e00-\u9fff]{2,}", compact))
@@ -225,12 +231,13 @@ def _detect_intent(text: str) -> str:
         return "web_research_delivery"
     if _has_any(low, _CN_FILE_TERMS):
         return "file_operation"
-    if _has_any(low, _CN_CLOSE_TERMS):
-        return "close_app"
-    if _looks_like_delivery(text):
+    delivery = _looks_like_delivery(text)
+    if delivery:
         return "message_send"
     if _has_any(low, _CN_SWITCH_TERMS):
         return "switch_app"
+    if _has_any(low, _CN_CLOSE_TERMS):
+        return "close_app"
     if _has_any(low, _CN_OPEN_TERMS):
         return "open_app"
     if any(k in low for k in ("file", "folder", "read ", "open file", "reveal", "show in explorer", "delete file", "rename", "copy", "move")):
@@ -318,6 +325,8 @@ def _app_alias_similarity(surface: str, alias: str) -> float:
     score = SequenceMatcher(None, surface, alias).ratio()
     if surface == "lock" and alias == "lark":
         score = max(score, 0.91)
+    if surface in {"log", "look"} and alias == "lark":
+        score = max(score, 0.9)
     if surface in {"loc", "lok", "lak", "larkk"} and alias == "lark":
         score = max(score, 0.86)
     return score
@@ -454,10 +463,86 @@ def _recent_message_body(memory_bundle: RelevantMemoryBundle) -> tuple[str, str]
     return "", ""
 
 
+_GENERIC_VOICE_RECIPIENTS = {
+    "\u5973\u53cb",
+    "\u7537\u53cb",
+    "\u597d\u53cb",
+    "\u670b\u53cb",
+    "\u540c\u4e8b",
+    "\u5979",
+    "\u4ed6",
+    "\u5bf9\u65b9",
+}
+
+
+def _is_generic_voice_recipient(name: str) -> bool:
+    return _compact(name) in {_compact(x) for x in _GENERIC_VOICE_RECIPIENTS}
+
+
+def _is_invalid_message_recipient(name: str) -> bool:
+    compacted = _compact(name)
+    if compacted in {"发", "发送", "送", "消息", "信息", "内容", "message"}:
+        return True
+    if re.fullmatch(r"[\u4e00-\u9fff]", str(name or "").strip()):
+        return True
+    return False
+
+
+def _extract_utf8_message_recipients(text: str) -> list[str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    patterns = (
+        r"(?:\u53d1\u7ed9|\u53d1\u9001\u7ed9|\u53d1\u5230|\u53d1\u9001\u5230|\u7ed9|\u5411)\s*([A-Za-z][A-Za-z0-9_.-]{1,40}|[\u4e00-\u9fff]{2,12})\s*(?:$|[，。！？；,.;!?]|(?:\u53d1|\u53d1\u9001|\u8bf4|\u544a\u8bc9))",
+        r"(?:\u53d1|\u53d1\u9001|\u544a\u8bc9|\u901a\u77e5|\u540c\u6b65).{0,120}?(?:\u7ed9|\u5411)\s*([A-Za-z][A-Za-z0-9_.-]{1,40}|[\u4e00-\u9fff]{2,12})\s*$",
+    )
+    for pattern in patterns:
+        matches = list(re.finditer(pattern, raw, re.I))
+        if not matches:
+            continue
+        name = matches[-1].group(1).strip()
+        if name and not _is_generic_voice_recipient(name) and not _is_invalid_message_recipient(name):
+            return [name]
+    return []
+
+
+def _extract_generic_voice_recipient(text: str) -> str:
+    raw = str(text or "").strip()
+    for pattern in (
+        r"(?:\u53d1|\u53d1\u9001|\u544a\u8bc9|\u901a\u77e5|\u540c\u6b65).{0,120}?(?:\u7ed9|\u5411)\s*([\u4e00-\u9fff]{1,12})\s*$",
+        r"(?:\u53d1\u7ed9|\u53d1\u9001\u7ed9|\u53d1\u5230|\u53d1\u9001\u5230|\u7ed9|\u5411)\s*([\u4e00-\u9fff]{1,12})\s*$",
+    ):
+        matches = list(re.finditer(pattern, raw, re.I))
+        if matches:
+            name = matches[-1].group(1).strip()
+            if _is_generic_voice_recipient(name):
+                return name
+    return ""
+
+
+def _extract_utf8_message_before_recipient(text: str, recipients: list[str] | None = None, generic_recipient: str = "") -> str:
+    raw = str(text or "").strip()
+    names = [str(x) for x in recipients or [] if str(x).strip()]
+    if generic_recipient:
+        names.append(generic_recipient)
+    for name in names:
+        pattern = rf"^(?:\u8bf7|\u5e2e\u6211|\u9ebb\u70e6\u4f60)?\s*(?:\u6253\u5f00\s*(?:Lark|\u98de\u4e66)\s*)?(?:\u53d1\u9001|\u53d1|\u544a\u8bc9|\u901a\u77e5|\u540c\u6b65)?\s*(.+?)\s*(?:\u7ed9|\u5411|\u53d1\u7ed9|\u53d1\u9001\u7ed9|\u53d1\u5230|\u53d1\u9001\u5230)\s*{re.escape(name)}\s*$"
+        match = re.search(pattern, raw, re.I)
+        if match:
+            body = match.group(1).strip(" \t\r\n,.:;!?\u3002\uff0c\uff01\uff1f\uff1a\uff1b\"'\u201c\u201d\u2018\u2019")
+            body = _clean_message_command_prefix(body)
+            if body and body not in {"\u6d88\u606f", "\u4fe1\u606f"}:
+                return body
+    return ""
+
+
 def _extract_message_recipients(text: str) -> list[str]:
     text = str(text or "").strip()
     if not text:
         return []
+    utf8 = _extract_utf8_message_recipients(text)
+    if utf8:
+        return utf8
     patterns = [
         # "像 Neil 发送..." is a common typo for "向 Neil 发送...".
         # Only treat it as a recipient marker when it appears in an explicit send context.
@@ -473,7 +558,7 @@ def _extract_message_recipients(text: str) -> list[str]:
         raw = (m.group(1) or "").strip()
         raw = re.sub(r"(消息|信息|内容|同事|用户|群聊)$", "", raw).strip()
         parts = [x.strip() for x in re.split(r"[、,，]|和|与|\band\b", raw) if x.strip()]
-        return parts[:8]
+        return [part for part in parts if not _is_generic_voice_recipient(part) and not _is_invalid_message_recipient(part)][:8]
     return []
 
 
@@ -481,27 +566,41 @@ def _extract_message_body(text: str, recipients: list[str] | None = None) -> str
     text = str(text or "").strip()
     if not text:
         return ""
+    utf8_body = _extract_utf8_message_before_recipient(text, recipients)
+    if utf8_body:
+        return utf8_body
+    generic_recipient = _extract_generic_voice_recipient(text)
+    if generic_recipient:
+        utf8_body = _extract_utf8_message_before_recipient(text, [], generic_recipient=generic_recipient)
+        if utf8_body:
+            return utf8_body
     quoted = re.findall(r"[`\"“”'‘’](.*?)[`\"“”'‘’]", text)
     if quoted:
-        return quoted[-1].strip()
+        return _clean_message_command_prefix(quoted[-1].strip())
     if ":" in text or "：" in text:
         tail = re.split(r"[:：]", text, maxsplit=1)[-1].strip()
         if tail:
-            return tail
+            return _clean_message_command_prefix(tail)
     explicit = re.search(r"(?:内容|消息|正文)\s*(?:是|为|=|:|：)\s*(.+)$", text, re.I)
     if explicit:
         body = (explicit.group(1) or "").strip()
         if body and not any(body == r for r in recipients or []):
-            return body
+            return _clean_message_command_prefix(body)
     m = re.search(r"(?:内容|消息|说|发送|发)\s*(?:是|为|:|：)?\s*(.+)$", text, re.I)
     if m:
         body = (m.group(1) or "").strip()
         if body and not any(body == r for r in recipients or []):
-            return body
+            return _clean_message_command_prefix(body)
     m = re.search(r"(?:发给|发送给|给).+?(?:[:：]|说)\s*(.+)$", text, re.I)
     if m:
-        return (m.group(1) or "").strip()
+        return _clean_message_command_prefix((m.group(1) or "").strip())
     return ""
+
+
+def _clean_message_command_prefix(body: str) -> str:
+    text = str(body or "").strip(" \t\r\n,.:;!?\u3002\uff0c\uff01\uff1f\uff1a\uff1b\"'\u201c\u201d\u2018\u2019")
+    text = re.sub(r"^(?:\u6d88\u606f|\u4fe1\u606f|\u5185\u5bb9|message)\s*[,，:：]?\s*", "", text, flags=re.I)
+    return text.strip(" \t\r\n,.:;!?\u3002\uff0c\uff01\uff1f\uff1a\uff1b\"'\u201c\u201d\u2018\u2019")
 
 
 def _extract_web_research_query(text: str, recipients: list[str] | None = None) -> str:
@@ -606,6 +705,7 @@ def _extract_target(text: str, intent: str, state_snapshot: StateSnapshot, memor
     if intent == "message_send":
         recipients = _extract_message_recipients(text)
         message = _extract_message_body(text, recipients)
+        generic_voice_recipient = _extract_generic_voice_recipient(text)
         message_source = "input_text"
         if (not message or _looks_like_recent_message_reference(text)) and memory_bundle:
             remembered_message, remembered_source = _recent_message_body(memory_bundle)
@@ -624,6 +724,9 @@ def _extract_target(text: str, intent: str, state_snapshot: StateSnapshot, memor
                 "source": "input_text",
                 "message_source": message_source,
             }
+            if generic_voice_recipient and not recipients:
+                target["ambiguous_voice_recipient"] = generic_voice_recipient
+                target["blocked_reason"] = "ambiguous_generic_voice_recipient"
             if message_source == "recent_memory":
                 target["message_memory_source"] = remembered_source
             if correction:
@@ -749,9 +852,7 @@ def _tool_for_intent(intent: str, target: dict[str, Any] | None = None) -> str:
         "close_app": "mcp:windows_window_close",
         "switch_app": "mcp:windows_window_switch",
         "web_research_delivery": "mcp:web_research_delivery",
-        "message_send": "mcp:windows_lark_send_message"
-        if (target.get("recipients") and str(target.get("message") or "").strip())
-        else "",
+        "message_send": "mcp:windows_lark_send_message",
     }.get(intent, "")
 
 
@@ -920,6 +1021,15 @@ def run_review_board(
             clarification_question = f"我听到的是“{heard_as or '这个应用'}”，你是不是想操作 {candidate_name}？请回复“是”或“否”。"
     if missing_target and not clarification_question:
         clarification_question = "你想操作哪个应用？"
+    if (
+        missing_message_slots
+        and not clarification_question
+        and target.get("blocked_reason") == "ambiguous_generic_voice_recipient"
+    ):
+        heard = str(target.get("ambiguous_voice_recipient") or "").strip() or "\u8fd9\u4e2a\u8054\u7cfb\u4eba"
+        message = str(target.get("message") or "").strip()
+        suffix = f"\u6d88\u606f\u5185\u5bb9\u6211\u5df2\u8bb0\u4e3a\u201c{message}\u201d\u3002" if message else ""
+        clarification_question = f"\u6211\u542c\u5230\u7684\u6536\u4ef6\u4eba\u662f\u201c{heard}\u201d\uff0c\u8fd9\u4e0d\u662f\u660e\u786e\u8054\u7cfb\u4eba\u3002\u4f60\u8981\u53d1\u7ed9 Neil\u3001Vivian \u8fd8\u662f\u5176\u4ed6\u4eba\uff1f{suffix}"
     if missing_message_slots and not clarification_question:
         if not target.get("recipients") and not str(target.get("message") or "").strip():
             clarification_question = "你想把什么内容发给谁？"

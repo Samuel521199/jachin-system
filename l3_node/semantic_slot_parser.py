@@ -101,7 +101,73 @@ def _split_recipients(text: str) -> list[str]:
     return out
 
 
+_GENERIC_VOICE_RECIPIENTS = {
+    "\u5973\u53cb",
+    "\u7537\u53cb",
+    "\u597d\u53cb",
+    "\u670b\u53cb",
+    "\u540c\u4e8b",
+    "\u5979",
+    "\u4ed6",
+    "\u5bf9\u65b9",
+}
+
+
+def _is_generic_voice_recipient(name: str) -> bool:
+    return _compact(name) in {_compact(x) for x in _GENERIC_VOICE_RECIPIENTS}
+
+
+def _extract_utf8_recipients(text: str) -> list[str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    patterns = (
+        r"(?:\u53d1\u7ed9|\u53d1\u9001\u7ed9|\u53d1\u5230|\u53d1\u9001\u5230|\u7ed9|\u5411)\s*([A-Za-z][A-Za-z0-9_.-]{1,40}|[\u4e00-\u9fff]{2,12})\s*(?:$|[，。！？；,.;!?]|(?:\u53d1|\u53d1\u9001|\u8bf4|\u544a\u8bc9))",
+        r"(?:\u53d1|\u53d1\u9001|\u544a\u8bc9|\u901a\u77e5|\u540c\u6b65).{0,120}?(?:\u7ed9|\u5411)\s*([A-Za-z][A-Za-z0-9_.-]{1,40}|[\u4e00-\u9fff]{2,12})\s*$",
+    )
+    for pattern in patterns:
+        matches = list(re.finditer(pattern, raw, re.I))
+        if not matches:
+            continue
+        name = matches[-1].group(1).strip()
+        if name and not _is_generic_voice_recipient(name):
+            return _split_recipients(name)
+    return []
+
+
+def _extract_generic_voice_recipient(text: str) -> str:
+    raw = str(text or "").strip()
+    for pattern in (
+        r"(?:\u53d1|\u53d1\u9001|\u544a\u8bc9|\u901a\u77e5|\u540c\u6b65).{0,120}?(?:\u7ed9|\u5411)\s*([\u4e00-\u9fff]{1,12})\s*$",
+        r"(?:\u53d1\u7ed9|\u53d1\u9001\u7ed9|\u53d1\u5230|\u53d1\u9001\u5230|\u7ed9|\u5411)\s*([\u4e00-\u9fff]{1,12})\s*$",
+    ):
+        matches = list(re.finditer(pattern, raw, re.I))
+        if matches:
+            name = matches[-1].group(1).strip()
+            if _is_generic_voice_recipient(name):
+                return name
+    return ""
+
+
+def _extract_utf8_message_before_recipient(text: str, recipients: list[str] | None = None, generic_recipient: str = "") -> str:
+    raw = str(text or "").strip()
+    names = [str(x) for x in recipients or [] if str(x).strip()]
+    if generic_recipient:
+        names.append(generic_recipient)
+    for name in names:
+        pattern = rf"^(?:\u8bf7|\u5e2e\u6211|\u9ebb\u70e6\u4f60)?\s*(?:\u6253\u5f00\s*(?:Lark|\u98de\u4e66)\s*)?(?:\u53d1\u9001|\u53d1|\u544a\u8bc9|\u901a\u77e5|\u540c\u6b65)?\s*(.+?)\s*(?:\u7ed9|\u5411|\u53d1\u7ed9|\u53d1\u9001\u7ed9|\u53d1\u5230|\u53d1\u9001\u5230)\s*{re.escape(name)}\s*$"
+        match = re.search(pattern, raw, re.I)
+        if match:
+            body = match.group(1).strip(" \t\r\n,.:;!?\u3002\uff0c\uff01\uff1f\uff1a\uff1b\"'\u201c\u201d\u2018\u2019")
+            if body and body not in {"\u6d88\u606f", "\u4fe1\u606f"}:
+                return body
+    return ""
+
+
 def _extract_recipients(text: str, *, allow_trailing_to: bool = False) -> list[str]:
+    utf8 = _extract_utf8_recipients(text)
+    if utf8:
+        return utf8
     post_patterns = (
         r"(?:发给|发送给|发到|发送到|发往|转给)\s*([^。！？!?\n]+)$",
         r"(?:鍙戠粰|鍙戦€佺粰|鍙戝埌|鍙戦€佸埌|杞粰)\s*([^。！？!?\n]+)$",
@@ -170,6 +236,9 @@ def _extract_feature_query(text: str, project_name: str, project_path: str) -> s
 
 
 def _extract_lark_message(text: str, recipients: list[str]) -> str:
+    utf8_body = _extract_utf8_message_before_recipient(text, recipients)
+    if utf8_body:
+        return utf8_body
     bare_send = re.search(r"(?:\u7ed9|\u5411|像)\s*[A-Za-z\u4e00-\u9fff][A-Za-z\u4e00-\u9fff\s.-]{0,40}\s*(?:\u53d1\u9001|\u53d1)(?:\u4e00\u6761|\u4e2a|\u4e00\u4e0b)?(?:\u6d88\u606f|\u4fe1\u606f|message)?\s*$", text, re.I)
     if bare_send:
         return ""
@@ -331,6 +400,7 @@ def parse_mission_intent(user_input: str) -> MissionIntent:
 
     recipients = _extract_recipients(text, allow_trailing_to=False)
     delivery_recipients = _extract_recipients(text, allow_trailing_to=True)
+    generic_voice_recipient = _extract_generic_voice_recipient(text)
     project_path = _extract_windows_path(text)
     project_name = _extract_project_name(text, project_path)
     app_name = _detect_actual_app_name(text)
@@ -414,6 +484,21 @@ def parse_mission_intent(user_input: str) -> MissionIntent:
             reasoning=["explicit recipient message"],
             raw_text=text,
         ), raw_text=text)
+
+    if generic_voice_recipient and re.search(r"(?:\u53d1|\u53d1\u9001|\u544a\u8bc9|\u901a\u77e5|\u540c\u6b65|\u6d88\u606f)", text, re.I):
+        slots.message = _extract_utf8_message_before_recipient(text, [], generic_recipient=generic_voice_recipient)
+        missing = ["recipients"]
+        if not slots.message:
+            missing.append("message")
+        return MissionIntent(
+            MissionTaskType.LARK_MESSAGE_SEND,
+            0.45,
+            slots,
+            missing_slots=missing,
+            risk_level=MissionRiskLevel.LOW,
+            reasoning=["ambiguous_generic_voice_recipient_blocked", f"heard_recipient:{generic_voice_recipient}"],
+            raw_text=text,
+        )
 
     target_app = _extract_app_control_target(text)
     if target_app:

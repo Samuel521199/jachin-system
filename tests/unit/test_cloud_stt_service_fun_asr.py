@@ -32,7 +32,7 @@ class _FakeHotwords:
         )
 
 
-def test_fun_asr_passes_native_vocabulary_id_and_context_hotwords(monkeypatch) -> None:
+def test_fun_asr_passes_native_vocabulary_id_without_prompt_context(monkeypatch) -> None:
     seen: dict = {}
 
     class FakeResult:
@@ -74,9 +74,9 @@ def test_fun_asr_passes_native_vocabulary_id_and_context_hotwords(monkeypatch) -
     assert result.raw_text == "鎵撳紑 Lark"
     assert result.backend == "dashscope:fun-asr-realtime"
     assert result.hotword_count == 3
-    assert result.hotword_status == "native_vocabulary_id+context_terms"
+    assert result.hotword_status == "adaptive_native_vocabulary_id"
     assert "dashscope:vocabulary_id" in result.hotword_sources
-    assert "dashscope:raw_input.context" in result.hotword_sources
+    assert "dashscope:raw_input.context" not in result.hotword_sources
 
     assert seen["init"]["model"] == "fun-asr-realtime"
     assert seen["init"]["format"] == "wav"
@@ -85,9 +85,7 @@ def test_fun_asr_passes_native_vocabulary_id_and_context_hotwords(monkeypatch) -
     assert seen["init"]["language_hints"] == ["zh"]
     assert seen["call"]["phrase_id"] == "vocab-123"
     assert seen["call"]["kwargs"]["vocabulary_id"] == "vocab-123"
-    context_text = seen["call"]["kwargs"]["raw_input"]["context"][0]["content"][0]["text"]
-    assert "Lark" in context_text
-    assert "Vivian" in context_text
+    assert "raw_input" not in seen["call"]["kwargs"]
 
 
 def test_fun_asr_auto_syncs_existing_hotwords_to_dashscope_vocabulary(monkeypatch) -> None:
@@ -138,7 +136,7 @@ def test_fun_asr_auto_syncs_existing_hotwords_to_dashscope_vocabulary(monkeypatc
     result = svc.transcribe(_wav_bytes())
 
     assert result.text == "鎵惧埌 Vivian"
-    assert result.hotword_status == "native_vocabulary_id+context_terms"
+    assert result.hotword_status == "adaptive_native_vocabulary_id"
     assert seen["list"]["prefix"] == "jachin"
     assert seen["create"]["target_model"] == "fun-asr-realtime"
     assert {"text": "Lark", "weight": 3} in seen["create"]["vocabulary"]
@@ -179,6 +177,57 @@ def test_fun_asr_does_not_apply_local_domain_term_rewrites(monkeypatch) -> None:
 
     assert result.text == "open Lock"
     assert result.raw_text == "open Lock"
+
+
+def test_fun_asr_hotword_mode_off_disables_native_vocabulary_and_context(monkeypatch) -> None:
+    seen: dict = {}
+
+    class FakeResult:
+        status_code = 200
+
+        def get_sentence(self):
+            return {"text": "plain text"}
+
+    class FakeRecognition:
+        def __init__(self, **kwargs):
+            seen["init"] = kwargs
+
+        def call(self, file: str, phrase_id: str | None = None, **kwargs):
+            seen["call"] = {"phrase_id": phrase_id, "kwargs": kwargs}
+            return FakeResult()
+
+    class FakeCallback:
+        pass
+
+    svc = CloudSttService(
+        api_key="test-key",
+        api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        model="fun-asr-realtime",
+        vocabulary_id="vocab-123",
+        auto_sync_vocabulary=True,
+        hotword_mode="off",
+    )
+    svc._hotwords = _FakeHotwords()
+    monkeypatch.setattr(svc, "_configure_dashscope_sdk", lambda: None)
+    monkeypatch.setattr(svc, "_recognition_class", lambda: FakeRecognition)
+    monkeypatch.setattr(svc, "_recognition_callback_class", lambda: FakeCallback)
+
+    result = svc.transcribe(_wav_bytes())
+
+    assert result.text == "plain text"
+    assert result.hotword_count == 0
+    assert result.hotword_status == "disabled"
+    assert seen["call"]["phrase_id"] is None
+    assert "vocabulary_id" not in seen["init"]
+    assert "vocabulary_id" not in seen["call"]["kwargs"]
+    assert "raw_input" not in seen["call"]["kwargs"]
+
+
+def test_fun_asr_strips_leaked_domain_prompt_from_transcript() -> None:
+    assert CloudSttService._sanitize_transcript_text("🎤 Prioritize recognizing these domain term.") == ""
+    assert CloudSttService._sanitize_transcript_text(
+        "Prioritize recognizing these domain terms and names: Lark, Neil 打开微信"
+    ) == "Lark, Neil 打开微信"
 
 def test_fun_asr_extracts_sentence_list_and_dict() -> None:
     class ListResult:

@@ -80,6 +80,7 @@ pub struct CompanionOwnerTrackFilterResult {
     pub wav_base64: Option<String>,
     pub reason: String,
     pub owner_duration_ms: Option<u32>,
+    pub total_duration_ms: Option<u32>,
     pub skipped_segments_count: Option<usize>,
 }
 
@@ -439,17 +440,19 @@ pub fn is_ptt_capture_running(state: State<'_, SttState>) -> bool {
 pub fn companion_filter_owner_track_wav(
     app_handle: tauri::AppHandle,
     wav_base64: String,
+    force_strict: Option<bool>,
 ) -> Result<CompanionOwnerTrackFilterResult, String> {
     let settings = UserSettings::load();
     let sv_enabled = settings.speaker_verification_enabled.unwrap_or(true);
     let owner_track_enabled = settings.speaker_owner_track_enabled.unwrap_or(true);
-    let strict = settings.speaker_verification_strict.unwrap_or(false);
+    let strict = force_strict.unwrap_or_else(|| settings.speaker_verification_strict.unwrap_or(false));
     if !sv_enabled || !owner_track_enabled {
         return Ok(CompanionOwnerTrackFilterResult {
             accepted: true,
             used_owner_track: false,
             wav_base64: None,
             owner_duration_ms: None,
+            total_duration_ms: None,
             skipped_segments_count: None,
             reason: "sv_bypass_disabled".to_string(),
         });
@@ -462,6 +465,7 @@ pub fn companion_filter_owner_track_wav(
                 used_owner_track: false,
                 wav_base64: None,
                 owner_duration_ms: None,
+                total_duration_ms: None,
                 skipped_segments_count: None,
                 reason: if strict {
                     "sv_reject_profile_missing".to_string()
@@ -476,6 +480,7 @@ pub fn companion_filter_owner_track_wav(
                 used_owner_track: false,
                 wav_base64: None,
                 owner_duration_ms: None,
+                total_duration_ms: None,
                 skipped_segments_count: None,
                 reason: if strict {
                     format!("sv_reject_profile_error:{e}")
@@ -494,6 +499,7 @@ pub fn companion_filter_owner_track_wav(
             used_owner_track: false,
             wav_base64: None,
             owner_duration_ms: None,
+            total_duration_ms: None,
             skipped_segments_count: None,
             reason: if strict {
                 "sv_reject_empty_wav".to_string()
@@ -510,6 +516,7 @@ pub fn companion_filter_owner_track_wav(
                 used_owner_track: false,
                 wav_base64: None,
                 owner_duration_ms: None,
+                total_duration_ms: None,
                 skipped_segments_count: None,
                 reason: if strict {
                     format!("sv_reject_jvs_unavailable:{e}")
@@ -539,6 +546,7 @@ pub fn companion_filter_owner_track_wav(
                     used_owner_track: true,
                     wav_base64: None,
                     owner_duration_ms: Some(owner_duration_ms),
+                    total_duration_ms: Some(total_duration_ms),
                     skipped_segments_count: Some(skipped_segments_count),
                     reason: format!(
                         "sv_reject_ambiguous_owner_track:ratio={owner_ratio:.2},skipped={skipped_segments_count}"
@@ -551,6 +559,7 @@ pub fn companion_filter_owner_track_wav(
                     used_owner_track: true,
                     wav_base64: Some(base64::engine::general_purpose::STANDARD.encode(owner_wav)),
                     owner_duration_ms: Some(owner_duration_ms),
+                    total_duration_ms: Some(total_duration_ms),
                     skipped_segments_count: Some(skipped_segments_count),
                     reason: "sv_owner_track_ok".to_string(),
                 }),
@@ -559,6 +568,7 @@ pub fn companion_filter_owner_track_wav(
                     used_owner_track: true,
                     wav_base64: None,
                     owner_duration_ms: Some(owner_duration_ms),
+                    total_duration_ms: Some(total_duration_ms),
                     skipped_segments_count: Some(skipped_segments_count),
                     reason: if strict {
                         "sv_reject_no_owner_track".to_string()
@@ -573,6 +583,7 @@ pub fn companion_filter_owner_track_wav(
             used_owner_track: false,
             wav_base64: None,
             owner_duration_ms: None,
+            total_duration_ms: None,
             skipped_segments_count: None,
             reason: if strict {
                 format!("sv_reject_filter_error:{e}")

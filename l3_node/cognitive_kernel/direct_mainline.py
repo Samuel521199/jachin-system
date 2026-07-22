@@ -18,7 +18,11 @@ from typing import Any, Callable, Optional
 from .closure_memory import execute_turn_closure_memory_writes
 from .contracts import DecisionContract, WorkOrder
 from .dispatcher import dispatch_existing_work_order
-from .entity_corrections import record_confirmed_entity_correction_from_work_order, record_entity_correction_usage_from_work_order
+from .entity_corrections import (
+    record_confirmed_entity_correction_from_input_context,
+    record_confirmed_entity_correction_from_work_order,
+    record_entity_correction_usage_from_work_order,
+)
 from .kernel_loop import KernelPlanningResult
 from .pending_confirmation import (
     cancel_pending_confirmation,
@@ -30,7 +34,9 @@ from .pending_confirmation import (
     save_pending_confirmation,
 )
 from .runtime import close_turn, close_turn_waiting_user
+from .task_session_manager import attach_task_session_ui_protocol
 from .task_memory import build_task_experience_memory_requests
+from l3_node.voice_entity_correction import correct_voice_entities, teach_alias
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +49,30 @@ def direct_mainline_enabled() -> bool:
         or os.environ.get("JACHIN_DISABLE_COGNITIVE_APPCONTROL_DIRECT", "")
     )
     return disabled.strip().lower() not in {"1", "true", "yes", "on"}
+
+
+def pending_slot_reply_available(*, user_input: str, session_id: str = "", channel: str = "") -> bool:
+    """Return true when a short reply should be routed to an existing pending turn.
+
+    Always-on voice may classify very short replies such as "A." or "1." as
+    noise when viewed in isolation. Pending slot replies are not isolated turns:
+    they are answers to the previous question, so they must bypass the voice
+    false-trigger guard and reach ``_try_resume_pending_with_slot_reply``.
+    """
+
+    pending = load_pending_confirmation(session_id=session_id, channel=channel)
+    if pending is None:
+        return False
+    text = str(user_input or "").strip()
+    if not text:
+        return False
+    if is_cancellation_text(text) or is_confirmation_text(text):
+        return True
+    if _resolve_pending_message_slot_reply(text, pending.work_order):
+        return True
+    if _resolve_pending_app_slot_reply(text, pending.work_order):
+        return True
+    return False
 
 
 async def try_execute_cognitive_direct_plan(
@@ -80,6 +110,18 @@ async def try_execute_cognitive_direct_plan(
             return final_text
         return None
 
+    slot_resumed = await _try_resume_pending_with_slot_reply(
+        user_input=user_input,
+        plan=plan,
+        tools=tools,
+        allowed_skills=allowed_skills,
+        run_tool_func=run_tool_func,
+        session_id=session_id,
+        channel=channel,
+    )
+    if slot_resumed is not None:
+        return slot_resumed
+
     if is_confirmation_text(user_input):
         resumed = await _try_resume_pending_confirmation(
             plan=plan,
@@ -101,6 +143,43 @@ async def try_execute_cognitive_direct_plan(
         _log_direct_execution(stage="skipped", contract=contract, reason="no_work_order")
         return None
     work_order = plan.work_orders[0]
+    missing_message_work_order, missing_message_tool, missing_message_slot = _first_message_send_slot_gap(
+        plan.work_orders,
+        contract=contract,
+    )
+    if missing_message_work_order is not None and missing_message_slot:
+        save_pending_confirmation(
+            contract=contract,
+            work_order=missing_message_work_order,
+            session_id=session_id,
+            channel=channel,
+        )
+        final_text = _message_send_slot_gap_reply(
+            missing_message_slot,
+            contract=contract,
+            work_order=missing_message_work_order,
+        )
+        closure = close_turn_waiting_user(
+            turn_id=contract.turn_id,
+            final_text=final_text,
+            pending_decision={
+                "decision_id": contract.decision_id,
+                "work_order_id": missing_message_work_order.work_order_id,
+                "task_type": contract.task_type,
+                "missing_slot": missing_message_slot,
+                "tool": missing_message_tool,
+            },
+        )
+        _log_direct_execution(
+            stage="waiting_user_message_slot",
+            contract=contract,
+            work_order=missing_message_work_order,
+            tool_id=missing_message_tool,
+            closure=closure,
+            final_text=final_text,
+            reason=f"missing_message_slot_before_confirmation:{missing_message_slot}",
+        )
+        return final_text
     if not contract.execution_allowed and contract.tool_policy.requires_confirmation:
         save_pending_confirmation(
             contract=contract,
@@ -117,6 +196,15 @@ async def try_execute_cognitive_direct_plan(
             question,
             contract=contract,
             work_order=work_order,
+        )
+        question = _with_execution_trace_ui(
+            question,
+            status="waiting_user",
+            contract=contract,
+            work_order=work_order,
+            tool_id=str(work_order.inputs.get("tool") or ""),
+            ok=False,
+            reason="DecisionContract requires confirmation",
         )
         closure = close_turn_waiting_user(
             turn_id=contract.turn_id,
@@ -182,6 +270,41 @@ async def try_execute_cognitive_direct_plan(
                 reason="planned_direct_tool_unavailable",
             )
             return None
+
+        slot_gap = _message_send_slot_gap(work_order, tool_id)
+        if slot_gap:
+            save_pending_confirmation(
+                contract=contract,
+                work_order=work_order,
+                session_id=session_id,
+                channel=channel,
+            )
+            final_text = _message_send_slot_gap_reply(
+                slot_gap,
+                contract=contract,
+                work_order=work_order,
+            )
+            closure = close_turn_waiting_user(
+                turn_id=contract.turn_id,
+                final_text=final_text,
+                pending_decision={
+                    "decision_id": contract.decision_id,
+                    "work_order_id": work_order.work_order_id,
+                    "task_type": contract.task_type,
+                    "missing_slot": slot_gap,
+                    "tool": tool_id,
+                },
+            )
+            _log_direct_execution(
+                stage="waiting_user_message_slot",
+                contract=contract,
+                work_order=work_order,
+                tool_id=tool_id,
+                closure=closure,
+                final_text=final_text,
+                reason=f"missing_message_slot:{slot_gap}",
+            )
+            return final_text
 
         _log_role_agent_prompt(
             contract=contract,
@@ -257,7 +380,14 @@ async def try_execute_cognitive_direct_plan(
         all_ok,
         final_work_order.work_order_id,
     )
-    return final_text
+    return _with_execution_trace_ui(
+        final_text,
+        status="done" if all_ok else "failed",
+        contract=contract,
+        work_order=final_work_order,
+        tool_id=final_tool_id,
+        ok=all_ok,
+    )
 
 
 def _log_direct_execution(
@@ -318,6 +448,135 @@ def _with_pending_confirmation_ui_protocol(
     return f"{text.rstrip()}\n\n{marker}"
 
 
+def _with_execution_trace_ui(
+    text: str,
+    *,
+    status: str,
+    contract: DecisionContract | None,
+    work_order: WorkOrder | None,
+    tool_id: str = "",
+    ok: bool = False,
+    reason: str = "",
+) -> str:
+    steps: list[dict[str, Any]] = [
+        {"label": "Goal Interpreter", "status": "done", "detail": "识别目标、约束和缺失槽位"},
+        {"label": "ReviewBoard / Arbiter", "status": "done", "detail": "选择任务类型、风险等级和执行角色"},
+        {
+            "label": "WorkOrder",
+            "status": "done" if work_order is not None else "pending",
+            "detail": str(getattr(work_order, "work_order_id", "") or "生成结构化执行单"),
+        },
+        {
+            "label": str(getattr(work_order, "role_agent", "") or "RoleExecutor"),
+            "status": "pending" if status == "waiting_user" else ("done" if ok else status),
+            "detail": str(tool_id or (getattr(work_order, "inputs", {}) or {}).get("tool") or ""),
+        },
+        {
+            "label": "Verification",
+            "status": "pending" if status == "waiting_user" else ("done" if ok else "failed"),
+            "detail": "等待补槽" if status == "waiting_user" else ("已通过验证" if ok else "未通过验证"),
+        },
+    ]
+    return attach_task_session_ui_protocol(
+        text,
+        status=status,
+        contract=contract,
+        work_order=work_order,
+        current_step="等待用户补充信息" if status == "waiting_user" else ("执行完成" if ok else "执行未通过"),
+        decision_basis=[
+            f"task_type={getattr(contract, 'task_type', '')}" if contract is not None else "task_type=unknown",
+            f"role_agent={getattr(work_order, 'role_agent', '')}" if work_order is not None else "role_agent=unknown",
+            f"tool={tool_id or ((getattr(work_order, 'inputs', {}) or {}).get('tool') if work_order is not None else '')}",
+            f"reason={reason}" if reason else ("verification=ok" if ok else "verification=pending"),
+        ],
+        steps=steps,
+        evidence={
+            "ok": ok,
+            "reason": reason,
+            "tool": tool_id,
+            "work_order_id": getattr(work_order, "work_order_id", "") if work_order is not None else "",
+        },
+    )
+
+
+async def _try_resume_pending_with_slot_reply(
+    *,
+    user_input: str,
+    plan: KernelPlanningResult | None,
+    tools: list[dict[str, Any]],
+    allowed_skills: Optional[list[str]],
+    run_tool_func: RunToolFunc,
+    session_id: str = "",
+    channel: str = "",
+) -> str | None:
+    pending = load_pending_confirmation(session_id=session_id, channel=channel)
+    if pending is None:
+        return None
+    message_slot_patch = _resolve_pending_message_slot_reply(user_input, pending.work_order)
+    if message_slot_patch:
+        _fill_pending_message_slot(pending.work_order, patch=message_slot_patch, heard_as=user_input)
+        save_pending_confirmation(
+            contract=pending.contract,
+            work_order=pending.work_order,
+            session_id=pending.session_key,
+            channel="",
+        )
+        append_pending_slot_event = {
+            "session_key": pending.session_key,
+            "decision_id": pending.contract.decision_id,
+            "work_order_id": pending.work_order.work_order_id,
+            "slots": sorted(message_slot_patch.keys()),
+            "values": message_slot_patch,
+            "heard_as": str(user_input or "")[:120],
+        }
+        try:
+            from .ledger import append_event
+
+            append_event("confirmation_message_slot_filled", pending.contract.turn_id, append_pending_slot_event)
+        except Exception:
+            pass
+        mark_pending_as_confirmed(
+            pending,
+            confirmation_turn_id=plan.decision_contract.turn_id if plan is not None else "",
+        )
+        return await _execute_confirmed_pending(
+            pending=pending,
+            plan=plan,
+            tools=tools,
+            allowed_skills=allowed_skills,
+            run_tool_func=run_tool_func,
+        )
+    app_name = _resolve_pending_app_slot_reply(user_input, pending.work_order)
+    if not app_name:
+        return None
+    _fill_pending_app_slot(pending.work_order, app_name=app_name, heard_as=user_input)
+    mark_pending_as_confirmed(
+        pending,
+        confirmation_turn_id=plan.decision_contract.turn_id if plan is not None else "",
+    )
+    append_pending_slot_event = {
+        "session_key": pending.session_key,
+        "decision_id": pending.contract.decision_id,
+        "work_order_id": pending.work_order.work_order_id,
+        "slot": "app",
+        "value": app_name,
+        "heard_as": str(user_input or "")[:120],
+    }
+    try:
+        from .ledger import append_event
+
+        append_event("confirmation_slot_filled", pending.contract.turn_id, append_pending_slot_event)
+    except Exception:
+        pass
+    return await _execute_confirmed_pending(
+        pending=pending,
+        plan=plan,
+        tools=tools,
+        allowed_skills=allowed_skills,
+        run_tool_func=run_tool_func,
+    )
+
+
 async def _try_resume_pending_confirmation(
     *,
     plan: KernelPlanningResult | None,
@@ -334,6 +593,23 @@ async def _try_resume_pending_confirmation(
         pending,
         confirmation_turn_id=plan.decision_contract.turn_id if plan is not None else "",
     )
+    return await _execute_confirmed_pending(
+        pending=pending,
+        plan=plan,
+        tools=tools,
+        allowed_skills=allowed_skills,
+        run_tool_func=run_tool_func,
+    )
+
+
+async def _execute_confirmed_pending(
+    *,
+    pending: Any,
+    plan: KernelPlanningResult | None,
+    tools: list[dict[str, Any]],
+    allowed_skills: Optional[list[str]],
+    run_tool_func: RunToolFunc,
+) -> str | None:
     contract = pending.contract
     work_order = pending.work_order
     tool_id = str(
@@ -352,7 +628,15 @@ async def _try_resume_pending_confirmation(
             memory_context_refs=contract.memory_context_refs,
         )
         await execute_turn_closure_memory_writes(closure)
-        return final_text
+        return _with_execution_trace_ui(
+            final_text,
+            status="failed",
+            contract=contract,
+            work_order=work_order,
+            tool_id=tool_id,
+            ok=False,
+            reason="confirmed_direct_tool_not_allowed",
+        )
     if not _planned_direct_tool_available(tool_id, tools):
         final_text = f"\u5df2\u6536\u5230\u786e\u8ba4\uff0c\u4f46\u5f53\u524d\u5de5\u5177\u4e0d\u53ef\u7528\uff1a{tool_id}\u3002"
         closure = close_turn(
@@ -364,7 +648,52 @@ async def _try_resume_pending_confirmation(
             memory_context_refs=contract.memory_context_refs,
         )
         await execute_turn_closure_memory_writes(closure)
-        return final_text
+        return _with_execution_trace_ui(
+            final_text,
+            status="failed",
+            contract=contract,
+            work_order=work_order,
+            tool_id=tool_id,
+            ok=False,
+            reason="planned_direct_tool_unavailable",
+        )
+
+    slot_gap = _message_send_slot_gap(work_order, tool_id)
+    if slot_gap:
+        final_text = _message_send_slot_gap_reply(
+            slot_gap,
+            contract=contract,
+            work_order=work_order,
+        )
+        closure = close_turn_waiting_user(
+            turn_id=contract.turn_id,
+            final_text=final_text,
+            pending_decision={
+                "decision_id": contract.decision_id,
+                "work_order_id": work_order.work_order_id,
+                "task_type": contract.task_type,
+                "missing_slot": slot_gap,
+                "tool": tool_id,
+            },
+        )
+        _log_direct_execution(
+            stage="waiting_user_message_slot",
+            contract=contract,
+            work_order=work_order,
+            tool_id=tool_id,
+            closure=closure,
+            final_text=final_text,
+            reason=f"missing_message_slot:{slot_gap}",
+        )
+        return _with_execution_trace_ui(
+            final_text,
+            status="waiting_user",
+            contract=contract,
+            work_order=work_order,
+            tool_id=tool_id,
+            ok=False,
+            reason=f"missing_message_slot:{slot_gap}",
+        )
 
     _log_role_agent_prompt(
         contract=contract,
@@ -389,6 +718,7 @@ async def _try_resume_pending_confirmation(
     )
     if result.verification.ok:
         record_confirmed_entity_correction_from_work_order(work_order=work_order, turn_id=contract.turn_id)
+        record_confirmed_entity_correction_from_input_context(work_order=work_order, turn_id=contract.turn_id)
         clear_pending_confirmation_by_key(pending.session_key)
     final_text = _direct_reply_from_contract(contract, work_order, bool(result.verification.ok), result.observation)
     closure = close_turn(
@@ -417,7 +747,220 @@ async def _try_resume_pending_confirmation(
         result.verification.ok,
         work_order.work_order_id,
     )
-    return final_text
+    return _with_execution_trace_ui(
+        final_text,
+        status="done" if result.verification.ok else "failed",
+        contract=contract,
+        work_order=work_order,
+        tool_id=tool_id,
+        ok=bool(result.verification.ok),
+    )
+
+
+def _resolve_pending_app_slot_reply(text: str, work_order: WorkOrder) -> str:
+    if not _pending_work_order_missing_app(work_order):
+        return ""
+    reply = str(text or "").strip()
+    if not reply or len(reply) > 80:
+        return ""
+    low = reply.lower().strip(" .,!?:;\t\r\n")
+    direct = {
+        "lark": "Lark",
+        "feishu": "Lark",
+        "flybook": "Lark",
+        "lock": "Lark",
+        "log": "Lark",
+        "look": "Lark",
+        "loc": "Lark",
+        "lok": "Lark",
+        "\u98de\u4e66": "Lark",
+        "wechat": "WeChat",
+        "weixin": "WeChat",
+        "we chat": "WeChat",
+        "\u5fae\u4fe1": "WeChat",
+        "chrome": "Chrome",
+        "browser": "Browser",
+        "\u6d4f\u89c8\u5668": "Browser",
+        "calculator": "Calculator",
+        "calc": "Calculator",
+        "\u8ba1\u7b97\u5668": "Calculator",
+    }
+    if low in direct:
+        return direct[low]
+    corrected = correct_voice_entities(f"open {reply}").corrected_text.strip()
+    if corrected.lower().startswith("open "):
+        candidate = corrected[5:].strip()
+        if candidate in {"Lark", "WeChat", "Chrome", "Browser", "Calculator", "VS Code", "Codex"}:
+            return candidate
+    return ""
+
+
+def _pending_work_order_missing_app(work_order: WorkOrder) -> bool:
+    tool = str(work_order.inputs.get("tool") or "").strip()
+    if tool not in {"mcp:windows_open_app", "mcp:windows_close_app", "mcp:windows_switch_app"}:
+        return False
+    target = work_order.inputs.get("target")
+    if isinstance(target, dict):
+        if str(target.get("name") or target.get("app") or "").strip():
+            return False
+    raw_input = str(work_order.inputs.get("work_order_input") or "")
+    if raw_input:
+        try:
+            payload = json.loads(raw_input)
+        except Exception:
+            payload = {}
+        if isinstance(payload, dict) and str(payload.get("app") or payload.get("name") or "").strip():
+            return False
+    return True
+
+
+def _fill_pending_app_slot(work_order: WorkOrder, *, app_name: str, heard_as: str) -> None:
+    target = work_order.inputs.get("target")
+    target = dict(target) if isinstance(target, dict) else {}
+    target.update({"type": "app", "name": app_name, "source": "pending_slot_reply", "heard_as": str(heard_as or "")})
+    work_order.inputs["target"] = target
+    work_order.inputs["work_order_input"] = json.dumps({"app": app_name}, ensure_ascii=False)
+    intent = str(work_order.inputs.get("intent") or "open_app").strip() or "open_app"
+    work_order.task = f"{intent} {app_name}"
+    _remember_pending_slot_entity_alias(kind="app", canonical=app_name, heard_as=heard_as)
+
+
+def _resolve_pending_message_slot_reply(text: str, work_order: WorkOrder) -> dict[str, str]:
+    tool_id = str(work_order.inputs.get("tool") or "").strip()
+    if not any(token in tool_id.lower() for token in ("lark", "send", "message", "smtp")):
+        return {}
+    gap = _message_send_slot_gap(work_order, tool_id)
+    if not gap:
+        return {}
+    reply = str(text or "").strip()
+    if not reply or len(reply) > 300:
+        return {}
+    patch: dict[str, str] = {}
+    if gap == "recipient":
+        recipient = _resolve_builtin_message_recipient_choice(reply)
+        if not recipient:
+            recipient = _extract_direct_recipient_reply(reply)
+        if recipient:
+            patch["recipient"] = recipient
+    if gap == "message":
+        message = _extract_direct_message_reply(reply)
+        if message:
+            patch["message"] = message
+    return patch
+
+
+def _fill_pending_message_slot(work_order: WorkOrder, *, patch: dict[str, str], heard_as: str) -> None:
+    payload = _work_order_payload_obj(work_order)
+    if patch.get("recipient"):
+        payload["recipients_json"] = json.dumps([patch["recipient"]], ensure_ascii=False)
+        payload["recipient"] = patch["recipient"]
+        _remember_pending_slot_entity_alias(kind="contact", canonical=patch["recipient"], heard_as=heard_as)
+    if patch.get("message"):
+        payload["message"] = patch["message"]
+    payload["slot_reply_heard_as"] = str(heard_as or "")
+    target = work_order.inputs.get("target")
+    target = dict(target) if isinstance(target, dict) else {}
+    if patch.get("recipient"):
+        target["recipients"] = [patch["recipient"]]
+        target["recipient_source"] = "builtin_contact_choice" if _is_builtin_message_recipient(patch["recipient"]) else "pending_slot_reply"
+    if patch.get("message"):
+        target["message"] = patch["message"]
+        target["message_source"] = "pending_slot_reply"
+    target["slot_reply_heard_as"] = str(heard_as or "")
+    work_order.inputs["target"] = target
+    work_order.inputs["work_order_input"] = json.dumps(
+        {
+            "recipients_json": payload.get("recipients_json", "[]"),
+            "message": str(payload.get("message") or ""),
+            "max_attempts": int(payload.get("max_attempts") or 2),
+        },
+        ensure_ascii=False,
+    )
+    work_order.task = "message_send"
+
+
+def _remember_pending_slot_entity_alias(*, kind: str, canonical: str, heard_as: str) -> None:
+    alias = str(heard_as or "").strip().strip(" .,!?:;\t\r\n")
+    if not alias or not canonical:
+        return
+    if alias.lower() == str(canonical).lower():
+        return
+    if alias.lower() in {"1", "2", "3", "a", "b", "c", "yes", "no", "\u662f", "\u5426", "\u5bf9"}:
+        return
+    if len(alias) > 60:
+        return
+    if not re.search(r"[A-Za-z\u4e00-\u9fff]", alias):
+        return
+    try:
+        teach_alias(kind, canonical, alias, source="pending_slot_confirmed")
+    except Exception:
+        logger.debug("pending slot alias memory skipped kind=%s canonical=%s alias=%s", kind, canonical, alias, exc_info=True)
+
+
+def _builtin_message_recipient_options() -> list[tuple[str, str, str]]:
+    try:
+        from l3_node.message_contacts import message_contact_options
+
+        return message_contact_options()
+    except Exception:
+        return [
+            ("1", "A", "Neil"),
+            ("2", "B", "Vivian"),
+            ("3", "C", "测试备注冒烟草稿"),
+        ]
+
+
+def _resolve_builtin_message_recipient_choice(text: str) -> str:
+    normalized = str(text or "").strip().lower().strip(" .,!?:;\t\r\n。！？、，；：")
+    normalized = normalized.replace("选项", "").replace("第", "").replace("个", "").strip()
+    cn_digits = {"一": "1", "二": "2", "三": "3"}
+    normalized = cn_digits.get(normalized, normalized)
+    for number, letter, name in _builtin_message_recipient_options():
+        if normalized in {number.lower(), letter.lower(), name.lower()}:
+            return name
+    try:
+        from l3_node.message_contacts import message_contact_alias_map
+
+        direct_aliases = message_contact_alias_map()
+    except Exception:
+        direct_aliases = {
+            "n": "Neil",
+            "new": "Neil",
+            "neil": "Neil",
+            "v": "Vivian",
+            "vivian": "Vivian",
+            "测试群": "测试备注冒烟草稿",
+            "群": "测试备注冒烟草稿",
+            "群聊": "测试备注冒烟草稿",
+            "测试备注": "测试备注冒烟草稿",
+            "测试备注冒烟草稿": "测试备注冒烟草稿",
+        }
+    return direct_aliases.get(normalized, "")
+
+
+def _is_builtin_message_recipient(name: str) -> bool:
+    return any(name == option[2] for option in _builtin_message_recipient_options())
+
+
+def _extract_direct_recipient_reply(text: str) -> str:
+    reply = str(text or "").strip().strip(" .,!?:;\t\r\n。！？、，；：")
+    match = re.search(r"(?:发给|发送给|给|找|联系人是|收件人是)\s*([A-Za-z][A-Za-z0-9_.-]{1,40}|[\u4e00-\u9fff]{2,20})", reply, re.I)
+    if match:
+        return match.group(1).strip(" .,!?:;\t\r\n。！？、，；：")
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{1,40}|[\u4e00-\u9fff]{2,20}", reply):
+        return reply
+    return ""
+
+
+def _extract_direct_message_reply(text: str) -> str:
+    reply = str(text or "").strip().strip(" \t\r\n")
+    match = re.search(r"(?:内容|消息|正文)\s*(?:是|为|改成|改为|:|：)?\s*(.+)$", reply, re.I)
+    if match:
+        reply = match.group(1)
+    reply = reply.strip(" .,!?:;\t\r\n。！？、，；：\"'“”‘’")
+    if not reply or _resolve_builtin_message_recipient_choice(reply):
+        return ""
+    return reply
 
 
 def _log_role_agent_prompt(
@@ -583,19 +1126,48 @@ def _inject_upstream_into_work_order(work_order: WorkOrder, upstream_observation
         if urls:
             payload["urls"] = urls[:3]
     if tool == "mcp:windows_lark_send_message":
+        delivery_context_found = False
         summary_message = _extract_message_from_upstream(upstream_observations)
         if summary_message:
             payload["message"] = summary_message
+            delivery_context_found = True
         summary_quality = _extract_summary_quality_from_upstream(upstream_observations)
         if summary_quality:
             payload["quality_report"] = summary_quality
+            delivery_context_found = True
         summary_sources = _extract_summary_sources_from_upstream(upstream_observations)
         if summary_sources:
             payload["sources"] = summary_sources
-        payload.setdefault("delivery_mode", _extract_delivery_mode_from_upstream(upstream_observations, payload))
-        payload.setdefault("dry_run", payload.get("delivery_mode") != "live_run")
-        payload.setdefault("send_allowed", payload.get("delivery_mode") == "live_run")
+            delivery_context_found = True
+        if delivery_context_found or any(
+            _observation_has_delivery_context(item) for item in upstream_observations or []
+        ):
+            payload.setdefault("delivery_mode", _extract_delivery_mode_from_upstream(upstream_observations, payload))
+            payload.setdefault("dry_run", payload.get("delivery_mode") != "live_run")
+            payload.setdefault("send_allowed", payload.get("delivery_mode") == "live_run")
     work_order.inputs["work_order_input"] = json.dumps(payload, ensure_ascii=False)
+
+
+def _observation_has_delivery_context(item: dict[str, Any]) -> bool:
+    text = str(item.get("observation") or "")
+    try:
+        obj = json.loads(text)
+    except Exception:
+        return False
+    if not isinstance(obj, dict):
+        return False
+    return any(
+        key in obj
+        for key in (
+            "delivery_mode",
+            "dry_run",
+            "send_allowed",
+            "quality_report",
+            "sources",
+            "summary",
+            "message",
+        )
+    )
 
 
 def _extract_message_from_upstream(upstream_observations: list[dict[str, Any]]) -> str:
@@ -699,6 +1271,147 @@ def _direct_reply_from_contract(contract: DecisionContract, work_order: WorkOrde
         },
     )()
     return _planned_direct_reply(pseudo_plan, ok, observation)
+
+
+def _message_send_slot_gap(work_order: WorkOrder, tool_id: str) -> str:
+    low_tool = str(tool_id or work_order.inputs.get("tool") or "").lower()
+    if not any(token in low_tool for token in ("lark", "send", "message", "smtp")):
+        return ""
+    payload = _work_order_payload_obj(work_order)
+    if not _payload_recipients(payload):
+        return "recipient"
+    if not _payload_message(payload):
+        return "message"
+    return ""
+
+
+def _first_message_send_slot_gap(
+    work_orders: list[WorkOrder],
+    *,
+    contract: DecisionContract,
+) -> tuple[WorkOrder | None, str, str]:
+    for item in work_orders:
+        tool_id = str(
+            item.inputs.get("tool")
+            or (item.tool_policy.allowed_tools[0] if item.tool_policy.allowed_tools else "")
+            or (contract.tool_policy.allowed_tools[0] if contract.tool_policy.allowed_tools else "")
+        ).strip()
+        gap = _message_send_slot_gap(item, tool_id)
+        if gap:
+            return item, tool_id, gap
+    return None, "", ""
+
+
+
+
+def _message_send_slot_gap_reply(
+    slot_gap: str,
+    *,
+    contract: DecisionContract | None = None,
+    work_order: WorkOrder | None = None,
+) -> str:
+    if slot_gap == "recipient":
+        options = "; ".join(
+            f"{number}/{letter} = {name}" for number, letter, name in _builtin_message_recipient_options()
+        )
+        text = f"我还不知道这条消息要发给谁。请选择联系人，或直接回复编号/字母：{options}。"
+        if contract is not None and work_order is not None:
+            text = _with_pending_slot_choice_ui_protocol(
+                text,
+                contract=contract,
+                work_order=work_order,
+                slot="recipient",
+            )
+            text = _with_execution_trace_ui(
+                text,
+                status="waiting_user",
+                contract=contract,
+                work_order=work_order,
+                tool_id=str(work_order.inputs.get("tool") or ""),
+                ok=False,
+                reason="missing_message_recipient",
+            )
+        return text
+    if slot_gap == "message":
+        return "我还不知道要发送什么内容。请补充消息正文，例如：内容是你好。"
+    return "这条消息还缺少必要信息，请补充联系人和消息内容。"
+
+
+def _with_pending_slot_choice_ui_protocol(
+    text: str,
+    *,
+    contract: DecisionContract,
+    work_order: WorkOrder,
+    slot: str,
+) -> str:
+    choices = []
+    for number, letter, name in _builtin_message_recipient_options():
+        choices.append(
+            {
+                "id": f"{number}/{letter}",
+                "label": name,
+                "value": name,
+                "send_text": name,
+                "description": f"选择 {name} 作为收件人并继续执行这条消息任务",
+            }
+        )
+    payload = {
+        "type": "pending_confirmation",
+        "interaction_kind": "slot_choice",
+        "slot": slot,
+        "decision_id": contract.decision_id,
+        "work_order_id": work_order.work_order_id,
+        "task_type": contract.task_type,
+        "risk_level": contract.risk_level.value,
+        "tool": work_order.inputs.get("tool"),
+        "cancel_text": "取消",
+        "choices": choices,
+    }
+    marker = f"<!-- jachin-ui:pending-confirmation {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))} -->"
+    return f"{text.rstrip()}\n\n{marker}"
+
+
+def _work_order_payload_obj(work_order: WorkOrder) -> dict[str, Any]:
+    raw = work_order.inputs.get("work_order_input")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            obj = json.loads(raw)
+            if isinstance(obj, dict):
+                merged = dict(work_order.inputs or {})
+                merged.update(obj)
+                return merged
+        except Exception:
+            pass
+    return dict(work_order.inputs or {})
+
+
+def _payload_recipients(payload: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    for key in ("recipient", "recipients", "recipients_json", "chat_id", "chat_ids", "to", "user", "users"):
+        value = payload.get(key)
+        if key == "recipients_json" and isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, list):
+                    out.extend(str(item).strip() for item in parsed if str(item).strip())
+                elif str(parsed).strip():
+                    out.append(str(parsed).strip())
+            except Exception:
+                if value.strip():
+                    out.append(value.strip())
+        elif isinstance(value, str) and value.strip():
+            out.append(value.strip())
+        elif isinstance(value, list):
+            out.extend(str(item).strip() for item in value if str(item).strip())
+    return [item for item in out if item]
+
+
+def _payload_message(payload: dict[str, Any]) -> str:
+    for key in ("message", "text", "content", "body", "summary"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _calculator_result_reply(target_obj: dict[str, Any], observation: str) -> str:

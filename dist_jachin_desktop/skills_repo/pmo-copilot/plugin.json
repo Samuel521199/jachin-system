@@ -25,5 +25,57 @@
     "business-skill"
   ],
   "type": "SKILL",
-  "version": "1.0.0"
+  "version": "1.0.0",
+  "recovery_playbook": {
+    "targets": [
+      {
+        "id": "pmo_skill_end_to_end",
+        "role_agent": "ToolExecutionAgent",
+        "tools": [
+          "core:pmo_*",
+          "mcp:atom_lark_notifier",
+          "*pmo*"
+        ],
+        "max_attempts": 5,
+        "steps": [
+          {
+            "strategy": "refresh_pmo_runtime_data",
+            "tool": "core:pmo_mirror_import",
+            "when": {
+              "failure_any": [
+                "manifest_not_found",
+                "stale_manifest",
+                "missing_raw_records",
+                "table_empty"
+              ]
+            },
+            "action_patch": {
+              "refresh_manifest": true,
+              "recovery_strategy": "refresh_pmo_runtime_data"
+            },
+            "rationale": "PMO skill should refresh its local mirror before retrying report generation when source data is missing",
+            "priority": 10
+          },
+          {
+            "strategy": "preview_report_before_delivery_retry",
+            "tool": "core:pmo_macro_dashboard_preview",
+            "when": {
+              "failure_any": [
+                "lark_send_failed",
+                "delivery_unverified",
+                "message_post_send_verification_missing",
+                "push_failed"
+              ]
+            },
+            "action_patch": {
+              "dry_run": true,
+              "recovery_strategy": "preview_report_before_delivery_retry"
+            },
+            "rationale": "split PMO generation from Lark delivery so recovery can diagnose the failing stage",
+            "priority": 20
+          }
+        ]
+      }
+    ]
+  }
 }

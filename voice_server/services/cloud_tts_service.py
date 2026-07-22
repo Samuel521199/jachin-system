@@ -16,6 +16,35 @@ import requests
 
 logger = logging.getLogger("jachin.voice_server.cloud_tts")
 
+_DASHSCOPE_TTS_CLOSE_PATCHED = False
+
+
+def _patch_dashscope_tts_close_callback(speech_synthesizer_cls: Any) -> None:
+    """Make DashScope TTS close callbacks tolerant of websocket-client versions."""
+    global _DASHSCOPE_TTS_CLOSE_PATCHED
+    if _DASHSCOPE_TTS_CLOSE_PATCHED:
+        return
+    original = getattr(speech_synthesizer_cls, "on_close", None)
+    if original is None or getattr(original, "_jachin_close_compat", False):
+        _DASHSCOPE_TTS_CLOSE_PATCHED = True
+        return
+
+    def _on_close_compat(self: Any, *args: Any, **kwargs: Any) -> Any:
+        ws = args[0] if len(args) >= 1 else None
+        close_status_code = args[1] if len(args) >= 2 else None
+        close_msg = args[2] if len(args) >= 3 else None
+        try:
+            return original(self, ws, close_status_code, close_msg, **kwargs)
+        except TypeError as exc:
+            if "close_status_code" not in str(exc) and "close_msg" not in str(exc):
+                raise
+            logger.debug("DashScope TTS close callback compatibility swallowed TypeError: %s", exc)
+            return None
+
+    _on_close_compat._jachin_close_compat = True  # type: ignore[attr-defined]
+    setattr(speech_synthesizer_cls, "on_close", _on_close_compat)
+    _DASHSCOPE_TTS_CLOSE_PATCHED = True
+
 
 @dataclass
 class CloudTtsResult:
@@ -79,7 +108,9 @@ class CloudTtsService:
             return False
         try:
             import dashscope  # type: ignore
+            from dashscope.audio.tts_v2 import SpeechSynthesizer  # type: ignore
 
+            _patch_dashscope_tts_close_callback(SpeechSynthesizer)
             dashscope.api_key = self.api_key
             dashscope.base_http_api_url = self.http_api_base
             return True
@@ -329,6 +360,7 @@ class CloudTtsService:
         import dashscope  # type: ignore
         from dashscope.audio.tts_v2 import AudioFormat, SpeechSynthesizer  # type: ignore
 
+        _patch_dashscope_tts_close_callback(SpeechSynthesizer)
         dashscope.api_key = self.api_key
         fmt = self._tts_v2_format(AudioFormat)
         synthesizer = SpeechSynthesizer(
@@ -484,7 +516,7 @@ class CloudTtsService:
                 events.put({"type": "error", "message": str(message), "model": model, "requested_model": requested_model})
                 events.put(None)
 
-            def on_close(self) -> None:
+            def on_close(self, *_args: Any, **_kwargs: Any) -> None:
                 events.put({"type": "close"})
                 events.put(None)
 
@@ -613,8 +645,10 @@ class CloudTtsService:
 
     def _ensure_synthesizer_pool(self, ws_url: str | None) -> Any:
         import dashscope  # type: ignore
+        from dashscope.audio.tts_v2 import SpeechSynthesizer  # type: ignore
         from dashscope.audio.tts_v2.speech_synthesizer import SpeechSynthesizerObjectPool  # type: ignore
 
+        _patch_dashscope_tts_close_callback(SpeechSynthesizer)
         dashscope.api_key = self.api_key
         if ws_url:
             try:
@@ -859,9 +893,9 @@ class CloudTtsService:
     @staticmethod
     def _prewarm_min_interval_seconds() -> float:
         try:
-            return max(0.0, min(600.0, float(os.getenv("JACHIN_TTS_PREWARM_MIN_INTERVAL_SEC", "20"))))
+            return max(0.0, min(600.0, float(os.getenv("JACHIN_TTS_PREWARM_MIN_INTERVAL_SEC", "120"))))
         except Exception:
-            return 20.0
+            return 120.0
 
     @staticmethod
     def _ws_open_warn_ms() -> int:

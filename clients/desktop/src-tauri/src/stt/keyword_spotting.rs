@@ -25,10 +25,12 @@ impl WakeWordDetector {
         if std::env::var("JACHIN_AUTO_WAKE_LISTENER").ok().as_deref() == Some("1") {
             return true;
         }
-        crate::config::UserSettings::load()
-            .sprite_voice_mode
-            .as_deref()
-            == Some("wake_up")
+        matches!(
+            crate::config::UserSettings::load()
+                .sprite_voice_mode
+                .as_deref(),
+            Some("wake_up") | Some("continuous")
+        )
     }
 
     #[allow(dead_code)]
@@ -36,20 +38,35 @@ impl WakeWordDetector {
         if !Self::should_auto_start() {
             return;
         }
-        let word = crate::config::UserSettings::load()
+        let settings = crate::config::UserSettings::load();
+        let word = settings
             .wake_word
             .filter(|s| !s.trim().is_empty());
+        let mode = settings
+            .sprite_voice_mode
+            .filter(|m| m == "continuous")
+            .unwrap_or_else(|| "wake_up".to_string());
         crate::l3_spawn::write_voice_companion_debug(
             "rust",
             "wake.auto_start",
             word.as_deref().unwrap_or("Jachin"),
-            "",
+            &format!("mode={}", mode),
         );
-        Self::start(app, word);
+        Self::start_with_mode(app, word, mode);
     }
 
+    #[allow(dead_code)]
     pub fn start(app: AppHandle, wake_word: Option<String>) {
+        Self::start_with_mode(app, wake_word, "wake_up".to_string());
+    }
+
+    pub fn start_with_mode(app: AppHandle, wake_word: Option<String>, mode: String) {
         let _ = &app;
+        let mode = if mode.trim().eq_ignore_ascii_case("continuous") {
+            "continuous".to_string()
+        } else {
+            "wake_up".to_string()
+        };
         let word = wake_word
             .filter(|s| !s.trim().is_empty())
             .or_else(|| {
@@ -65,12 +82,14 @@ impl WakeWordDetector {
         #[cfg(feature = "ambient")]
         {
             if let Some(state) = app.try_state::<super::wake_listener::WakeListenerState>() {
-                if let Err(e) = state.start(app.clone(), word) {
+                if let Err(e) = state.start(app.clone(), word, mode) {
                     eprintln!("[Wake] start failed: {}", e);
                 }
                 return;
             }
         }
+        #[cfg(not(feature = "ambient"))]
+        let _ = &mode;
 
         if WAKE_LISTENER_RUNNING.swap(true, Ordering::SeqCst) {
             return;

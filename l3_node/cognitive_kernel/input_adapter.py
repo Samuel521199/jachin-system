@@ -81,37 +81,189 @@ def adapt_input_for_cognitive_kernel(
     normalized_text = str(user_input or raw_text or "").strip()
     confidence = _confidence_from_context(companion)
     adapter_steps: list[dict[str, Any]] = []
+    voice_endpoint_payload: dict[str, Any] = {}
     voice_normalization_payload: dict[str, Any] = {}
+    voice_guard_payload: dict[str, Any] = {}
+    voice_interruption_payload: dict[str, Any] = {}
+    voice_replan_payload: dict[str, Any] = {}
     changed = False
+    companion.setdefault("session_id", session_id)
+    companion.setdefault("channel", channel)
 
     if source == InputSource.VOICE:
         try:
-            from l3_node.voice_language_normalizer import normalize_voice_language_input
+            from l3_node.voice_session_endpointing import evaluate_voice_session_endpoint
 
-            voice_result = normalize_voice_language_input(
-                user_input or raw_text,
+            endpoint = evaluate_voice_session_endpoint(
+                raw_text or normalized_text,
+                voice_context=companion,
+                run_id=turn_id,
                 session_id=session_id,
                 channel=channel,
-                voice_context=companion,
             )
-            raw_text = voice_result.raw_text or raw_text
-            normalized_text = voice_result.normalized_text or normalized_text
-            changed = bool(voice_result.changed)
-            voice_normalization_payload = voice_result.to_dict()
+            voice_endpoint_payload = endpoint.to_dict()
+            companion["voice_session_endpoint"] = voice_endpoint_payload
             adapter_steps.append(
                 {
-                    "name": "voice_language_normalizer",
-                    "changed": voice_result.changed,
-                    "pending_confirmation_detected": voice_result.pending_confirmation_detected,
-                    "pending_cancellation_detected": voice_result.pending_cancellation_detected,
-                    "correction_count": len(voice_result.correction.corrections),
-                    "suspect_count": len(voice_result.correction.suspect_tokens),
+                    "name": "voice_session_endpointing",
+                    "action": endpoint.action,
+                    "reason_code": endpoint.reason_code,
+                    "should_continue_planning": endpoint.should_continue_planning,
+                    "merged_from_pending": endpoint.merged_from_pending,
+                    "confidence": endpoint.confidence,
                 }
             )
-            _write_voice_result_to_context(companion, voice_result)
+            if endpoint.effective_text:
+                raw_text = endpoint.effective_text
+                normalized_text = endpoint.effective_text
+                companion["voice_session_effective_text"] = endpoint.effective_text
+                companion["voice_final_text"] = endpoint.effective_text
+            if not endpoint.should_continue_planning:
+                voice_guard_payload = {
+                    "action": "drop",
+                    "is_voice": True,
+                    "mode": str(companion.get("voice_interaction_mode") or ""),
+                    "reason_code": f"voice_session_{endpoint.reason_code}",
+                    "confidence": endpoint.confidence,
+                    "should_continue_planning": False,
+                    "should_close_turn": True,
+                    "user_visible_reply": endpoint.user_visible_reply,
+                    "reasons": list(endpoint.reasons),
+                    "evidence": {
+                        "run_id": turn_id,
+                        "input_preview": raw_text[:180],
+                        "voice_session_endpoint": voice_endpoint_payload,
+                        "created_at_ms": int(time.time() * 1000),
+                    },
+                }
+                companion["voice_false_trigger_guard"] = voice_guard_payload
         except Exception as exc:
-            adapter_steps.append({"name": "voice_language_normalizer", "error": type(exc).__name__})
+            adapter_steps.append({"name": "voice_session_endpointing", "error": type(exc).__name__})
+        if voice_guard_payload:
+            normalized_text = raw_text or normalized_text
+        else:
+            try:
+                from l3_node.voice_false_trigger_guard import evaluate_voice_false_trigger
 
+                guard = evaluate_voice_false_trigger(
+                    raw_text or normalized_text,
+                    voice_context=companion,
+                    run_id=turn_id,
+                )
+                voice_guard_payload = guard.to_dict()
+                companion["voice_false_trigger_guard"] = voice_guard_payload
+                adapter_steps.append(
+                    {
+                        "name": "voice_false_trigger_guard",
+                        "action": guard.action,
+                        "reason_code": guard.reason_code,
+                        "should_continue_planning": guard.should_continue_planning,
+                        "confidence": guard.confidence,
+                        "reason_count": len(guard.reasons),
+                    }
+                )
+            except Exception as exc:
+                adapter_steps.append({"name": "voice_false_trigger_guard", "error": type(exc).__name__})
+        if str(voice_guard_payload.get("action") or "allow") != "allow":
+            normalized_text = raw_text or normalized_text
+            if _voice_active_task_present(companion):
+                try:
+                    from l3_node.voice_task_replan import build_voice_task_replan_patch
+
+                    replan_patch = build_voice_task_replan_patch(
+                        raw_text or normalized_text,
+                        voice_context=companion,
+                        interruption_decision=voice_interruption_payload or {},
+                        run_id=turn_id,
+                    )
+                    voice_replan_payload = replan_patch.to_dict()
+                    companion["voice_task_replan_patch"] = voice_replan_payload
+                    adapter_steps.append(
+                        {
+                            "name": "voice_task_replan",
+                            "is_replan": replan_patch.is_replan,
+                            "patch_type": replan_patch.patch_type,
+                            "confidence": replan_patch.confidence,
+                            "requires_confirmation": True,
+                            "guarded": True,
+                            "reason_count": len(replan_patch.reasons),
+                        }
+                    )
+                except Exception as exc:
+                    adapter_steps.append({"name": "voice_task_replan", "error": type(exc).__name__, "guarded": True})
+        else:
+            try:
+                from l3_node.voice_language_normalizer import normalize_voice_language_input
+
+                voice_result = normalize_voice_language_input(
+                    user_input or raw_text,
+                    session_id=session_id,
+                    channel=channel,
+                    voice_context=companion,
+                )
+                raw_text = voice_result.raw_text or raw_text
+                normalized_text = voice_result.normalized_text or normalized_text
+                changed = bool(voice_result.changed)
+                voice_normalization_payload = voice_result.to_dict()
+                adapter_steps.append(
+                    {
+                        "name": "voice_language_normalizer",
+                        "changed": voice_result.changed,
+                        "pending_confirmation_detected": voice_result.pending_confirmation_detected,
+                        "pending_cancellation_detected": voice_result.pending_cancellation_detected,
+                        "correction_count": len(voice_result.correction.corrections),
+                        "suspect_count": len(voice_result.correction.suspect_tokens),
+                    }
+                )
+                _write_voice_result_to_context(companion, voice_result)
+            except Exception as exc:
+                adapter_steps.append({"name": "voice_language_normalizer", "error": type(exc).__name__})
+            try:
+                from l3_node.voice_interruption_agent import classify_voice_interruption
+
+                interruption = classify_voice_interruption(
+                    normalized_text or raw_text,
+                    voice_context=companion,
+                    run_id=turn_id,
+                )
+                voice_interruption_payload = interruption.to_dict()
+                companion["voice_interruption_decision"] = voice_interruption_payload
+                adapter_steps.append(
+                    {
+                        "name": "voice_interruption_agent",
+                        "action": interruption.action,
+                        "should_intercept": interruption.should_intercept,
+                        "should_cancel_run": interruption.should_cancel_run,
+                        "confidence": interruption.confidence,
+                        "reason_count": len(interruption.reasons),
+                    }
+                )
+                if interruption.action == "modify_current_task" or _voice_active_task_present(companion):
+                    try:
+                        from l3_node.voice_task_replan import build_voice_task_replan_patch
+
+                        replan_patch = build_voice_task_replan_patch(
+                            normalized_text or raw_text,
+                            voice_context=companion,
+                            interruption_decision=voice_interruption_payload,
+                            run_id=turn_id,
+                        )
+                        voice_replan_payload = replan_patch.to_dict()
+                        companion["voice_task_replan_patch"] = voice_replan_payload
+                        adapter_steps.append(
+                            {
+                                "name": "voice_task_replan",
+                                "is_replan": replan_patch.is_replan,
+                                "patch_type": replan_patch.patch_type,
+                                "confidence": replan_patch.confidence,
+                                "requires_confirmation": replan_patch.requires_confirmation,
+                                "reason_count": len(replan_patch.reasons),
+                            }
+                        )
+                    except Exception as exc:
+                        adapter_steps.append({"name": "voice_task_replan", "error": type(exc).__name__})
+            except Exception as exc:
+                adapter_steps.append({"name": "voice_interruption_agent", "error": type(exc).__name__})
     companion["input_adapter_applied"] = True
     companion["input_adapter_source"] = source.value
     companion["input_adapter_raw_text"] = raw_text
@@ -134,7 +286,10 @@ def adapt_input_for_cognitive_kernel(
         source=source,
         companion=companion,
         adapter_evidence=adapter_evidence,
+        voice_guard_payload=voice_guard_payload,
         voice_normalization_payload=voice_normalization_payload,
+        voice_interruption_payload=voice_interruption_payload,
+        voice_replan_payload=voice_replan_payload,
     )
     adaptation = CognitiveInputAdaptation(
         turn_id=turn_id,
@@ -149,8 +304,28 @@ def adapt_input_for_cognitive_kernel(
         modality_evidence=modality_evidence,
         adapter_evidence=adapter_evidence,
     )
+    try:
+        from l3_node.voice_evidence_agent import record_voice_evidence_snapshot
+
+        record_voice_evidence_snapshot(
+            turn_id=turn_id,
+            stage="input_adapted",
+            companion=companion,
+            adaptation=adaptation,
+            extra={"channel": channel, "session_id": session_id},
+        )
+    except Exception:
+        pass
     _append_input_adapter_event(adaptation)
     return adaptation
+
+
+def _voice_active_task_present(companion: dict[str, Any]) -> bool:
+    active = companion.get("voice_active_task_context")
+    if not isinstance(active, dict):
+        return False
+    tasks = active.get("active_tasks")
+    return isinstance(tasks, list) and any(isinstance(item, dict) for item in tasks)
 
 
 def _adaptation_from_context(
@@ -189,7 +364,10 @@ def _adaptation_from_context(
             source=source,
             companion=companion,
             adapter_evidence=adapter_evidence,
+            voice_guard_payload=companion.get("voice_false_trigger_guard") or {},
             voice_normalization_payload=companion.get("voice_language_normalization") or {},
+            voice_interruption_payload=companion.get("voice_interruption_decision") or {},
+            voice_replan_payload=companion.get("voice_task_replan_patch") or {},
         ),
         adapter_evidence=adapter_evidence,
     )
@@ -271,15 +449,27 @@ def _modality_evidence_for(
     source: InputSource,
     companion: dict[str, Any],
     adapter_evidence: dict[str, Any],
+    voice_guard_payload: dict[str, Any],
     voice_normalization_payload: dict[str, Any],
+    voice_interruption_payload: dict[str, Any],
+    voice_replan_payload: dict[str, Any],
 ) -> dict[str, Any]:
     evidence: dict[str, Any] = {"input_adapter": adapter_evidence}
     if companion:
         evidence["desktop_companion"] = dict(companion)
     if source == InputSource.VOICE:
         evidence["voice"] = dict(companion)
+        if voice_guard_payload:
+            evidence["voice_false_trigger_guard"] = voice_guard_payload
         if voice_normalization_payload:
             evidence["voice_language_normalization"] = voice_normalization_payload
+        if voice_interruption_payload:
+            evidence["voice_interruption"] = voice_interruption_payload
+        if voice_replan_payload:
+            evidence["voice_task_replan"] = voice_replan_payload
+        endpoint_payload = companion.get("voice_session_endpoint")
+        if isinstance(endpoint_payload, dict):
+            evidence["voice_session_endpoint"] = endpoint_payload
     return evidence
 
 

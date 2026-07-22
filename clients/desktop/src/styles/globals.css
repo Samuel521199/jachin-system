@@ -12,14 +12,6 @@ body:has(#chat-root),
   background: transparent !important;
 }
 
-/* HUD 窗口：使用稳定选择器强制透明，不依赖 :has 兼容性 */
-body#hud-body,
-#hud-root {
-  background-color: transparent !important;
-  background-image: none !important;
-  background: transparent !important;
-}
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -173,13 +165,6 @@ body#hud-body,
       linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
     background-size: 100% 100%, 24px 24px, 24px 24px;
     background-position: 0 0, 0 0, 0 0;
-  }
-
-  /* HUD 页面不允许 body 铺任何实体背景 */
-  body#hud-body {
-    background-color: transparent !important;
-    background-image: none !important;
-    background: transparent !important;
   }
 
   /* 代码/日志类文本强制等宽 */
@@ -1578,40 +1563,4 @@ body#hud-body,
       inset 0 0 0 1px rgba(255, 255, 255, 0.05),
       0 0 20px rgba(34, 211, 238, 0.2);
   }
-}
-
-/* ═══════════════════════════════════════════════════
-   COMPANION MODE STYLES — 仅在陪伴态生效（CSS 沙盒 SSOT）
-   改此区块前：确认大窗模式下不受影响
-   改其他 CSS 前：确认不覆盖 body.companion-mode 选择器
-   详见 docs/COMPANION_UI_REGRESSION_ROOT_CAUSE_ANALYSIS.md §14.8 B-1
-   ═══════════════════════════════════════════════════ */
-
-html.companion-mode,
-body.companion-mode,
-html.companion-mode body {
-  overflow: visible !important;
-}
-
-body.companion-mode #chat-root {
-  overflow: visible !important;
-  max-height: none !important;
-  min-height: 0 !important;
-  height: 100% !important;
-  flex: 1 1 0 !important;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-start;
-}
-
-body.companion-mode #chat-root > [data-companion-shell] {
-  overflow: visible !important;
-  min-height: 100% !important;
-  flex: 0 0 auto !important;
-  height: auto !important;
-}
-
-body.companion-mode [data-companion-root] {
-  overflow: visible !important;
 }

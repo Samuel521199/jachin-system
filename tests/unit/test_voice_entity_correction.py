@@ -71,9 +71,36 @@ def test_voice_correction_app_aliases_feed_app_control() -> None:
 def test_voice_correction_exports_hotwords() -> None:
     hotwords = export_hotwords()
 
-    assert hotwords["Lark"] >= 20
-    assert hotwords["Vivian"] >= 20
-    assert hotwords["Jachin"] >= 15
+    assert hotwords["Lark"] >= 60
+    assert hotwords["Vivian"] >= 80
+    assert hotwords["Neil"] >= 80
+    assert hotwords["\u5c3c\u5c14"] >= 60
+    assert hotwords["Jachin"] >= 35
+
+
+def test_voice_message_send_extracts_trailing_neil_recipient() -> None:
+    utterance = "\u53d1\u9001\u4f60\u597d\u7ed9Neil"
+
+    intent = parse_mission_intent(utterance)
+
+    assert intent.task_type == MissionTaskType.LARK_MESSAGE_SEND
+    assert intent.slots.recipients == ["Neil"]
+    assert intent.slots.message == "\u4f60\u597d"
+    assert intent.missing_slots == []
+
+
+def test_voice_message_send_blocks_generic_misheard_recipient() -> None:
+    utterance = "\u53d1\u9001\u4f60\u597d\u7ed9\u5973\u53cb"
+
+    correction = correct_voice_entities(utterance)
+    intent = parse_mission_intent(utterance)
+
+    assert any(s.reason == "ambiguous_generic_contact_recipient" for s in correction.suspect_tokens)
+    assert intent.task_type == MissionTaskType.LARK_MESSAGE_SEND
+    assert intent.slots.recipients == []
+    assert intent.slots.message == "\u4f60\u597d"
+    assert "recipients" in intent.missing_slots
+    assert "ambiguous_generic_voice_recipient_blocked" in intent.reasoning
 
 
 def test_lark_message_plan_auto_executes_when_slots_are_complete() -> None:

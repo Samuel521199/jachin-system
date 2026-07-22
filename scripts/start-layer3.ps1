@@ -57,6 +57,50 @@ Set-Location $ProjectRoot
 $script:Layer3ExitCode = 0
 $script:L3SourceChild = $null
 $script:TauriDevChild = $null
+$script:Layer3ConsoleInputMode = $null
+
+function Initialize-Layer3ConsoleStateSnapshot {
+    try {
+        if (-not ("JachinConsoleModeNative" -as [type])) {
+            Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class JachinConsoleModeNative {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr GetStdHandle(int nStdHandle);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out int lpMode);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool SetConsoleMode(IntPtr hConsoleHandle, int dwMode);
+}
+"@ -ErrorAction SilentlyContinue
+        }
+        $handle = [JachinConsoleModeNative]::GetStdHandle(-10)
+        $mode = 0
+        if ([JachinConsoleModeNative]::GetConsoleMode($handle, [ref]$mode)) {
+            $script:Layer3ConsoleInputMode = $mode
+        }
+    } catch {
+        $script:Layer3ConsoleInputMode = $null
+    }
+}
+
+function Restore-Layer3ConsoleState {
+    try { [Console]::TreatControlCAsInput = $false } catch { }
+    try {
+        if ($null -ne $script:Layer3ConsoleInputMode -and ("JachinConsoleModeNative" -as [type])) {
+            $handle = [JachinConsoleModeNative]::GetStdHandle(-10)
+            [void][JachinConsoleModeNative]::SetConsoleMode($handle, [int]$script:Layer3ConsoleInputMode)
+        }
+    } catch { }
+    try {
+        if ($Host.Name -eq "ConsoleHost" -and (Get-Module PSReadLine -ErrorAction SilentlyContinue)) {
+            Import-Module PSReadLine -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
+}
+
+Initialize-Layer3ConsoleStateSnapshot
 
 function Select-Layer3RunMode {
     param([string]$RequestedMode)
@@ -129,6 +173,26 @@ function Wait-Layer3PauseIfNeeded {
         Write-Host "[Layer3] 异常退出，代码: $code" -ForegroundColor Red
     }
     Read-Host "按 Enter 关闭此窗口"
+}
+
+function Stop-Layer3Script {
+    param([int]$Code = 0)
+    $script:Layer3ExitCode = $Code
+    $global:LASTEXITCODE = $Code
+    throw "JACHIN_LAYER3_SCRIPT_STOP:$Code"
+}
+
+function Set-Layer3StopCodeFromError {
+    param([object]$ErrorRecord)
+    $msg = [string]$ErrorRecord
+    if ($msg -notlike "JACHIN_LAYER3_SCRIPT_STOP:*") { return $false }
+    $codeText = $msg.Substring("JACHIN_LAYER3_SCRIPT_STOP:".Length)
+    $codeValue = 0
+    if ([int]::TryParse($codeText, [ref]$codeValue)) {
+        $script:Layer3ExitCode = $codeValue
+        $global:LASTEXITCODE = $codeValue
+    }
+    return $true
 }
 
 # 尽量让传统 conhost 用 UTF-8 代码页输出中文（Windows Terminal 通常已 OK）
@@ -261,7 +325,7 @@ function Ensure-PackagedDist {
     if ($NoPackagedBuild) {
         Write-Host "[Layer3] ERROR: 打包产物不是最新/不完整: $($state.Reason)" -ForegroundColor Red
         Write-Host "[Layer3] 已指定 -NoPackagedBuild，不自动打包。" -ForegroundColor Yellow
-        exit 1
+        Stop-Layer3Script 1
     }
 
     Write-Host "[Layer3] 打包产物需要更新: $($state.Reason)" -ForegroundColor Yellow
@@ -286,13 +350,13 @@ function Ensure-PackagedDist {
     }
     if ($buildExitCode -ne 0) {
         Write-Host "[Layer3] ERROR: build_full.ps1 失败，退出码 $buildExitCode" -ForegroundColor Red
-        exit $buildExitCode
+        Stop-Layer3Script $buildExitCode
     }
 
     $after = Test-PackagedDistCurrent -DistRoot $DistRoot
     if (-not $after.Current) {
         Write-Host "[Layer3] ERROR: 打包后产物仍不可用: $($after.Reason)" -ForegroundColor Red
-        exit 1
+        Stop-Layer3Script 1
     }
     Write-Host "[Layer3] 最新打包产物已就绪: $DistRoot" -ForegroundColor Green
 }
@@ -305,11 +369,11 @@ function Start-PackagedDesktopRuntime {
     $logsDir = Join-Path $DistRoot "logs"
     if (-not (Test-Path -LiteralPath $mainExe)) {
         Write-Host "[Layer3] ERROR: 未找到打包桌面程序: $mainExe" -ForegroundColor Red
-        exit 1
+        Stop-Layer3Script 1
     }
     if (-not (Test-Path -LiteralPath $envPath)) {
         Write-Host "[Layer3] ERROR: 未找到打包 .env: $envPath" -ForegroundColor Red
-        exit 1
+        Stop-Layer3Script 1
     }
     $null = New-Item -ItemType Directory -Force -Path $logsDir
 
@@ -364,14 +428,17 @@ function Start-PackagedDesktopRuntime {
     $proc = [System.Diagnostics.Process]::Start($psi)
     if ($null -eq $proc) {
         Write-Host "[Layer3] ERROR: 打包桌面启动失败" -ForegroundColor Red
-        exit 1
+        Stop-Layer3Script 1
     }
     Write-Host "[Layer3] 打包桌面已启动 pid=$($proc.Id)" -ForegroundColor Green
 }
 
 if ($SourceOnly -and $DesktopOnly) {
     Write-Host "[Layer3] ERROR: use -SourceOnly OR -DesktopOnly, not both." -ForegroundColor Red
-    exit 1
+    $script:Layer3ExitCode = 1
+    $global:LASTEXITCODE = 1
+    Wait-Layer3PauseIfNeeded
+    return
 }
 
 $SelectedRunMode = Select-Layer3RunMode -RequestedMode $RunMode
@@ -379,15 +446,33 @@ Set-Layer3RunModeEnvironment -Mode $SelectedRunMode
 
 if ($SelectedRunMode -eq "packaged" -and -not $SourceOnly) {
     $PackagedDistRoot = Join-Path $ProjectRoot "dist_jachin_desktop"
-    Ensure-PackagedDist -DistRoot $PackagedDistRoot
-    Start-PackagedDesktopRuntime -DistRoot $PackagedDistRoot
-    exit 0
+    try {
+        Ensure-PackagedDist -DistRoot $PackagedDistRoot
+        Start-PackagedDesktopRuntime -DistRoot $PackagedDistRoot
+        $script:Layer3ExitCode = 0
+        $global:LASTEXITCODE = 0
+    } catch {
+        if (-not (Set-Layer3StopCodeFromError $_)) {
+            Write-Host "[Layer3] FATAL: $_" -ForegroundColor Red
+            if ($_.ScriptStackTrace) {
+                Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray
+            }
+            $script:Layer3ExitCode = 1
+            $global:LASTEXITCODE = 1
+        }
+    } finally {
+        Wait-Layer3PauseIfNeeded
+    }
+    return
 }
 
 if ($SelectedRunMode -eq "packaged" -and $SourceOnly) {
     Write-Host "[Layer3] ERROR: 打包运行模式不支持 -SourceOnly，因为 SourceOnly 会回到源码 L3/开发环境。" -ForegroundColor Red
     Write-Host "[Layer3] 请直接使用: .\scripts\start-layer3.ps1 -RunMode packaged" -ForegroundColor Yellow
-    exit 1
+    $script:Layer3ExitCode = 1
+    $global:LASTEXITCODE = 1
+    Wait-Layer3PauseIfNeeded
+    return
 }
 
 $env:JACHIN_APP_ROOT = $ProjectRoot
@@ -497,40 +582,19 @@ function Invoke-InterruptibleNativeProcess {
     $resolved = Resolve-NativeCommandPath $FilePath
     if (-not $resolved) { throw "Command not found: $FilePath" }
 
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    if ($resolved -match '\.(cmd|bat)$') {
-        $quoted = '"' + $resolved + '"'
-        $argLine = ($Arguments | ForEach-Object {
-            $s = [string]$_
-            if ($s -match '[\s"]') { '"' + ($s -replace '"', '\"') + '"' } else { $s }
-        }) -join ' '
-        $psi.FileName = "cmd.exe"
-        $psi.Arguments = "/D /S /C `"$quoted $argLine`""
-    } else {
-        $psi.FileName = $resolved
-        $psi.Arguments = ($Arguments -join ' ')
-    }
-    $psi.WorkingDirectory = $WorkingDirectory
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $false
-
-    $proc = $null
+    $oldLocation = Get-Location
     try {
-        $proc = [System.Diagnostics.Process]::Start($psi)
-        if ($null -eq $proc) { throw "Failed to start $Name" }
-        if ($Name -eq "tauri-dev") { $script:TauriDevChild = $proc }
-        while (-not $proc.HasExited) {
-            Start-Sleep -Milliseconds 500
-        }
-        return $proc.ExitCode
+        Set-Location -LiteralPath $WorkingDirectory
+        & $resolved @Arguments
+        $code = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }
+        return $code
     } catch [System.Management.Automation.PipelineStoppedException] {
-        Stop-Layer3TrackedProcessTree -Process $proc -Name $Name
         throw
     } catch {
-        Stop-Layer3TrackedProcessTree -Process $proc -Name $Name
         throw
     } finally {
-        if ($Name -eq "tauri-dev") { $script:TauriDevChild = $null }
+        try { Set-Location -LiteralPath $oldLocation } catch { }
+        Restore-Layer3ConsoleState
     }
 }
 
@@ -574,6 +638,22 @@ function Get-JvsTtsMissingFiles {
     return $missing
 }
 
+function Get-JvsSvMissingFiles {
+    param([string]$ModelRoot)
+    $missing = @()
+    $svRoot = Join-Path $ModelRoot "sv\speech_campplus_sv_zh-cn_16k-common"
+    $conf = Join-Path $svRoot "configuration.json"
+    $model = Join-Path $svRoot "campplus_cn_common.bin"
+    if (-not (Test-Path -LiteralPath $conf)) { $missing += "SV configuration: $conf" }
+    if (-not (Test-Path -LiteralPath $model)) {
+        $missing += "SV model: $model"
+    } else {
+        $size = (Get-Item -LiteralPath $model).Length
+        if ($size -lt 1048576) { $missing += "SV model too small: $model ($size bytes)" }
+    }
+    return $missing
+}
+
 function Write-JvsTtsNotReady {
     param(
         [object]$Health,
@@ -599,6 +679,26 @@ function Write-JvsTtsNotReady {
     }
 }
 
+function Write-JvsSvNotReady {
+    param(
+        [object]$Health,
+        [string]$ModelRoot,
+        [string[]]$MissingFiles
+    )
+    if ($Health -and $Health.sv_ready) { return }
+    Write-Host "[Layer3] WARN: JVS 声纹模型尚未就绪；常开语音会保持主人声纹 fail-closed，旁人/噪声不会进入任务执行。" -ForegroundColor Yellow
+    Write-Host "  model_root = $ModelRoot" -ForegroundColor Gray
+    if ($Health) {
+        Write-Host "  sv_ready=$($Health.sv_ready) sv_model=$($Health.sv_model) sv_dir=$($Health.sv_dir)" -ForegroundColor Gray
+        if ($Health.sv_load_error) {
+            Write-Host "  sv_load_error = $($Health.sv_load_error)" -ForegroundColor Gray
+        }
+    }
+    foreach ($m in $MissingFiles) {
+        Write-Host "  missing: $m" -ForegroundColor Gray
+    }
+}
+
 function Start-JvsVoiceServer {
     param(
         # start-layer3 一键启动时强制重启 JVS，避免旧进程无 CORS 等修复仍占用 18982
@@ -608,6 +708,7 @@ function Start-JvsVoiceServer {
     $healthUrl = "$baseUrl/health"
     $modelRoot = if ($env:JACHIN_VOICE_MODEL_ROOT) { $env:JACHIN_VOICE_MODEL_ROOT } else { Join-Path $ProjectRoot "data\models\voice" }
     $missingTtsFiles = @(Get-JvsTtsMissingFiles -ModelRoot $modelRoot)
+    $missingSvFiles = @(Get-JvsSvMissingFiles -ModelRoot $modelRoot)
 
     if ($Refresh) {
         Write-Host "[Layer3] 重启 JVS voice_server（18982）以加载当前代码..." -ForegroundColor Cyan
@@ -618,7 +719,8 @@ function Start-JvsVoiceServer {
         try {
             $h = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 3 -ErrorAction Stop
             if ($h.ok -and $h.tts_ready) {
-                Write-Host "[Layer3] JVS 已就绪 ($healthUrl, tts_ready=true)" -ForegroundColor Green
+                Write-Host "[Layer3] JVS 已就绪 ($healthUrl, tts_ready=true, sv_ready=$($h.sv_ready))" -ForegroundColor Green
+                Write-JvsSvNotReady -Health $h -ModelRoot $modelRoot -MissingFiles $missingSvFiles
                 return
             }
             if ($h.ok) {
@@ -656,6 +758,8 @@ function Start-JvsVoiceServer {
             try { $evs[$k] = $de.Value.ToString() } catch { }
         }
         $evs["JACHIN_VOICE_MODEL_ROOT"] = $modelRoot
+        if (-not $evs["JACHIN_VOICE_TORCH_DEVICE"]) { $evs["JACHIN_VOICE_TORCH_DEVICE"] = "auto" }
+        if (-not $evs["JACHIN_VOICE_TTS_EP"]) { $evs["JACHIN_VOICE_TTS_EP"] = "auto" }
         $evs["PYTHONUNBUFFERED"] = "1"
         $evs["PYTHONUTF8"] = "1"
         [void][System.Diagnostics.Process]::Start($psi)
@@ -670,7 +774,8 @@ function Start-JvsVoiceServer {
         try {
             $h = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 3 -ErrorAction Stop
             if ($h.ok -and $h.tts_ready) {
-                Write-Host "[Layer3] JVS 就绪: tts_voice=$($h.tts_voice) model_root=$($h.model_root)" -ForegroundColor Green
+                Write-Host "[Layer3] JVS 就绪: tts_voice=$($h.tts_voice) model_root=$($h.model_root) sv_ready=$($h.sv_ready)" -ForegroundColor Green
+                Write-JvsSvNotReady -Health $h -ModelRoot $modelRoot -MissingFiles $missingSvFiles
                 return
             }
             if ($h.ok) {
@@ -760,7 +865,7 @@ try {
         } else {
             Start-L3SourceForeground -Mode "gateway"
         }
-        exit $script:Layer3ExitCode
+        Stop-Layer3Script $script:Layer3ExitCode
     }
 
     if (-not $SourceOnly) {
@@ -786,7 +891,7 @@ try {
                 $pyExe = Resolve-PythonExePath
                 if (-not $pyExe) {
                     Write-Host "[Layer3] ERROR: python not found in PATH." -ForegroundColor Red
-                    exit 1
+                    Stop-Layer3Script 1
                 }
                 $argList = @("-m", "l3_node")
                 if ($WsOnly) { $argList += "--ws-only" } else { $argList += "--gateway" }
@@ -839,7 +944,7 @@ try {
         $at = [char]64
         if (-not (Test-Path $DesktopDir)) {
             Write-Host "[ERROR] clients\desktop not found. Run: .\scripts\install-layer3.ps1" -ForegroundColor Red
-            exit 1
+            Stop-Layer3Script 1
         }
         if (-not (Test-Path (Join-Path $DesktopDir "node_modules"))) {
             Write-Host "[INFO] Installing dependencies..." -ForegroundColor Yellow
@@ -855,7 +960,7 @@ try {
             & python (Join-Path $ScriptDir "create_l3_stub.py") --if-missing
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "[ERROR] create_l3_stub.py 失败" -ForegroundColor Red
-                exit 1
+                Stop-Layer3Script 1
             }
         } else {
             Write-Host "[Layer3] 打包运行模式：跳过 stub，要求真实 Sidecar。" -ForegroundColor Gray
@@ -876,7 +981,7 @@ try {
                 if ($SelectedRunMode -eq "packaged") {
                     $sidecarHint = Join-Path $ScriptDir "build_l3_sidecar.py"
                     Write-Host "[ERROR] 打包运行模式要求真实 Sidecar，构建失败。请先修复: python $sidecarHint" -ForegroundColor Red
-                    exit 1
+                    Stop-Layer3Script 1
                 }
                 Write-Host ""
                 Write-Host "[Layer3] build failed, trying stub..." -ForegroundColor Yellow
@@ -884,7 +989,7 @@ try {
                 if ($LASTEXITCODE -ne 0) {
                     $sidecarHint = Join-Path $ScriptDir "build_l3_sidecar.py"
                     Write-Host "[ERROR] pip install pyinstaller ; python $sidecarHint" -ForegroundColor Red
-                    exit 1
+                    Stop-Layer3Script 1
                 }
                 $sidecarHint = Join-Path $ScriptDir "build_l3_sidecar.py"
                 Write-Host "[WARN] stub only; full: python $sidecarHint" -ForegroundColor Yellow
@@ -919,8 +1024,10 @@ try {
         Write-Host "[$UtcNow] 发布/签名: 仓库根 npm run publish-desktop-release（见 clients/desktop/package.json）" -ForegroundColor Gray
 
         if (-not $NoAmbient) {
-            $env:JACHIN_AUTO_WAKE_LISTENER = "1"
-            Write-Host "[$UtcNow] 语音唤起: JACHIN_AUTO_WAKE_LISTENER=1（桌面启动后自动监听麦克风）" -ForegroundColor Gray
+            if (-not $env:JACHIN_AUTO_WAKE_LISTENER) {
+                $env:JACHIN_AUTO_WAKE_LISTENER = "0"
+            }
+            Write-Host "[$UtcNow] 语音能力: ambient 已启用；常开麦克风默认关闭，可在控制台开关中开启" -ForegroundColor Gray
             $vadPath = Join-Path (Join-Path (Join-Path $env:LOCALAPPDATA "jachin") "desktop") "data\vad\silero_vad.onnx"
             if (-not (Test-Path -LiteralPath $vadPath)) {
                 Write-Host "[$UtcNow] VAD 模型缺失，自动下载到用户目录..." -ForegroundColor Yellow
@@ -937,36 +1044,49 @@ try {
                 }
             }
         }
-        Push-Location $DesktopDir
-        Ensure-TauriJsonNoBom
-        $tauriPkgDir = $at + "tauri-apps"
-        $tauriBin = Join-Path (Join-Path (Join-Path $DesktopDir "node_modules") $tauriPkgDir) "cli"
-        $hasLocalTauriCli = (Test-Path $tauriBin)
-        $hasGlobalTauri = [bool](Get-Command tauri -ErrorAction SilentlyContinue)
-        $tauriDevScript = if ($NoAmbient) { "tauri:dev" } else { "tauri:dev:ambient" }
-        if ($NoAmbient) {
-            Write-Host "[$UtcNow] Tauri: npm run tauri:dev（未启用 ambient，无 VAD/语音唤起）" -ForegroundColor Yellow
-        } else {
-            Write-Host "[$UtcNow] Tauri: npm run tauri:dev:ambient（VAD + 语音唤起）" -ForegroundColor Gray
+        $desktopLocationPushed = $false
+        try {
+            Push-Location $DesktopDir
+            $desktopLocationPushed = $true
+            Ensure-TauriJsonNoBom
+            $tauriPkgDir = $at + "tauri-apps"
+            $tauriBin = Join-Path (Join-Path (Join-Path $DesktopDir "node_modules") $tauriPkgDir) "cli"
+            $hasLocalTauriCli = (Test-Path $tauriBin)
+            $hasGlobalTauri = [bool](Get-Command tauri -ErrorAction SilentlyContinue)
+            $tauriDevScript = if ($NoAmbient) { "tauri:dev" } else { "tauri:dev:ambient" }
+            if ($NoAmbient) {
+                Write-Host "[$UtcNow] Tauri: npm run tauri:dev（未启用 ambient，无 VAD/语音唤起）" -ForegroundColor Yellow
+            } else {
+                Write-Host "[$UtcNow] Tauri: npm run tauri:dev:ambient（VAD + 语音唤起）" -ForegroundColor Gray
+            }
+            if ($hasLocalTauriCli -or $hasGlobalTauri) {
+                $tauriExitCode = Invoke-TauriDevWithRustIceRetry -DesktopDir $DesktopDir -TauriDevScript $tauriDevScript
+                $global:LASTEXITCODE = $tauriExitCode
+            } else {
+                Write-Host "[INFO] @tauri-apps/cli not found. npm install first; else npm run dev (Vite only)." -ForegroundColor Yellow
+                npm run dev
+            }
+        } finally {
+            if ($desktopLocationPushed) {
+                Pop-Location
+            }
         }
-        if ($hasLocalTauriCli -or $hasGlobalTauri) {
-            $tauriExitCode = Invoke-TauriDevWithRustIceRetry -DesktopDir $DesktopDir -TauriDevScript $tauriDevScript
-            $global:LASTEXITCODE = $tauriExitCode
-        } else {
-            Write-Host "[INFO] @tauri-apps/cli not found. npm install first; else npm run dev (Vite only)." -ForegroundColor Yellow
-            npm run dev
-        }
-        Pop-Location
         $script:Layer3ExitCode = if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { $LASTEXITCODE } else { 0 }
-        exit $script:Layer3ExitCode
+        Stop-Layer3Script $script:Layer3ExitCode
     }
+} catch [System.Management.Automation.PipelineStoppedException] {
+    $script:Layer3ExitCode = 130
+    $global:LASTEXITCODE = 130
+    Write-Host "[Layer3] 已收到 Ctrl+C，正在清理并返回当前 PowerShell 窗口..." -ForegroundColor Yellow
 } catch {
-    Write-Host "[Layer3] FATAL: $_" -ForegroundColor Red
-    if ($_.ScriptStackTrace) {
-        Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray
+    if (-not (Set-Layer3StopCodeFromError $_)) {
+        Write-Host "[Layer3] FATAL: $_" -ForegroundColor Red
+        if ($_.ScriptStackTrace) {
+            Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray
+        }
+        $script:Layer3ExitCode = 1
+        $global:LASTEXITCODE = 1
     }
-    $script:Layer3ExitCode = 1
-    exit 1
 } finally {
     if ($script:TauriDevChild) {
         try {
@@ -995,5 +1115,6 @@ try {
             Write-Host "[Layer3] 退出清理跳过: $_" -ForegroundColor DarkGray
         }
     }
+    Restore-Layer3ConsoleState
     Wait-Layer3PauseIfNeeded
 }

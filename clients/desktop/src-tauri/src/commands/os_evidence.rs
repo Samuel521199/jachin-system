@@ -509,7 +509,7 @@ fn collect_input_adapters(value: &Value, out: &mut Vec<Value>) {
     match value {
         Value::Object(map) => {
             let event_type = map.get("event_type").and_then(|v| v.as_str()).unwrap_or("");
-            if event_type == "input_adapter_finished" {
+            if event_type == "input_adapter_finished" || event_type == "voice_evidence_snapshot" {
                 out.push(value.clone());
                 for (key, item) in map {
                     if key != "payload" {
@@ -1350,6 +1350,7 @@ fn cognitive_timeline_entry(
     let detail = payload
         .get("goal")
         .or_else(|| payload.get("task"))
+        .or_else(|| payload.get("summary"))
         .or_else(|| payload.get("rationale"))
         .or_else(|| payload.get("failure_reason"))
         .or_else(|| payload.get("observation_preview"))
@@ -1374,6 +1375,8 @@ fn cognitive_timeline_entry(
 fn cognitive_event_order(event_type: &str) -> u8 {
     match event_type {
         "turn_started" => 0,
+        "input_adapter_finished" => 4,
+        "voice_evidence_snapshot" => 5,
         "review_board_summary" => 10,
         "decision_contract" | "arbiter_decision" => 20,
         "confirmation_pending_saved" => 25,
