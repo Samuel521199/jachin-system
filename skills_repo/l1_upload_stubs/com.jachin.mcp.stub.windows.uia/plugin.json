@@ -87,6 +87,163 @@
             "priority": 60
           }
         ]
+      },
+      {
+        "id": "windows_codex_work_plan_staged_recovery",
+        "role_agent": "AppControlExecutorAgent",
+        "tools": [
+          "mcp:windows_codex_work_plan_query"
+        ],
+        "max_attempts": 5,
+        "steps": [
+          {
+            "strategy": "retry_open_codex",
+            "tool": "$same",
+            "when": {
+              "failure_any": ["open", "launch", "focus", "window"]
+            },
+            "action_patch": {
+              "recovery_stage": "open",
+              "refocus_existing_window": true
+            },
+            "rationale": "Codex may already be running or still starting; refocus the existing window and verify it before continuing.",
+            "priority": 10
+          },
+          {
+            "strategy": "expand_project_then_conversation",
+            "tool": "$same",
+            "when": {
+              "failure_any": ["navigate", "conversation_not_found", "target_not_found"]
+            },
+            "action_patch": {
+              "recovery_stage": "navigate",
+              "navigation_strategy": "expand_project_then_conversation"
+            },
+            "rationale": "The work-plan conversation may be hidden under a collapsed project; expand the project and locate it again.",
+            "priority": 15
+          },
+          {
+            "strategy": "sidebar_search_conversation",
+            "tool": "$same",
+            "when": {
+              "failure_any": ["navigate", "conversation_not_found", "target_not_found"]
+            },
+            "action_patch": {
+              "recovery_stage": "navigate",
+              "navigation_strategy": "sidebar_search_conversation"
+            },
+            "rationale": "Project expansion did not expose the target conversation; use the Codex sidebar search and verify the result.",
+            "priority": 25
+          },
+          {
+            "strategy": "recheck_context_after_settle",
+            "tool": "$same",
+            "when": {
+              "failure_any": ["verify", "context_not_stable", "context_mismatch"]
+            },
+            "action_patch": {
+              "recovery_stage": "verify",
+              "settle_seconds": 0.8
+            },
+            "rationale": "The context may still be rendering; wait briefly and collect a new independent verification sample.",
+            "priority": 10
+          },
+          {
+            "strategy": "renavigate_and_recheck_context",
+            "tool": "$same",
+            "when": {
+              "failure_any": ["verify", "context_not_stable", "context_mismatch"],
+              "after_attempt": 2
+            },
+            "action_patch": {
+              "recovery_stage": "verify",
+              "navigation_strategy": "sidebar_search_conversation"
+            },
+            "rationale": "Repeated context verification failed; navigate through a different path and verify the project and conversation again.",
+            "priority": 30
+          },
+          {
+            "strategy": "refocus_and_relocate_composer",
+            "tool": "$same",
+            "when": {
+              "failure_any": ["input", "composer_not_found", "focus"]
+            },
+            "action_patch": {
+              "recovery_stage": "input",
+              "refocus": true
+            },
+            "rationale": "The prompt composer is not visible or focus moved; refocus Codex and locate the composer from a fresh screenshot.",
+            "priority": 15
+          },
+          {
+            "strategy": "renavigate_repaste_before_submit",
+            "tool": "$same",
+            "when": {
+              "failure_any": ["submit", "context_changed_before_submit"]
+            },
+            "action_patch": {
+              "recovery_stage": "submit",
+              "clear_unsubmitted_prompt": true,
+              "navigation_strategy": "sidebar_search_conversation"
+            },
+            "rationale": "The context changed before submission; clear the unsubmitted prompt, restore the target conversation, and paste once more.",
+            "priority": 20
+          },
+          {
+            "strategy": "refocus_and_continue_wait",
+            "tool": "$same",
+            "when": {
+              "failure_any": ["wait", "focus", "foreground", "window"]
+            },
+            "action_patch": {
+              "recovery_stage": "wait",
+              "refocus": true
+            },
+            "rationale": "Generation may still be running while Codex lost foreground focus; restore focus and continue waiting without resubmitting.",
+            "priority": 10
+          },
+          {
+            "strategy": "extend_wait_window",
+            "tool": "$same",
+            "when": {
+              "failure_any": ["wait", "timeout", "still_generating"]
+            },
+            "action_patch": {
+              "recovery_stage": "wait",
+              "extend_seconds": 30
+            },
+            "rationale": "The correlated generation is still active; extend only the wait window and never submit the prompt again.",
+            "priority": 30
+          },
+          {
+            "strategy": "refocus_recapture_reply",
+            "tool": "$same",
+            "when": {
+              "failure_any": ["extract", "copy", "reply_unverified", "source_conflict", "marker"]
+            },
+            "action_patch": {
+              "recovery_stage": "extract",
+              "refocus": true,
+              "settle_seconds": 0.8
+            },
+            "rationale": "Reply extraction is incomplete or conflicting; refocus, recapture, and rerun clipboard/vision/OCR fusion without resubmitting.",
+            "priority": 15
+          },
+          {
+            "strategy": "request_user_review_for_fusion_conflict",
+            "tool": "$same",
+            "when": {
+              "failure_any": ["fuse", "source_conflict", "claim_conflict"],
+              "after_attempt": 2
+            },
+            "action_patch": {
+              "recovery_stage": "fuse",
+              "requires_user_confirmation": true
+            },
+            "rationale": "Independent reply sources still conflict; stop automatic recovery and request user review instead of inventing a result.",
+            "priority": 90
+          }
+        ]
       }
     ]
   }

@@ -1438,6 +1438,7 @@ fn main() {
             commands::os_evidence::os_evidence_list,
             commands::os_evidence::os_evidence_stats,
             commands::os_evidence::os_evidence_governance_index,
+            commands::os_evidence::os_evidence_codex_observability_index,
             commands::os_evidence::os_evidence_open_path,
             commands::os_evidence::os_evidence_start_standard_demo,
             commands::os_evidence::os_evidence_start_smoke_matrix,

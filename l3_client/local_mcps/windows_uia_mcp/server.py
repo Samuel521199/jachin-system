@@ -309,6 +309,40 @@ def windows_codex_ask_lark_send(
         return _tool_exception_json("windows_codex_ask_lark_send", e)
 
 
+@mcp.tool(name="windows_codex_work_plan_query")
+def windows_codex_work_plan_query(
+    project_name: str,
+    project_path: str,
+    prompt: str,
+    conversation_name: str = "工作计划",
+    wait_seconds: int = 120,
+    prompt_hash: str = "",
+    invocation_id: str = "",
+    session_id: str = "",
+    request_key: str = "",
+    context_digest: str = "",
+    context_stats: dict[str, Any] | None = None,
+    out_dir: str = "",
+) -> str:
+    """Ask the conventional Codex work-plan conversation using visual UI location and verification."""
+    try:
+        return _os_auto(out_dir).codex_work_plan_query(
+            project_name=project_name,
+            project_path=project_path,
+            prompt=prompt,
+            conversation_name=conversation_name,
+            wait_seconds=wait_seconds,
+            prompt_hash=prompt_hash,
+            invocation_id=invocation_id,
+            session_id=session_id,
+            request_key=request_key,
+            context_digest=context_digest,
+            context_stats=context_stats,
+        ).to_json()
+    except Exception as e:
+        return _tool_exception_json("windows_codex_work_plan_query", e)
+
+
 @mcp.tool(name="windows_lark_read_recent_messages")
 def windows_lark_read_recent_messages(target: str, pages: int = 3, scroll_clicks: int = 5, out_dir: str = "") -> str:
     """Open a Lark chat/group, OCR recent message pages, dedupe lines, and classify likely tasks/mentions/urgent lines."""

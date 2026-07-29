@@ -3421,6 +3421,12 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
         register_memory_growth_routes(app)
     except Exception as e:
         logger.warning("[L3 HTTP] Memory Growth routes skipped: %s", e)
+    try:
+        from l3_node.work_ledger_http import register_work_ledger_routes
+
+        register_work_ledger_routes(app)
+    except Exception as e:
+        logger.warning("[L3 HTTP] Work Ledger routes skipped: %s", e)
     app.router.add_post(
         "/api/v1/cron-thinker/ingest-release-announcement", _handle_cron_thinker_ingest_release
     )

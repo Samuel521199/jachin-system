@@ -26,6 +26,7 @@ import {
   DownloadCloud,
   BookOpen,
   Sprout,
+  ClipboardList,
 } from "lucide-react";
 import { cn } from "../utils/cn";
 import { SystemHeartbeat } from "./components/SystemHeartbeat";
@@ -62,6 +63,12 @@ const isDevConsoleRuntime = import.meta.env.DEV;
 const navItems = [
   { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard, title: "首页：系统状态、快捷操作与最近活动" },
   { path: "/brain", label: "Neural Nexus", icon: BrainCircuit, title: "模型与记忆管理，后端连接状态" },
+  {
+    path: "/work-ledger",
+    label: "今日工作台",
+    icon: ClipboardList,
+    title: "AI 工作账本：任务开始、过程证据、结束复盘、明日续写",
+  },
   {
     path: "/memory-growth",
     label: "自生长知识",
@@ -185,7 +192,7 @@ type NavItem = (typeof navItems)[number];
 
 function navSection(path: string, lang: "zh" | "en"): string {
   const zh = lang === "zh";
-  if (path === "/dashboard" || path === "/brain" || path === "/memory-growth" || path === "/safety-lock" || path === "/calendar") {
+  if (path === "/dashboard" || path === "/brain" || path === "/work-ledger" || path === "/memory-growth" || path === "/safety-lock" || path === "/calendar") {
     return zh ? "核心中枢" : "CORE";
   }
   if (path === "/skills" || path === "/capability-publish" || path === "/capability-install" || path === "/english-vocab") {
@@ -249,8 +256,11 @@ export function Sidebar() {
 
   const visibleNavItems = useMemo(() => {
     if (isDevConsoleRuntime) return navItems;
-    if (!installScanReady) return navItems.filter((item) => !("capabilityGate" in item));
-    return navItems.filter((item) => capabilityInstalled(installedItems, "capabilityGate" in item ? item.capabilityGate : undefined));
+    const productionItems = navItems.filter(
+      (item) => !("devOnly" in item) || !item.devOnly,
+    );
+    if (!installScanReady) return productionItems.filter((item) => !("capabilityGate" in item));
+    return productionItems.filter((item) => capabilityInstalled(installedItems, "capabilityGate" in item ? item.capabilityGate : undefined));
   }, [installScanReady, installedItems]);
 
   const navGroups = useMemo(() => {

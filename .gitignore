@@ -186,6 +186,7 @@ fb_campaign_report_*.csv
 
 # 调试截图（自动化测试过程中生成，不入仓库）
 debug_*.png
+.playwright-cli/
 scripts/parsed_output.jpg
 scripts/parsed_result.json
 scripts/test_screen.jpg

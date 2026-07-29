@@ -63,6 +63,7 @@ pub struct OsEvidenceEntry {
     pub failure_learning_records: Vec<Value>,
     pub memory_trust_events: Vec<Value>,
     pub memory_write_events: Vec<Value>,
+    pub codex_invocation: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,6 +176,34 @@ pub struct OsEvidenceGovernanceIndex {
     pub capability_options: Vec<(String, usize)>,
     pub windows: Vec<OsEvidenceGovernanceWindow>,
     pub health: Vec<OsEvidenceCapabilityHealth>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexObservabilityWindow {
+    pub days: u64,
+    pub invocation_count: usize,
+    pub passed: usize,
+    pub failed: usize,
+    pub success_rate: f64,
+    pub recovered: usize,
+    pub recovery_rate: f64,
+    pub manual_interventions: usize,
+    pub stale_reply_blocks: usize,
+    pub truncated_reply_blocks: usize,
+    pub avg_duration_ms: u64,
+    pub p95_duration_ms: u64,
+    pub failure_stage_top: Vec<(String, usize)>,
+    pub recovery_strategy_top: Vec<(String, usize)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexObservabilityIndex {
+    pub generated_at: u64,
+    pub source_limit: usize,
+    pub total_invocations: usize,
+    pub index_path: String,
+    pub windows: Vec<CodexObservabilityWindow>,
+    pub release_gate: Option<Value>,
 }
 
 fn project_output_dir() -> Result<PathBuf, String> {
@@ -824,6 +853,67 @@ fn collect_memory_write_events(value: &Value, out: &mut Vec<Value>) {
     }
 }
 
+fn codex_invocation_candidate_score(value: &Value) -> usize {
+    let Some(map) = value.as_object() else {
+        return 0;
+    };
+    if map
+        .get("invocation_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true)
+    {
+        return 0;
+    }
+    let mut score = 1usize;
+    for (key, weight) in [
+        ("invocation_manager_final", 12usize),
+        ("recovery", 10),
+        ("recovery_terminal", 8),
+        ("recovery_success", 8),
+        ("reply_selection", 7),
+        ("completion_state", 6),
+        ("invocation_match", 5),
+        ("invocation_marker", 4),
+        ("project_name", 3),
+        ("conversation_name", 2),
+    ] {
+        if map.get(key).map(|v| !v.is_null()).unwrap_or(false) {
+            score += weight;
+        }
+    }
+    score
+}
+
+fn collect_codex_invocation_candidates(value: &Value, out: &mut Vec<(usize, Value)>) {
+    match value {
+        Value::Object(map) => {
+            let score = codex_invocation_candidate_score(value);
+            if score > 0 {
+                out.push((score, value.clone()));
+            }
+            for item in map.values() {
+                collect_codex_invocation_candidates(item, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_codex_invocation_candidates(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn best_codex_invocation(value: &Value) -> Option<Value> {
+    let mut candidates = Vec::new();
+    collect_codex_invocation_candidates(value, &mut candidates);
+    candidates
+        .into_iter()
+        .max_by_key(|(score, _)| *score)
+        .map(|(_, value)| value)
+}
+
 fn diagnose(value: &Value, ok: bool, detail: &str) -> String {
     let validation_ok = value
         .get("validation")
@@ -977,6 +1067,7 @@ fn evidence_entry(path: &Path) -> Option<OsEvidenceEntry> {
     let mut input_adapters = Vec::new();
     collect_input_adapters(&value, &mut input_adapters);
     input_adapters.truncate(20);
+    let codex_invocation = best_codex_invocation(&value);
     let evidence_panel_path = get_path(&value, &["evidence_panel_path"]);
     let report_path = get_path(&value, &["report_path"]);
     let id = path.to_string_lossy().into_owned();
@@ -1023,6 +1114,7 @@ fn evidence_entry(path: &Path) -> Option<OsEvidenceEntry> {
         failure_learning_records,
         memory_trust_events,
         memory_write_events,
+        codex_invocation,
     })
 }
 
@@ -1129,6 +1221,7 @@ fn cognitive_turn_entry(path: &Path, turn_id: &str, events: Vec<Value>) -> Optio
     let mut attempts: Vec<Value> = Vec::new();
 
     let aggregate = json!({ "events": events.clone() });
+    let codex_invocation = best_codex_invocation(&aggregate);
     collect_paths(&aggregate, &mut files, &mut screenshots);
     collect_apps(&aggregate, &mut apps);
     collect_role_executions(&aggregate, &mut role_executions);
@@ -1315,6 +1408,7 @@ fn cognitive_turn_entry(path: &Path, turn_id: &str, events: Vec<Value>) -> Optio
         failure_learning_records,
         memory_trust_events,
         memory_write_events,
+        codex_invocation,
     })
 }
 
@@ -1898,6 +1992,298 @@ pub fn os_evidence_governance_index(
     Ok(index)
 }
 
+fn codex_invocation_id(row: &OsEvidenceEntry) -> Option<String> {
+    row.codex_invocation
+        .as_ref()
+        .and_then(|v| v.get("invocation_id"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+}
+
+fn unique_codex_rows(rows: &[OsEvidenceEntry]) -> Vec<&OsEvidenceEntry> {
+    let mut by_id = BTreeMap::<String, &OsEvidenceEntry>::new();
+    for row in rows {
+        let Some(invocation_id) = codex_invocation_id(row) else {
+            continue;
+        };
+        match by_id.get(&invocation_id) {
+            Some(existing) if existing.generated_at >= row.generated_at => {}
+            _ => {
+                by_id.insert(invocation_id, row);
+            }
+        }
+    }
+    by_id.into_values().collect()
+}
+
+fn codex_status(row: &OsEvidenceEntry) -> String {
+    row.codex_invocation
+        .as_ref()
+        .and_then(|v| {
+            v.get("invocation_manager_final")
+                .and_then(|final_state| final_state.get("status"))
+                .or_else(|| v.get("status"))
+        })
+        .and_then(|v| v.as_str())
+        .unwrap_or(if row.ok { "succeeded" } else { "failed" })
+        .to_string()
+}
+
+fn codex_duration_ms(row: &OsEvidenceEntry) -> u64 {
+    row.codex_invocation
+        .as_ref()
+        .and_then(|v| {
+            v.get("metrics")
+                .and_then(|metrics| metrics.get("duration_ms"))
+                .or_else(|| {
+                    v.get("invocation_manager_final")
+                        .and_then(|final_state| final_state.get("duration_ms"))
+                })
+        })
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            row.metrics
+                .as_ref()
+                .and_then(|v| v.get("duration_ms"))
+                .and_then(|v| v.as_u64())
+        })
+        .unwrap_or(0)
+}
+
+fn codex_failure_stage(row: &OsEvidenceEntry) -> String {
+    let Some(invocation) = row.codex_invocation.as_ref() else {
+        return "unknown".to_string();
+    };
+    invocation
+        .get("invocation_manager_final")
+        .and_then(|v| v.get("stage"))
+        .or_else(|| {
+            invocation
+                .get("recovery_terminal")
+                .and_then(|v| v.get("final_reason"))
+        })
+        .or_else(|| invocation.get("detail"))
+        .and_then(|v| v.as_str())
+        .map(|value| {
+            value
+                .split(|ch| ch == ':' || ch == '.')
+                .next()
+                .unwrap_or(value)
+                .trim()
+                .to_string()
+        })
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn codex_recovery_strategies(row: &OsEvidenceEntry) -> Vec<String> {
+    let Some(invocation) = row.codex_invocation.as_ref() else {
+        return Vec::new();
+    };
+    let mut strategies = BTreeSet::new();
+    if let Some(decisions) = invocation
+        .get("recovery")
+        .and_then(|v| v.get("decisions"))
+        .and_then(|v| v.as_array())
+    {
+        for decision in decisions {
+            if let Some(strategy) = decision.get("strategy").and_then(|v| v.as_str()) {
+                if !strategy.trim().is_empty() {
+                    strategies.insert(strategy.trim().to_string());
+                }
+            }
+        }
+    }
+    if let Some(strategy) = invocation
+        .get("recovery_success")
+        .and_then(|v| v.get("strategy"))
+        .and_then(|v| v.as_str())
+    {
+        if !strategy.trim().is_empty() {
+            strategies.insert(strategy.trim().to_string());
+        }
+    }
+    strategies.into_iter().collect()
+}
+
+fn codex_observability_window(rows: &[&OsEvidenceEntry], days: u64) -> CodexObservabilityWindow {
+    let mut passed = 0usize;
+    let mut recovered = 0usize;
+    let mut manual_interventions = 0usize;
+    let mut stale_reply_blocks = 0usize;
+    let mut truncated_reply_blocks = 0usize;
+    let mut durations = Vec::new();
+    let mut failure_stages = BTreeMap::<String, usize>::new();
+    let mut recovery_strategies = BTreeMap::<String, usize>::new();
+
+    for row in rows {
+        let status = codex_status(row);
+        let ok = status == "succeeded" || (row.ok && status != "failed");
+        if ok {
+            passed += 1;
+        } else {
+            bump(&mut failure_stages, codex_failure_stage(row));
+        }
+        let strategies = codex_recovery_strategies(row);
+        if ok && !strategies.is_empty() {
+            recovered += 1;
+        }
+        for strategy in strategies {
+            bump(&mut recovery_strategies, strategy);
+        }
+        let invocation = row.codex_invocation.as_ref().unwrap_or(&Value::Null);
+        let text = invocation.to_string().to_lowercase();
+        if invocation
+            .get("recovery_pending_user_confirmation")
+            .and_then(|v| v.as_object())
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+            || text.contains("permission_required")
+            || text.contains("requires_confirmation")
+        {
+            manual_interventions += 1;
+        }
+        if text.contains("stale_reply") || text.contains("invocation_marker_mismatch") {
+            stale_reply_blocks += 1;
+        }
+        if text.contains("truncated")
+            || text.contains("incomplete_reply")
+            || text.contains("unclosed_code")
+        {
+            truncated_reply_blocks += 1;
+        }
+        let duration = codex_duration_ms(row);
+        if duration > 0 {
+            durations.push(duration);
+        }
+    }
+
+    durations.sort_unstable();
+    let duration_sum = durations.iter().map(|value| *value as u128).sum::<u128>();
+    let avg_duration_ms = if durations.is_empty() {
+        0
+    } else {
+        (duration_sum / durations.len() as u128) as u64
+    };
+    let p95_duration_ms = if durations.is_empty() {
+        0
+    } else {
+        let index = ((durations.len() as f64 * 0.95).ceil() as usize)
+            .saturating_sub(1)
+            .min(durations.len() - 1);
+        durations[index]
+    };
+    let invocation_count = rows.len();
+    let failed = invocation_count.saturating_sub(passed);
+    CodexObservabilityWindow {
+        days,
+        invocation_count,
+        passed,
+        failed,
+        success_rate: if invocation_count == 0 {
+            0.0
+        } else {
+            passed as f64 / invocation_count as f64
+        },
+        recovered,
+        recovery_rate: if invocation_count == 0 {
+            0.0
+        } else {
+            recovered as f64 / invocation_count as f64
+        },
+        manual_interventions,
+        stale_reply_blocks,
+        truncated_reply_blocks,
+        avg_duration_ms,
+        p95_duration_ms,
+        failure_stage_top: top_counts(failure_stages, 8),
+        recovery_strategy_top: top_counts(recovery_strategies, 8),
+    }
+}
+
+fn annotate_codex_release_gate(
+    mut report: Value,
+    report_kind: &str,
+    report_path: &Path,
+) -> Value {
+    if let Some(object) = report.as_object_mut() {
+        object.insert(
+            "report_kind".to_string(),
+            Value::String(report_kind.to_string()),
+        );
+        object.insert(
+            "report_source".to_string(),
+            Value::String(report_path.to_string_lossy().into_owned()),
+        );
+    }
+    report
+}
+
+fn select_codex_release_gate(
+    live: Option<Value>,
+    contract: Option<Value>,
+    live_path: &Path,
+    contract_path: &Path,
+) -> Option<Value> {
+    live.map(|report| annotate_codex_release_gate(report, "live", live_path))
+        .or_else(|| {
+            contract.map(|report| {
+                annotate_codex_release_gate(report, "contract", contract_path)
+            })
+        })
+}
+
+#[tauri::command]
+pub fn os_evidence_codex_observability_index(
+    limit: Option<usize>,
+) -> Result<CodexObservabilityIndex, String> {
+    let source_limit = limit.unwrap_or(300).clamp(1, 300);
+    let rows = os_evidence_list(Some(source_limit))?;
+    let unique = unique_codex_rows(&rows);
+    let now = now_secs();
+    let windows = [7_u64, 14, 30]
+        .into_iter()
+        .map(|days| {
+            let filtered = unique
+                .iter()
+                .copied()
+                .filter(|row| is_within_days(row, days, now))
+                .collect::<Vec<_>>();
+            codex_observability_window(&filtered, days)
+        })
+        .collect::<Vec<_>>();
+    let index_path = project_output_dir()?.join("codex_observability_index.json");
+    let release_gate_dir = project_output_dir()?.join("codex_live_release_gate");
+    let live_release_gate_path = release_gate_dir.join("release_gate_live_latest.json");
+    let contract_release_gate_path = release_gate_dir.join("release_gate_latest.json");
+    let live_release_gate = fs::read_to_string(&live_release_gate_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+    let contract_release_gate = fs::read_to_string(&contract_release_gate_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+    let release_gate = select_codex_release_gate(
+        live_release_gate,
+        contract_release_gate,
+        &live_release_gate_path,
+        &contract_release_gate_path,
+    );
+    let index = CodexObservabilityIndex {
+        generated_at: now,
+        source_limit,
+        total_invocations: unique.len(),
+        index_path: index_path.to_string_lossy().into_owned(),
+        windows,
+        release_gate,
+    };
+    let value = serde_json::to_value(&index)
+        .map_err(|e| format!("serialize Codex observability index failed: {e}"))?;
+    write_json_file(&index_path, &value)?;
+    Ok(index)
+}
+
 #[tauri::command]
 pub fn os_evidence_stats(limit: Option<usize>) -> Result<OsEvidenceStats, String> {
     let rows = os_evidence_list(limit.or(Some(300)))?;
@@ -2402,6 +2788,155 @@ pub fn os_evidence_config_set(config: OsEvidenceConfig) -> Result<OsEvidenceConf
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn codex_evidence(id: &str, generated_at: u64, ok: bool, invocation: Value) -> OsEvidenceEntry {
+        OsEvidenceEntry {
+            id: id.to_string(),
+            task: "windows_codex_work_plan_query".to_string(),
+            ok,
+            detail: if ok { "ready" } else { "failed" }.to_string(),
+            generated_at,
+            evidence_path: String::new(),
+            evidence_panel_path: None,
+            report_path: None,
+            recipients: Vec::new(),
+            apps: vec!["Codex".to_string()],
+            screenshots: Vec::new(),
+            files: Vec::new(),
+            message_preview: String::new(),
+            timeline: Vec::new(),
+            diagnosis: String::new(),
+            intent: None,
+            route: None,
+            clarification: None,
+            tool_result: None,
+            parser: None,
+            memory: None,
+            template: None,
+            mission_preview: None,
+            capability_semantic: None,
+            workflow_composition: None,
+            control: None,
+            plan_preview: None,
+            attempts: Vec::new(),
+            retry: None,
+            metrics: None,
+            input_adapters: Vec::new(),
+            role_executions: Vec::new(),
+            pending_decisions: Vec::new(),
+            tool_quality_reports: Vec::new(),
+            recovery_scorecards: Vec::new(),
+            failure_learning_records: Vec::new(),
+            memory_trust_events: Vec::new(),
+            memory_write_events: Vec::new(),
+            codex_invocation: Some(invocation),
+        }
+    }
+
+    #[test]
+    fn selects_the_richest_codex_invocation_payload() {
+        let value = json!({
+            "wrapper": {
+                "invocation_id": "inv-1",
+                "project_name": "Jachin"
+            },
+            "tool_result": {
+                "invocation_id": "inv-1",
+                "project_name": "Jachin",
+                "conversation_name": "工作计划",
+                "completion_state": {"ok": true},
+                "reply_selection": {"ok": true},
+                "invocation_manager_final": {"status": "succeeded"}
+            }
+        });
+        let selected = best_codex_invocation(&value).expect("invocation should be found");
+        assert_eq!(
+            selected
+                .get("invocation_manager_final")
+                .and_then(|value| value.get("status"))
+                .and_then(Value::as_str),
+            Some("succeeded")
+        );
+    }
+
+    #[test]
+    fn live_release_gate_takes_precedence_over_contract_report() {
+        let live_path = Path::new("output/release_gate_live_latest.json");
+        let contract_path = Path::new("output/release_gate_latest.json");
+        let selected = select_codex_release_gate(
+            Some(json!({"status": "blocked", "release_ready": false})),
+            Some(json!({"status": "ready", "release_ready": true})),
+            live_path,
+            contract_path,
+        )
+        .expect("release gate should be selected");
+
+        assert_eq!(
+            selected.get("status").and_then(Value::as_str),
+            Some("blocked")
+        );
+        assert_eq!(
+            selected.get("report_kind").and_then(Value::as_str),
+            Some("live")
+        );
+        assert_eq!(
+            selected.get("report_source").and_then(Value::as_str),
+            Some("output/release_gate_live_latest.json")
+        );
+    }
+
+    #[test]
+    fn aggregates_codex_recovery_and_failure_quality() {
+        let success = codex_evidence(
+            "success",
+            10,
+            true,
+            json!({
+                "invocation_id": "inv-success",
+                "metrics": {"duration_ms": 1200},
+                "invocation_manager_final": {"status": "succeeded"},
+                "recovery": {
+                    "decisions": [{"strategy": "refocus_codex_window"}]
+                },
+                "recovery_success": {"strategy": "refocus_codex_window"}
+            }),
+        );
+        let failure = codex_evidence(
+            "failure",
+            20,
+            false,
+            json!({
+                "invocation_id": "inv-failure",
+                "metrics": {"duration_ms": 2400},
+                "invocation_manager_final": {
+                    "status": "failed",
+                    "stage": "extract:stale_reply"
+                },
+                "recovery_pending_user_confirmation": {
+                    "reason": "permission_required"
+                },
+                "reply_selection": {
+                    "ok": false,
+                    "reason": "stale_reply_truncated"
+                }
+            }),
+        );
+        let rows = vec![&success, &failure];
+        let window = codex_observability_window(&rows, 7);
+        assert_eq!(window.invocation_count, 2);
+        assert_eq!(window.passed, 1);
+        assert_eq!(window.failed, 1);
+        assert_eq!(window.recovered, 1);
+        assert_eq!(window.manual_interventions, 1);
+        assert_eq!(window.stale_reply_blocks, 1);
+        assert_eq!(window.truncated_reply_blocks, 1);
+        assert_eq!(window.avg_duration_ms, 1800);
+        assert_eq!(window.p95_duration_ms, 2400);
+        assert_eq!(
+            window.failure_stage_top.first(),
+            Some(&("extract".to_string(), 1))
+        );
+    }
 
     #[test]
     fn collects_failure_learning_records_from_nested_ledger_events() {

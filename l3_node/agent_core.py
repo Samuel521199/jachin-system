@@ -3409,6 +3409,67 @@ async def run_agent(
         )
     except Exception:
         pass
+    try:
+        from l3_node.work_ledger_chat import handle_work_ledger_chat_command
+
+        _work_ledger_reply = handle_work_ledger_chat_command(
+            user_input or "",
+            source=_bg_channel or "run_agent",
+            created_from=(
+                "voice"
+                if str((_desktop_companion_ctx or {}).get("input_adapter_source") or "").lower() == "voice"
+                else (_bg_channel or "chat")
+            ),
+        )
+        if _work_ledger_reply is not None:
+            if _session_messages is not None:
+                messages.append({"role": "user", "content": user_input or ""})
+                messages.append({"role": "assistant", "content": _work_ledger_reply})
+                _session_messages.clear()
+                _session_messages.extend(messages[-30:])
+            try:
+                from l3_node.cognitive_kernel.ledger import append_event
+
+                append_event(
+                    "work_ledger_chat_command_handled",
+                    run_id,
+                    {
+                        "input_preview": str(user_input or "")[:200],
+                        "channel": _bg_channel or "",
+                        "reply_preview": str(_work_ledger_reply or "")[:300],
+                    },
+                )
+            except Exception:
+                pass
+            close_turn(
+                turn_id=run_id,
+                final_text=_work_ledger_reply,
+                executed_work_orders=[],
+                verification_reports=[],
+                aborted=False,
+            )
+            try:
+                from l3_node.terminal_turn_debug_log import finalize_top_level_turn
+
+                finalize_top_level_turn(
+                    _work_ledger_reply,
+                    delegate_depth=_delegate_depth,
+                    run_id=run_id,
+                    channel=_bg_channel,
+                    extra={**(_lark_turn_dbg_extra or {}), "work_ledger_chat_command": "1"},
+                )
+            except Exception:
+                pass
+            _turn_dbg["answer"] = _work_ledger_reply
+            _cleanup_voice_run_handles()
+            return _reply_with_voice_runtime_ui(
+                _work_ledger_reply,
+                stage="work_ledger_chat_command_finished",
+                status="done",
+                reason_code="work_ledger_chat_command",
+            )
+    except Exception as _work_ledger_ex:
+        logger.warning("[WorkLedger] chat command skipped: %s", _work_ledger_ex)
     _gateway_sniffer_ws = ""
     if gateway_workspace_dir and str(gateway_workspace_dir).strip():
         _gateway_sniffer_ws = str(gateway_workspace_dir).strip()

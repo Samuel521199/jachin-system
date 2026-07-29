@@ -31,10 +31,18 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Callable
+
+try:
+    from .codex_reply_protocol import advance_wait_state, select_reply
+    from .codex_stage_recovery import CodexStageRecoveryPlanner
+except ImportError:
+    from codex_reply_protocol import advance_wait_state, select_reply
+    from codex_stage_recovery import CodexStageRecoveryPlanner
 
 logger = logging.getLogger("windows_os_tasks")
 
@@ -390,9 +398,14 @@ APP_PROFILES: dict[str, dict[str, Any]] = {
     },
     "codex": {
         "aliases": ("codex", "openai codex"),
-        "keywords": ("codex", "openai codex"),
+        # The Microsoft Store Codex desktop package currently exposes its
+        # top-level window and process as ChatGPT.exe. Keep Codex labels first
+        # and accept ChatGPT only inside the Codex capability profile.
+        "keywords": ("codex", "openai codex", "chatgpt"),
         "env": "JACHIN_APP_CODEX_EXE",
-        "exe_names": ("Codex.exe", "codex.exe"),
+        "protocol_uri": "codex:",
+        "exe_names": ("Codex.exe", "codex.exe", "ChatGPT.exe"),
+        "process_path_markers": ("\\openai.codex_",),
         "candidate_paths": (
             r"%LOCALAPPDATA%\Programs\Codex\Codex.exe",
             r"%LOCALAPPDATA%\Codex\Codex.exe",
@@ -430,6 +443,7 @@ class ExecutionContract:
     app_key: str
     expected_keywords: tuple[str, ...] = ()
     expected_processes: tuple[str, ...] = ()
+    expected_process_path_markers: tuple[str, ...] = ()
     goal: str = ""
     require_foreground: bool = True
 
@@ -439,6 +453,9 @@ class ExecutionContract:
             "app_key": self.app_key,
             "expected_keywords": list(self.expected_keywords),
             "expected_processes": list(self.expected_processes),
+            "expected_process_path_markers": list(
+                self.expected_process_path_markers
+            ),
             "goal": self.goal,
             "require_foreground": self.require_foreground,
         }
@@ -501,11 +518,17 @@ def _app_contract(app_name: str, goal: str = "") -> ExecutionContract:
     profile = APP_PROFILES.get(app_key, {})
     keywords = tuple(str(x).lower() for x in profile.get("keywords", ()) if str(x).strip()) or (app_key,)
     processes = tuple(str(x).lower() for x in profile.get("exe_names", ()) if str(x).strip())
+    process_path_markers = tuple(
+        str(x).lower()
+        for x in profile.get("process_path_markers", ())
+        if str(x).strip()
+    )
     return ExecutionContract(
         target_app=str(app_name or app_key),
         app_key=app_key,
         expected_keywords=keywords,
         expected_processes=processes,
+        expected_process_path_markers=process_path_markers,
         goal=goal,
     )
 
@@ -766,6 +789,36 @@ def _parse_tasklist() -> dict[int, dict[str, Any]]:
     except Exception:
         pass
     return out
+
+
+def _process_executable_path(pid: int) -> str:
+    if sys.platform != "win32" or int(pid or 0) <= 0:
+        return ""
+    process_query_limited_information = 0x1000
+    kernel32 = ctypes.windll.kernel32
+    open_process = kernel32.OpenProcess
+    open_process.restype = ctypes.wintypes.HANDLE
+    handle = open_process(
+        process_query_limited_information,
+        False,
+        int(pid),
+    )
+    if not handle:
+        return ""
+    try:
+        capacity = ctypes.wintypes.DWORD(32768)
+        buffer = ctypes.create_unicode_buffer(capacity.value)
+        ok = kernel32.QueryFullProcessImageNameW(
+            handle,
+            0,
+            buffer,
+            ctypes.byref(capacity),
+        )
+        return buffer.value if ok else ""
+    except Exception:
+        return ""
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def _run_powershell_json(script: str, timeout: int = 12) -> Any:
@@ -1123,11 +1176,21 @@ def _image_file_data_url(image_path: str | Path, max_bytes: int = 4_000_000) -> 
                 img = img.convert("RGB")
                 max_side = max(900, int(os.environ.get("JACHIN_CODEX_VISION_MAX_IMAGE_SIDE") or "1800"))
                 img.thumbnail((max_side, max_side))
+                resized_width, resized_height = img.size
                 buf = io.BytesIO()
                 img.save(buf, format="JPEG", quality=max(55, min(95, int(os.environ.get("JACHIN_CODEX_VISION_JPEG_QUALITY") or "85"))))
                 raw = buf.getvalue()
                 mime = "image/jpeg"
-                meta.update({"resized": True, "resized_bytes": len(raw), "mime": mime, "max_side": max_side})
+                meta.update(
+                    {
+                        "resized": True,
+                        "resized_bytes": len(raw),
+                        "mime": mime,
+                        "max_side": max_side,
+                        "resized_width": resized_width,
+                        "resized_height": resized_height,
+                    }
+                )
         except Exception as e:
             meta["resize_error"] = repr(e)
     data = base64.b64encode(raw).decode("ascii")
@@ -1209,6 +1272,825 @@ def _call_qwen_vision_codex_extract(
         return {"ok": False, "detail": f"qwen_vision_http_error:{e.code}", "model": model_name, "api_base": base, "image_meta": image_meta, "error": body}
     except Exception as e:
         return {"ok": False, "detail": f"qwen_vision_failed:{e!r}", "model": model_name, "api_base": base, "image_meta": image_meta}
+
+
+def _parse_vision_json_object(content: str) -> dict[str, Any]:
+    raw = str(content or "").strip()
+    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.I).strip()
+    raw = re.sub(r"\s*```$", "", raw).strip()
+    candidates = [raw]
+    match = re.search(r"\{[\s\S]*\}", raw)
+    if match:
+        candidates.append(match.group(0))
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(value, dict):
+            return value
+    raise ValueError("vision_response_not_json_object")
+
+
+def _codex_invocation_marker(invocation_id: str) -> str:
+    clean = re.sub(r"[^A-Za-z0-9_-]+", "", str(invocation_id or ""))[:64]
+    return f"[JACHIN_REF:{clean}]"
+
+
+def _prepare_codex_invocation_prompt(
+    prompt: str,
+    invocation_id: str = "",
+) -> tuple[str, str, str]:
+    clean_id = re.sub(r"[^A-Za-z0-9_-]+", "", str(invocation_id or ""))[:64]
+    if not clean_id:
+        clean_id = f"jcx-{uuid.uuid4().hex[:16]}"
+    marker = _codex_invocation_marker(clean_id)
+    clean_prompt = str(prompt or "").strip()
+    wrapped = (
+        f"{clean_prompt}\n\n"
+        "回复关联要求：\n"
+        f"1. 回复第一行必须原样输出 {marker}\n"
+        "2. 关联标记之后再输出完整答案。\n"
+        "3. 不要引用或回答当前会话中的其他旧任务。"
+    )
+    return wrapped, clean_id, marker
+
+
+def _match_codex_invocation_answer(
+    answer: str,
+    invocation_id: str,
+) -> dict[str, Any]:
+    raw = str(answer or "").strip()
+    marker = _codex_invocation_marker(invocation_id)
+    found = marker in raw
+    cleaned = raw.replace(marker, "", 1).strip() if found else ""
+    return {
+        "ok": bool(found and cleaned),
+        "invocation_id": invocation_id,
+        "marker": marker,
+        "marker_found": found,
+        "clean_answer": cleaned,
+        "raw_length": len(raw),
+        "clean_length": len(cleaned),
+    }
+
+
+def _codex_reply_schema_for_prompt(prompt: str) -> str:
+    """Keep report-shaped requests strict without rejecting ordinary evidence answers."""
+
+    compact = _normalize_codex_ui_label(prompt)
+    report_signals = (
+        "工作简报",
+        "工作报告",
+        "日报",
+        "周报",
+        "进展",
+        "风险",
+        "下一步",
+        "workplan",
+        "progress",
+        "risk",
+        "nextstep",
+    )
+    return "work_plan" if sum(signal in compact for signal in report_signals) >= 2 else "generic"
+
+
+def _normalize_codex_ui_label(value: Any) -> str:
+    return re.sub(
+        r"[\W_]+",
+        "",
+        str(value or "").strip().casefold(),
+        flags=re.UNICODE,
+    )
+
+
+def _codex_ui_label_match(expected: str, observed: str) -> bool:
+    expected_key = _normalize_codex_ui_label(expected)
+    observed_key = _normalize_codex_ui_label(observed)
+    if not expected_key or not observed_key:
+        return False
+    # OCR frequently emits isolated Latin letters from icons or clipped labels.
+    # Treating those as substring matches makes "S" match "jachin-system-main"
+    # and corrupts the spatial project/conversation check.
+    if expected_key != observed_key and min(len(expected_key), len(observed_key)) < 3:
+        return False
+    return (
+        expected_key == observed_key
+        or expected_key in observed_key
+        or observed_key in expected_key
+    )
+
+
+def _select_codex_ocr_target(
+    rows: list[dict[str, Any]],
+    *,
+    action: str,
+    project_name: str = "",
+    conversation_name: str = "",
+    canvas_width: int = 0,
+    canvas_height: int = 0,
+) -> dict[str, Any]:
+    action_key = str(action or "").strip().lower()
+    project_rows = [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and float(row.get("score") or 0) >= 0.5
+        and _codex_ui_label_match(
+            project_name,
+            str(row.get("text") or ""),
+        )
+    ]
+    conversation_rows = [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and float(row.get("score") or 0) >= 0.5
+        and _codex_ui_label_match(
+            conversation_name,
+            str(row.get("text") or ""),
+        )
+    ]
+    if action_key == "verify_reply_context":
+        marker_rows = [
+            row
+            for row in conversation_rows
+            if (
+                canvas_width > 0
+                and canvas_height > 0
+                and float(row.get("cx") or 0) >= canvas_width * 0.28
+                and float(row.get("cy") or 0) >= canvas_height * 0.08
+                and float(row.get("cy") or 0) <= canvas_height * 0.86
+            )
+        ]
+        ok = bool(project_rows and marker_rows)
+        return {
+            "ok": ok,
+            "detail": (
+                "codex_reply_context_verified_by_invocation_marker"
+                if ok
+                else "codex_reply_context_marker_not_verified"
+            ),
+            "action": action_key,
+            "model": "local_ocr",
+            "result": {
+                "found": ok,
+                "project_match": bool(project_rows),
+                "invocation_marker_match": bool(marker_rows),
+                "visible_project": str(
+                    project_rows[0].get("text") if project_rows else ""
+                ),
+                "visible_marker": str(
+                    marker_rows[-1].get("text") if marker_rows else ""
+                ),
+                "reason": (
+                    "Project identity and the current invocation marker are "
+                    "both visible in the Codex content area."
+                ),
+            },
+            "ocr_project_matches": project_rows[:4],
+            "ocr_marker_matches": marker_rows[-4:],
+        }
+    if action_key == "verify_context":
+        project_y = min(
+            (float(row.get("cy") or 0) for row in project_rows),
+            default=0.0,
+        )
+        project_x = min(
+            (float(row.get("cx") or 0) for row in project_rows),
+            default=0.0,
+        )
+        sidebar_conversation_rows = [
+            row
+            for row in conversation_rows
+            if (
+                project_y > 0
+                and float(row.get("cy") or 0) > project_y
+                and float(row.get("cx") or 0) <= project_x + 120
+            )
+        ]
+        selected_header_rows = [
+            row
+            for row in conversation_rows
+            if (
+                project_y > 0
+                and float(row.get("cy") or 0) < max(140.0, project_y * 0.55)
+                and float(row.get("cx") or 0) > project_x + 80
+            )
+        ]
+        composer_rows = [
+            row
+            for row in rows
+            if isinstance(row, dict)
+            and any(
+                marker in _normalize_codex_ui_label(row.get("text"))
+                for marker in (
+                    "随心输入",
+                    "askanything",
+                    "jachinref",
+                    "achinref",
+                    "回复关联要求",
+                    "关联标记",
+                    "请基于当前项目可见证据",
+                )
+            )
+        ]
+        ok = bool(
+            project_rows
+            and sidebar_conversation_rows
+            and selected_header_rows
+            and composer_rows
+        )
+        return {
+            "ok": ok,
+            "detail": (
+                "codex_context_verified_by_local_ocr"
+                if ok
+                else "codex_local_ocr_context_not_verified"
+            ),
+            "action": action_key,
+            "model": "local_ocr",
+            "result": {
+                "found": ok,
+                "center_x": None,
+                "center_y": None,
+                "confidence": min(
+                    (
+                        float(row.get("score") or 0)
+                        for row in (
+                            project_rows
+                            + sidebar_conversation_rows
+                            + selected_header_rows
+                            + composer_rows
+                        )
+                    ),
+                    default=0.0,
+                ),
+                "project_match": bool(project_rows),
+                "conversation_match": bool(sidebar_conversation_rows),
+                "selected_match": bool(selected_header_rows),
+                "composer_visible": bool(composer_rows),
+                "visible_project": str(
+                    project_rows[0].get("text") if project_rows else ""
+                ),
+                "visible_conversation": str(
+                    sidebar_conversation_rows[0].get("text")
+                    if sidebar_conversation_rows
+                    else ""
+                ),
+                "reason": (
+                    "Project, sidebar conversation, selected header and composer "
+                    "were all verified by local OCR."
+                ),
+            },
+            "ocr_project_matches": project_rows[:4],
+            "ocr_conversation_matches": conversation_rows[:6],
+            "ocr_composer_matches": composer_rows[:4],
+        }
+    if action_key == "locate_composer":
+        composer_rows = [
+            row
+            for row in rows
+            if isinstance(row, dict)
+            and float(row.get("score") or 0) >= 0.5
+            and any(
+                marker in _normalize_codex_ui_label(row.get("text"))
+                for marker in ("随心输入", "askanything")
+            )
+        ]
+        anchor_strategy = "placeholder"
+        if not composer_rows and canvas_width > 0 and canvas_height > 0:
+            footer_rows = [
+                row
+                for row in rows
+                if isinstance(row, dict)
+                and float(row.get("score") or 0) >= 0.5
+                and float(row.get("cx") or 0) >= canvas_width * 0.25
+                and float(row.get("cy") or 0) >= canvas_height * 0.70
+                and (
+                    re.search(
+                        r"(?:gpt|codex|sol|qwen|claude|gemini|[345]\.[0-9])",
+                        _normalize_codex_ui_label(row.get("text")),
+                    )
+                    or any(
+                        marker in _normalize_codex_ui_label(row.get("text"))
+                        for marker in ("替我审批", "askapproval")
+                    )
+                )
+            ]
+            if footer_rows:
+                footer = max(
+                    footer_rows,
+                    key=lambda row: (
+                        float(row.get("cy") or 0),
+                        float(row.get("score") or 0),
+                    ),
+                )
+                composer_rows = [
+                    {
+                        "text": str(footer.get("text") or ""),
+                        "cx": max(
+                            canvas_width * 0.42,
+                            min(
+                                canvas_width * 0.72,
+                                float(footer.get("cx") or 0)
+                                - canvas_width * 0.18,
+                            ),
+                        ),
+                        "cy": max(
+                            canvas_height * 0.66,
+                            float(footer.get("cy") or 0)
+                            - canvas_height * 0.08,
+                        ),
+                        "score": float(footer.get("score") or 0),
+                        "source": "composer_footer_anchor",
+                    }
+                ]
+                anchor_strategy = "footer_control"
+        if not composer_rows:
+            return {
+                "ok": False,
+                "detail": "codex_local_ocr_composer_not_found",
+                "action": action_key,
+            }
+        selected = max(
+            composer_rows,
+            key=lambda row: float(row.get("score") or 0),
+        )
+        return {
+            "ok": True,
+            "detail": "codex_ui_target_located_by_local_ocr",
+            "action": action_key,
+            "model": "local_ocr",
+            "result": {
+                "found": True,
+                "center_x": round(float(selected.get("cx") or 0)),
+                "center_y": round(float(selected.get("cy") or 0)),
+                "confidence": float(selected.get("score") or 0),
+                "project_match": bool(project_rows),
+                "conversation_match": bool(conversation_rows),
+                "selected_match": False,
+                "composer_visible": True,
+                "visible_project": str(
+                    project_rows[0].get("text") if project_rows else ""
+                ),
+                "visible_conversation": str(
+                    conversation_rows[0].get("text")
+                    if conversation_rows
+                    else ""
+                ),
+                "reason": "Visible Codex composer anchor located by local OCR.",
+                "anchor_strategy": anchor_strategy,
+            },
+            "ocr_target": selected,
+        }
+    if (
+        action_key == "locate_latest_reply_copy"
+        and canvas_width > 0
+        and canvas_height > 0
+    ):
+        normalized_rows = [
+            _normalize_codex_ui_label(row.get("text"))
+            for row in rows
+            if isinstance(row, dict)
+        ]
+        feedback_dialog_visible = (
+            any(
+                marker in text
+                for text in normalized_rows
+                for marker in ("提交反馈", "submitfeedback")
+            )
+            and any(
+                marker in text
+                for text in normalized_rows
+                for marker in (
+                    "填写详情",
+                    "您的反馈可用于改进",
+                    "providedetails",
+                    "feedbackmay",
+                )
+            )
+        )
+        if feedback_dialog_visible:
+            return {
+                "ok": False,
+                "detail": "codex_transient_feedback_dialog_obstructing_reply",
+                "action": action_key,
+                "dialog": "feedback",
+            }
+        response_rows = [
+            row
+            for row in rows
+            if isinstance(row, dict)
+            and float(row.get("score") or 0) >= 0.5
+            and float(row.get("x1") or row.get("cx") or 0)
+            >= canvas_width * 0.28
+            and float(row.get("cy") or 0) >= canvas_height * 0.12
+            and float(row.get("cy") or 0) <= canvas_height * 0.82
+        ]
+        if not response_rows:
+            return {
+                "ok": False,
+                "detail": "codex_local_ocr_reply_footer_not_found",
+                "action": action_key,
+            }
+        last_line = max(
+            response_rows,
+            key=lambda row: (
+                float(row.get("y2") or row.get("cy") or 0),
+                float(row.get("score") or 0),
+            ),
+        )
+        last_line_bottom = float(
+            last_line.get("y2") or last_line.get("cy") or 0
+        )
+        latest_reply_rows = [
+            row
+            for row in response_rows
+            if float(row.get("y2") or row.get("cy") or 0)
+            >= max(canvas_height * 0.12, last_line_bottom - 260.0)
+        ]
+        reply_left = min(
+            (
+                float(row.get("x1") or row.get("cx") or 0)
+                for row in latest_reply_rows
+            ),
+            default=float(last_line.get("x1") or 0),
+        )
+        target_x = reply_left + 8.0
+        target_y = float(
+            last_line.get("y2") or last_line.get("cy") or 0
+        ) + 23.0
+        if (
+            target_x < canvas_width * 0.28
+            or target_x > canvas_width * 0.72
+            or target_y >= canvas_height * 0.88
+        ):
+            return {
+                "ok": False,
+                "detail": "codex_local_ocr_reply_footer_geometry_unsafe",
+                "action": action_key,
+                "ocr_target": last_line,
+            }
+        return {
+            "ok": True,
+            "detail": "codex_reply_copy_located_from_last_text_anchor",
+            "action": action_key,
+            "model": "local_ocr",
+            "result": {
+                "found": True,
+                "center_x": round(target_x),
+                "center_y": round(target_y),
+                "confidence": float(last_line.get("score") or 0),
+                "project_match": bool(project_rows),
+                "conversation_match": bool(conversation_rows),
+                "selected_match": True,
+                "composer_visible": True,
+                "visible_project": str(
+                    project_rows[0].get("text") if project_rows else ""
+                ),
+                "visible_conversation": str(conversation_name or ""),
+                "reason": (
+                    "Copy control inferred from the latest reply block left "
+                    "edge and the bottom-most visible assistant text line."
+                ),
+                "anchor_strategy": "last_assistant_text_footer",
+                "reply_left": reply_left,
+            },
+            "ocr_target": last_line,
+            "ocr_reply_rows": latest_reply_rows[-12:],
+        }
+    target = (
+        project_name
+        if action_key == "locate_project"
+        else conversation_name
+        if action_key == "locate_conversation"
+        else ""
+    )
+    if not target:
+        return {
+            "ok": False,
+            "detail": "codex_local_ocr_target_not_supported",
+            "action": action_key,
+        }
+    usable = [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and float(row.get("score") or 0) >= 0.5
+        and _codex_ui_label_match(target, str(row.get("text") or ""))
+    ]
+    if action_key == "locate_conversation" and project_name:
+        if not project_rows:
+            return {
+                "ok": False,
+                "detail": "codex_local_ocr_project_not_found",
+                "action": action_key,
+                "target": target,
+            }
+        project_y = min(float(row.get("cy") or 0) for row in project_rows)
+        usable = [
+            row
+            for row in usable
+            if float(row.get("cy") or 0) > project_y
+        ]
+    if not usable:
+        return {
+            "ok": False,
+            "detail": "codex_local_ocr_target_not_found",
+            "action": action_key,
+            "target": target,
+        }
+    if action_key == "locate_conversation" and project_rows:
+        project_y = min(float(row.get("cy") or 0) for row in project_rows)
+        selected = min(
+            usable,
+            key=lambda row: (
+                float(row.get("cy") or 0) - project_y,
+                -float(row.get("score") or 0),
+            ),
+        )
+    else:
+        selected = max(
+            usable,
+            key=lambda row: float(row.get("score") or 0),
+        )
+    return {
+        "ok": True,
+        "detail": "codex_ui_target_located_by_local_ocr",
+        "action": action_key,
+        "model": "local_ocr",
+        "result": {
+            "found": True,
+            "center_x": round(float(selected.get("cx") or 0)),
+            "center_y": round(float(selected.get("cy") or 0)),
+            "confidence": float(selected.get("score") or 0),
+            "project_match": bool(project_rows),
+            "conversation_match": action_key == "locate_conversation",
+            "selected_match": False,
+            "composer_visible": False,
+            "visible_project": str(
+                project_rows[0].get("text") if project_rows else ""
+            ),
+            "visible_conversation": (
+                str(selected.get("text") or "")
+                if action_key == "locate_conversation"
+                else ""
+            ),
+            "reason": "Exact visible text anchor located by local OCR.",
+        },
+        "ocr_target": selected,
+        "ocr_project_matches": project_rows[:4],
+    }
+
+
+def _call_local_ocr_codex_ui(
+    screenshot_path: str | Path,
+    *,
+    action: str,
+    project_name: str = "",
+    conversation_name: str = "",
+) -> dict[str, Any]:
+    try:
+        from l3_client.local_mcps.gameqa_mcp.core.ocr_engine import (
+            ocr_line_boxes_from_png,
+        )
+
+        path = Path(screenshot_path)
+        rows, notes = ocr_line_boxes_from_png(path.read_bytes())
+        canvas_width = 0
+        canvas_height = 0
+        try:
+            from PIL import Image
+
+            with Image.open(path) as image:
+                canvas_width, canvas_height = image.size
+        except Exception:
+            pass
+        selected = _select_codex_ocr_target(
+            rows,
+            action=action,
+            project_name=project_name,
+            conversation_name=conversation_name,
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+        )
+        selected["ocr_notes"] = notes
+        selected["ocr_line_count"] = len(rows)
+        return selected
+    except Exception as exc:
+        return {
+            "ok": False,
+            "detail": f"codex_local_ocr_failed:{exc!r}",
+            "action": str(action or ""),
+        }
+
+
+def _call_qwen_vision_codex_ui(
+    screenshot_path: str | Path,
+    *,
+    action: str,
+    project_name: str = "",
+    conversation_name: str = "工作计划",
+    accessibility: dict[str, Any] | None = None,
+    model: str = "",
+    timeout: int | None = None,
+) -> dict[str, Any]:
+    """Locate or verify Codex UI from pixels without fixed coordinates."""
+
+    action_key = str(action or "").strip().lower()
+    if action_key not in {
+        "locate_project",
+        "locate_conversation",
+        "locate_composer",
+        "locate_search",
+        "locate_latest_reply_copy",
+        "verify_context",
+    }:
+        return {"ok": False, "detail": "unsupported_codex_vision_action", "action": action_key}
+    if action_key == "locate_latest_reply_copy":
+        local_target = _call_local_ocr_codex_ui(
+            screenshot_path,
+            action=action_key,
+            project_name=project_name,
+            conversation_name=conversation_name,
+        )
+        if local_target.get("ok"):
+            return local_target
+    model_name = (
+        model
+        or os.environ.get("JACHIN_CODEX_VISION_UI_MODEL")
+        or os.environ.get("JACHIN_MULTIMODAL_MODEL")
+        or "qwen3.7-plus"
+    )
+    key, base = _qwen_credentials()
+    if not key:
+        return {"ok": False, "detail": "qwen_api_key_missing", "model": model_name, "action": action_key}
+    try:
+        image_path = Path(screenshot_path)
+        from PIL import Image
+
+        with Image.open(image_path) as image:
+            image_width, image_height = image.size
+        data_url, image_meta = _image_file_data_url(
+            image_path,
+            max_bytes=int(os.environ.get("JACHIN_CODEX_VISION_MAX_IMAGE_BYTES") or "4000000"),
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "detail": f"image_prepare_failed:{exc!r}",
+            "model": model_name,
+            "action": action_key,
+        }
+
+    model_width = int(image_meta.get("resized_width") or image_width)
+    model_height = int(image_meta.get("resized_height") or image_height)
+    target_instruction = {
+        "locate_project": (
+            f"在左侧项目列表中找到项目“{project_name}”的项目标题行。"
+            "只在项目名称能确认时返回项目标题行真实可见文字所在行的中心点。"
+            "输出坐标前再次核对该点落在目标文字同一行，禁止根据列表顺序估算。"
+        ),
+        "locate_conversation": (
+            f"在左侧项目列表中找到项目“{project_name}”下面名为“{conversation_name}”的会话。"
+            "只在项目归属和会话名称都能确认时返回该会话真实可见文字所在行的中心点。"
+            "输出坐标前再次核对该点落在目标文字同一行，禁止返回相邻会话。"
+        ),
+        "locate_composer": (
+            "找到当前 Codex 对话底部可输入新消息的编辑框。"
+            "返回编辑框内部安全可点击区域的中心点，不要返回发送按钮、旧消息或侧边栏。"
+        ),
+        "locate_search": (
+            "找到 Codex 左侧栏中用于搜索项目或会话的搜索输入框。"
+            "返回输入框内部安全可点击区域，不要返回项目标题、会话或消息输入框。"
+        ),
+        "locate_latest_reply_copy": (
+            "找到当前 Codex 对话中最新一条助手回复下方的“复制”图标按钮。"
+            f"目标回复完整正文第一行包含关联标记“{conversation_name}”；"
+            "长回复时该标记可能已经滚出当前视口，此时定位当前会话最底部、"
+            "最新一条助手回复自己的复制按钮，复制后的全文会再次严格校验标记。"
+            "只返回该回复自己的复制按钮中心点，不要返回用户消息、旧回复、输入框、"
+            "链接图标、赞踩按钮或其他工具按钮。"
+        ),
+        "verify_context": (
+            f"核验当前选中的 Codex 项目是否为“{project_name}”，当前会话是否为“{conversation_name}”，"
+            "并判断底部消息输入框是否可见。"
+        ),
+    }[action_key]
+    accessibility_hint = ""
+    if accessibility:
+        accessibility_hint = (
+            "\n以下是当前活动窗口可访问性树的只读摘要，只能作为辅助证据，"
+            "最终坐标和选中状态仍必须由截图像素确认：\n"
+            + json.dumps(accessibility, ensure_ascii=False, separators=(",", ":"))[:8000]
+        )
+    prompt = (
+        "你是 Codex 桌面界面的视觉定位与安全核验器。只能根据截图中真实可见的像素判断，禁止猜测。\n"
+        f"任务：{target_instruction}\n"
+        f"你看到的截图尺寸：width={model_width}, height={model_height}。坐标原点是截图左上角。\n"
+        f"{accessibility_hint}\n"
+        "只输出一个 JSON 对象，不要 Markdown，不要解释。字段必须包含：\n"
+        "found(boolean), center_x(integer|null), center_y(integer|null), confidence(number 0-1), "
+        "project_match(boolean), conversation_match(boolean), selected_match(boolean), "
+        "composer_visible(boolean), visible_project(string), visible_conversation(string), reason(string)。\n"
+        "定位任务找不到时 found=false 且坐标为 null。verify_context 不需要点击坐标，可返回 null。"
+    )
+    payload = {
+        "model": model_name,
+        "messages": [
+            {
+                "role": "system",
+                "content": "你只做屏幕像素定位与上下文核验。坐标必须来自截图，禁止使用预设比例或猜测。",
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            },
+        ],
+        "temperature": 0,
+        "max_tokens": 700,
+    }
+    req = urllib.request.Request(
+        base.rstrip("/") + "/chat/completions",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(
+            req,
+            timeout=timeout or int(os.environ.get("JACHIN_CODEX_VISION_UI_TIMEOUT") or "60"),
+        ) as resp:
+            response = json.loads(resp.read().decode("utf-8", errors="replace"))
+        content = (((response.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
+        parsed = _parse_vision_json_object(content)
+        found = bool(parsed.get("found"))
+        confidence = float(parsed.get("confidence") or 0)
+        center_x = parsed.get("center_x")
+        center_y = parsed.get("center_y")
+        coordinate_ok = True
+        if action_key.startswith("locate_"):
+            coordinate_ok = (
+                found
+                and confidence
+                >= float(os.environ.get("JACHIN_CODEX_NAV_MIN_CONFIDENCE") or "0.70")
+                and isinstance(center_x, (int, float))
+                and isinstance(center_y, (int, float))
+                and 0 <= float(center_x) < model_width
+                and 0 <= float(center_y) < model_height
+            )
+            if coordinate_ok and (model_width != image_width or model_height != image_height):
+                parsed["center_x_model"] = center_x
+                parsed["center_y_model"] = center_y
+                parsed["center_x"] = round(float(center_x) * image_width / model_width)
+                parsed["center_y"] = round(float(center_y) * image_height / model_height)
+        context_ok = True
+        if action_key == "verify_context":
+            context_ok = bool(
+                confidence
+                >= float(os.environ.get("JACHIN_CODEX_VERIFY_MIN_CONFIDENCE") or "0.78")
+                and
+                parsed.get("project_match")
+                and parsed.get("conversation_match")
+                and parsed.get("selected_match")
+                and parsed.get("composer_visible")
+            )
+        return {
+            "ok": bool(coordinate_ok and context_ok),
+            "detail": (
+                "codex_ui_target_located"
+                if coordinate_ok and action_key.startswith("locate_")
+                else "codex_context_verified"
+                if context_ok and action_key == "verify_context"
+                else "codex_ui_target_not_verified"
+            ),
+            "action": action_key,
+            "model": model_name,
+            "api_base": base,
+            "image_meta": image_meta,
+            "image_size": {"width": image_width, "height": image_height},
+            "result": parsed,
+        }
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")[:1000]
+        return {
+            "ok": False,
+            "detail": f"codex_vision_ui_http_error:{exc.code}",
+            "model": model_name,
+            "action": action_key,
+            "error": body,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "detail": f"codex_vision_ui_failed:{exc!r}",
+            "model": model_name,
+            "action": action_key,
+        }
 
 
 def _build_codex_project_prompt(project_name: str, project_path: str, feature_query: str = "", since_days: int = 3) -> str:
@@ -2527,6 +3409,7 @@ class WindowTools:
             "hwnd": int(hwnd),
             "pid": pid_i,
             "process": proc.get("image_name") or "",
+            "process_path": _process_executable_path(pid_i),
             "title": title,
             "rect": rect_data,
         }
@@ -2599,12 +3482,22 @@ class WindowTools:
         windows.sort(key=lambda row: (not row.get("active"), not row.get("office_related"), -int(row.get("area") or 0)))
         return windows[: max(1, int(limit or 80))]
 
-    def find_window(self, keywords: tuple[str, ...], exclude_keywords: tuple[str, ...] = ()) -> tuple[int, str, int, int, int, int] | None:
+    def find_window(
+        self,
+        keywords: tuple[str, ...],
+        exclude_keywords: tuple[str, ...] = (),
+        required_process_path_markers: tuple[str, ...] = (),
+    ) -> tuple[int, str, int, int, int, int] | None:
         if not self.enabled:
             return None
         user32 = ctypes.windll.user32
         keys = [k.lower() for k in keywords if k]
         excludes = [k.lower() for k in exclude_keywords if k]
+        path_markers = [
+            marker.lower()
+            for marker in required_process_path_markers
+            if marker
+        ]
         pid_map = _parse_tasklist()
         matches: list[tuple[int, str, int, int, int, int, int]] = []
 
@@ -2631,6 +3524,10 @@ class WindowTools:
                 return True
             if excludes and any(k in haystack for k in excludes):
                 return True
+            if path_markers:
+                process_path = _process_executable_path(int(pid.value)).lower()
+                if not any(marker in process_path for marker in path_markers):
+                    return True
             rect = ctypes.wintypes.RECT()
             if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
                 return True
@@ -2649,12 +3546,22 @@ class WindowTools:
         logger.info("[window] found title=%r rect=(%d,%d,%d,%d)", title, left, top, width, height)
         return hwnd, title, left, top, width, height
 
-    def focus_by_keywords(self, keywords: tuple[str, ...], timeout: float = 8.0, exclude_keywords: tuple[str, ...] = ()) -> bool:
+    def focus_by_keywords(
+        self,
+        keywords: tuple[str, ...],
+        timeout: float = 8.0,
+        exclude_keywords: tuple[str, ...] = (),
+        required_process_path_markers: tuple[str, ...] = (),
+    ) -> bool:
         if not self.enabled:
             return False
         deadline = time.time() + timeout
         while time.time() < deadline:
-            match = self.find_window(keywords, exclude_keywords=exclude_keywords)
+            match = self.find_window(
+                keywords,
+                exclude_keywords=exclude_keywords,
+                required_process_path_markers=required_process_path_markers,
+            )
             if match:
                 hwnd, title, left, top, width, height = match
                 user32 = ctypes.windll.user32
@@ -2666,8 +3573,16 @@ class WindowTools:
                 except Exception as e:
                     logger.debug("[window] focus click skipped: %r", e)
                 time.sleep(0.25)
-                logger.info("[window] focus requested title=%r active=%r", title, self.active_title())
-                return True
+                active_hwnd = int(user32.GetForegroundWindow() or 0)
+                focused = active_hwnd == int(hwnd)
+                logger.info(
+                    "[window] focus requested title=%r focused=%s active=%r",
+                    title,
+                    focused,
+                    self.active_title(),
+                )
+                if focused:
+                    return True
             time.sleep(0.2)
         return False
 
@@ -2687,11 +3602,20 @@ class DesktopIO:
             return
         if x <= margin or y <= margin or x >= w - margin or y >= h - margin:
             raise MouseFailSafeInterrupt(action=action, position=(int(x), int(y)), screen=(int(w), int(h)), margin=margin)
-    def launch_result(self, exe: str, keywords: tuple[str, ...], args: list[str] | None = None, wait: float = 1.2) -> dict[str, Any]:
+    def launch_result(
+        self,
+        exe: str,
+        keywords: tuple[str, ...],
+        args: list[str] | None = None,
+        wait: float = 1.2,
+        required_process_path_markers: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
         argv = [exe] + list(args or [])
         logger.info("[act] launch argv=%s", argv)
         try:
-            if Path(exe).suffix.lower() == ".lnk":
+            if exe.rstrip().endswith(":") or "://" in exe:
+                os.startfile(exe)  # type: ignore[attr-defined]
+            elif Path(exe).suffix.lower() == ".lnk":
                 os.startfile(exe)  # type: ignore[attr-defined]
             else:
                 subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -2716,7 +3640,11 @@ class DesktopIO:
                 "error": repr(exc),
             }
         time.sleep(wait)
-        focused = self.win.focus_by_keywords(keywords, timeout=5.0)
+        focused = self.win.focus_by_keywords(
+            keywords,
+            timeout=5.0,
+            required_process_path_markers=required_process_path_markers,
+        )
         logger.info("[act] launched=%s focused=%s active=%r", exe, focused, self.win.active_title())
         return {"ok": True, "detail": "launch_invoked", "exe": exe, "argv": argv, "focused": bool(focused)}
 
@@ -2776,7 +3704,6 @@ class DesktopIO:
 
     def screenshot(self, out_dir: Path, label: str) -> str:
         out_dir.mkdir(parents=True, exist_ok=True)
-        self._safe_mouse("screenshot")
         img = self.pyautogui.screenshot()
         path = out_dir / f"{now_tag()}_{label}.png"
         img.save(path)
@@ -2785,7 +3712,6 @@ class DesktopIO:
 
     def screenshot_active_window(self, out_dir: Path, label: str) -> str:
         out_dir.mkdir(parents=True, exist_ok=True)
-        self._safe_mouse("screenshot_active_window")
         rect = self.win.active_rect()
         if rect:
             title, left, top, width, height = rect
@@ -2820,15 +3746,29 @@ class EnvironmentVerifier:
             checks["active_snapshot_error"] = f"{type(exc).__name__}: {exc}"
         title = str(active.get("title") or "")
         process = str(active.get("process") or "")
+        process_path = str(active.get("process_path") or "")
         title_l = title.lower()
         process_l = process.lower()
+        process_path_l = process_path.lower()
         keywords = tuple(k.lower() for k in contract.expected_keywords if k)
         processes = tuple(p.lower() for p in contract.expected_processes if p)
+        process_path_markers = tuple(
+            marker.lower()
+            for marker in contract.expected_process_path_markers
+            if marker
+        )
         title_ok = bool(keywords and any(k in title_l for k in keywords))
         process_ok = bool(processes and any(process_l == p or p.replace(".exe", "") in process_l for p in processes))
-        ok = bool((title_ok or process_ok) if contract.require_foreground else True)
+        process_path_ok = bool(
+            not process_path_markers
+            or any(marker in process_path_l for marker in process_path_markers)
+        )
+        identity_ok = bool((title_ok or process_ok) and process_path_ok)
+        ok = bool(identity_ok if contract.require_foreground else True)
         if ok:
             detail = "environment_verified"
+        elif process_path_markers and not process_path_ok:
+            detail = "foreground_process_identity_mismatch"
         elif title or process:
             detail = "wrong_foreground_app"
         else:
@@ -2837,8 +3777,11 @@ class EnvironmentVerifier:
             {
                 "title_ok": title_ok,
                 "process_ok": process_ok,
+                "process_path_ok": process_path_ok,
                 "expected_keywords": list(keywords),
                 "expected_processes": list(processes),
+                "expected_process_path_markers": list(process_path_markers),
+                "active_process_path": process_path,
             }
         )
         return EnvironmentVerification(ok=ok, detail=detail, contract=contract, active=active, checks=checks, stage=stage, action=action)
@@ -2859,11 +3802,20 @@ class DesktopIO:
             return
         if x <= margin or y <= margin or x >= w - margin or y >= h - margin:
             raise MouseFailSafeInterrupt(action=action, position=(int(x), int(y)), screen=(int(w), int(h)), margin=margin)
-    def launch_result(self, exe: str, keywords: tuple[str, ...], args: list[str] | None = None, wait: float = 1.2) -> dict[str, Any]:
+    def launch_result(
+        self,
+        exe: str,
+        keywords: tuple[str, ...],
+        args: list[str] | None = None,
+        wait: float = 1.2,
+        required_process_path_markers: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
         argv = [exe] + list(args or [])
         logger.info("[act] launch argv=%s", argv)
         try:
-            if Path(exe).suffix.lower() == ".lnk":
+            if exe.rstrip().endswith(":") or "://" in exe:
+                os.startfile(exe)  # type: ignore[attr-defined]
+            elif Path(exe).suffix.lower() == ".lnk":
                 os.startfile(exe)  # type: ignore[attr-defined]
             else:
                 subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -2888,7 +3840,11 @@ class DesktopIO:
                 "error": repr(exc),
             }
         time.sleep(wait)
-        focused = self.win.focus_by_keywords(keywords, timeout=5.0)
+        focused = self.win.focus_by_keywords(
+            keywords,
+            timeout=5.0,
+            required_process_path_markers=required_process_path_markers,
+        )
         logger.info("[act] launched=%s focused=%s active=%r", exe, focused, self.win.active_title())
         return {"ok": True, "detail": "launch_invoked", "exe": exe, "argv": argv, "focused": bool(focused)}
 
@@ -2948,7 +3904,6 @@ class DesktopIO:
 
     def screenshot(self, out_dir: Path, label: str) -> str:
         out_dir.mkdir(parents=True, exist_ok=True)
-        self._safe_mouse("screenshot")
         img = self.pyautogui.screenshot()
         path = out_dir / f"{now_tag()}_{label}.png"
         img.save(path)
@@ -2957,7 +3912,6 @@ class DesktopIO:
 
     def screenshot_active_window(self, out_dir: Path, label: str) -> str:
         out_dir.mkdir(parents=True, exist_ok=True)
-        self._safe_mouse("screenshot_active_window")
         rect = self.win.active_rect()
         if rect:
             title, left, top, width, height = rect
@@ -2968,6 +3922,33 @@ class DesktopIO:
         path = out_dir / f"{now_tag()}_{label}.png"
         img.save(path)
         logger.info("[observe] %s screenshot=%s active=%r", label, path, self.win.active_title())
+        return str(path)
+
+    def screenshot_region(
+        self,
+        out_dir: Path,
+        label: str,
+        *,
+        left: int,
+        top: int,
+        width: int,
+        height: int,
+    ) -> str:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        img = self.pyautogui.screenshot(
+            region=(int(left), int(top), int(width), int(height))
+        )
+        path = out_dir / f"{now_tag()}_{label}.png"
+        img.save(path)
+        logger.info(
+            "[observe] %s verified_region=(%d,%d,%d,%d) screenshot=%s",
+            label,
+            left,
+            top,
+            width,
+            height,
+            path,
+        )
         return str(path)
 
 
@@ -3636,40 +4617,2203 @@ class WindowsOSAutomation:
         return {"ok": True, "point": {"x": x, "y": y}, "active_title": self.win.active_title(), "focus_guard": focus_guard}
 
     def _codex_active_title_ok(self, title: str | None = None) -> bool:
-        text = str(self.win.active_title() if title is None else title or "").lower()
-        return any(keyword in text for keyword in APP_PROFILES.get("codex", {}).get("keywords", ("codex", "openai codex")))
+        del title
+        contract = self._execution_contract(
+            "codex",
+            goal="verify_codex_foreground_identity",
+        )
+        return self._verify_environment(
+            contract,
+            stage="codex_foreground",
+            action="verify_identity",
+        ).ok
 
     def _ensure_codex_foreground(self, timeout: float = 3.0) -> dict[str, Any]:
-        before = ""
+        contract = self._execution_contract(
+            "codex",
+            goal="ensure_codex_foreground_identity",
+        )
+        before_guard = self._verify_environment(
+            contract,
+            stage="codex_foreground",
+            action="verify_before_focus",
+        )
+        before = str(before_guard.active.get("title") or "")
+        if before_guard.ok:
+            return {
+                "ok": True,
+                "detail": "codex_already_foreground",
+                "before": before,
+                "after": before,
+                "focused": False,
+                "environment_guard": before_guard.to_dict(),
+            }
+        profile = APP_PROFILES.get("codex", {})
         try:
-            before = self.win.active_title()
+            focused = bool(
+                self.win.focus_by_keywords(
+                    tuple(
+                        profile.get(
+                            "keywords",
+                            ("codex", "openai codex"),
+                        )
+                    ),
+                    timeout=float(timeout or 3.0),
+                    required_process_path_markers=tuple(
+                        profile.get("process_path_markers", ())
+                    ),
+                )
+            )
         except Exception as e:
-            return {"ok": False, "detail": "codex_active_title_failed", "error": repr(e)}
-        if self._codex_active_title_ok(before):
-            return {"ok": True, "detail": "codex_already_foreground", "before": before, "after": before, "focused": False}
-        try:
-            focused = bool(self.win.focus_by_keywords(APP_PROFILES.get("codex", {}).get("keywords", ("codex", "openai codex")), timeout=float(timeout or 3.0)))
-        except Exception as e:
-            after = ""
-            try:
-                after = self.win.active_title()
-            except Exception:
-                pass
-            return {"ok": False, "detail": "codex_focus_failed", "before": before, "after": after, "focused": False, "error": repr(e)}
-        try:
-            after = self.win.active_title()
-        except Exception:
-            after = ""
-        ok = bool(focused and self._codex_active_title_ok(after))
+            return {
+                "ok": False,
+                "detail": "codex_focus_failed",
+                "before": before,
+                "after": "",
+                "focused": False,
+                "error": repr(e),
+                "environment_guard": before_guard.to_dict(),
+            }
+        after_guard = self._verify_environment(
+            contract,
+            stage="codex_foreground",
+            action="verify_after_focus",
+        )
+        after = str(after_guard.active.get("title") or "")
+        ok = bool(focused and after_guard.ok)
         return {
             "ok": ok,
             "detail": "codex_foreground" if ok else "codex_focus_lost",
             "before": before,
             "after": after,
             "focused": focused,
+            "environment_guard": after_guard.to_dict(),
         }
 
-    def _codex_copy_latest_response(self, project_name: str = "", feature_query: str = "") -> dict[str, Any]:
+    def _codex_accessibility_snapshot(
+        self,
+        *,
+        project_name: str = "",
+        conversation_name: str = "",
+        max_controls: int = 120,
+    ) -> dict[str, Any]:
+        """Collect visible Codex accessibility labels without using them as click coordinates."""
+
+        active_rect = self.win.active_rect()
+        active_title = self.win.active_title()
+        auto, uia_error = _import_uia()
+        if auto is None:
+            return {
+                "ok": False,
+                "detail": uia_error or "uiautomation_not_available",
+                "active_title": active_title,
+                "controls": [],
+            }
+        controls: list[dict[str, Any]] = []
+        project_matches: list[dict[str, Any]] = []
+        conversation_matches: list[dict[str, Any]] = []
+        try:
+            active_snapshot = {}
+            if hasattr(self.win, "active_snapshot"):
+                active_snapshot = self.win.active_snapshot() or {}
+            hwnd = int(active_snapshot.get("hwnd") or 0)
+            root = (
+                auto.ControlFromHandle(hwnd)
+                if hwnd and hasattr(auto, "ControlFromHandle")
+                else auto.GetRootControl()
+            )
+            for ctrl, depth in _iter_uia_controls(root, max_depth=12):
+                name = str(getattr(ctrl, "Name", "") or "").strip()
+                control_type = str(
+                    getattr(ctrl, "ControlTypeName", "") or ""
+                ).strip()
+                if not name:
+                    continue
+                rect = getattr(ctrl, "BoundingRectangle", None)
+                if not rect:
+                    continue
+                left = int(getattr(rect, "left", 0))
+                top = int(getattr(rect, "top", 0))
+                right = int(getattr(rect, "right", 0))
+                bottom = int(getattr(rect, "bottom", 0))
+                if right <= left or bottom <= top:
+                    continue
+                if active_rect:
+                    _title, win_left, win_top, win_width, win_height = active_rect
+                    if (
+                        right < win_left
+                        or left > win_left + win_width
+                        or bottom < win_top
+                        or top > win_top + win_height
+                    ):
+                        continue
+                    local_rect = [
+                        left - win_left,
+                        top - win_top,
+                        right - win_left,
+                        bottom - win_top,
+                    ]
+                else:
+                    local_rect = [left, top, right, bottom]
+                row = {
+                    "name": name[:180],
+                    "control_type": control_type,
+                    "depth": depth,
+                    "rect": local_rect,
+                }
+                if _codex_ui_label_match(project_name, name):
+                    project_matches.append(row)
+                if _codex_ui_label_match(conversation_name, name):
+                    conversation_matches.append(row)
+                if len(controls) < max_controls:
+                    controls.append(row)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "detail": "codex_accessibility_scan_failed",
+                "error": repr(exc),
+                "active_title": active_title,
+                "controls": controls,
+                "project_matches": project_matches[:12],
+                "conversation_matches": conversation_matches[:12],
+            }
+        return {
+            "ok": True,
+            "detail": "codex_accessibility_snapshot_ready",
+            "active_title": active_title,
+            "active_rect": active_rect,
+            "coordinate_space": "active_window_local",
+            "control_count": len(controls),
+            "controls": controls,
+            "project_matches": project_matches[:12],
+            "conversation_matches": conversation_matches[:12],
+        }
+
+    def _codex_visual_click_target(
+        self,
+        *,
+        action: str,
+        project_name: str = "",
+        conversation_name: str = "工作计划",
+        label: str = "codex_visual_target",
+    ) -> dict[str, Any]:
+        """Find a Codex control from the current screenshot and click its pixels."""
+
+        focus_guard = self._ensure_codex_foreground(timeout=3.0)
+        if not focus_guard.get("ok"):
+            return {
+                "ok": False,
+                "detail": "codex_focus_lost_before_visual_target",
+                "action": action,
+                "focus_guard": focus_guard,
+            }
+        rect = self.win.active_rect()
+        if not rect:
+            guard_active = (
+                focus_guard.get("environment_guard", {}).get("active", {})
+                if isinstance(focus_guard.get("environment_guard"), dict)
+                else {}
+            )
+            guard_rect = (
+                guard_active.get("rect")
+                if isinstance(guard_active, dict)
+                else {}
+            )
+            if isinstance(guard_rect, dict):
+                width = int(guard_rect.get("width") or 0)
+                height = int(guard_rect.get("height") or 0)
+                if width > 10 and height > 10:
+                    rect = (
+                        str(guard_active.get("title") or "Codex"),
+                        int(guard_rect.get("left") or 0),
+                        int(guard_rect.get("top") or 0),
+                        width,
+                        height,
+                    )
+        if not rect:
+            return {
+                "ok": False,
+                "detail": "codex_active_rect_missing",
+                "action": action,
+                "focus_guard": focus_guard,
+            }
+        title, left, top, width, height = rect
+        screenshot_region = getattr(self.io, "screenshot_region", None)
+        if callable(screenshot_region):
+            screenshot = screenshot_region(
+                self.out_dir,
+                f"{_safe_label(label)}_before",
+                left=left,
+                top=top,
+                width=width,
+                height=height,
+            )
+        else:
+            screenshot = self.io.screenshot_active_window(
+                self.out_dir,
+                f"{_safe_label(label)}_before",
+            )
+        transient_dialog_guard: dict[str, Any] | None = None
+        dialog_probe = _call_local_ocr_codex_ui(
+            screenshot,
+            action="locate_latest_reply_copy",
+            project_name=project_name,
+            conversation_name=conversation_name,
+        )
+        if (
+            dialog_probe.get("detail")
+            == "codex_transient_feedback_dialog_obstructing_reply"
+        ):
+            self.io.press("esc", wait=0.5)
+            if callable(screenshot_region):
+                dismissed_screenshot = screenshot_region(
+                    self.out_dir,
+                    f"{_safe_label(label)}_dialog_dismissed",
+                    left=left,
+                    top=top,
+                    width=width,
+                    height=height,
+                )
+            else:
+                dismissed_screenshot = self.io.screenshot_active_window(
+                    self.out_dir,
+                    f"{_safe_label(label)}_dialog_dismissed",
+                )
+            dismissed_probe = _call_local_ocr_codex_ui(
+                dismissed_screenshot,
+                action="locate_latest_reply_copy",
+                project_name=project_name,
+                conversation_name=conversation_name,
+            )
+            transient_dialog_guard = {
+                "detected": True,
+                "dialog": "feedback",
+                "action": "press_escape",
+                "before": screenshot,
+                "after": dismissed_screenshot,
+                "dismissed": (
+                    dismissed_probe.get("detail")
+                    != "codex_transient_feedback_dialog_obstructing_reply"
+                ),
+            }
+            screenshot = dismissed_screenshot
+        vision_screenshot = screenshot
+        vision_crop: dict[str, Any] | None = None
+        if action in {
+            "locate_project",
+            "locate_conversation",
+            "locate_search",
+        }:
+            try:
+                from PIL import Image
+
+                with Image.open(screenshot) as image:
+                    crop_width = min(
+                        image.width,
+                        max(320, min(520, round(image.width * 0.36))),
+                    )
+                    cropped = image.crop((0, 0, crop_width, image.height))
+                    crop_path = (
+                        self.out_dir
+                        / f"{_safe_label(label)}_sidebar_crop.png"
+                    )
+                    cropped.save(crop_path)
+                vision_screenshot = str(crop_path)
+                vision_crop = {
+                    "path": vision_screenshot,
+                    "left": 0,
+                    "top": 0,
+                    "width": crop_width,
+                    "height": height,
+                    "strategy": "responsive_left_sidebar",
+                }
+            except Exception as exc:
+                vision_crop = {
+                    "path": screenshot,
+                    "strategy": "full_window_fallback",
+                    "error": repr(exc),
+                }
+        accessibility = self._codex_accessibility_snapshot(
+            project_name=project_name,
+            conversation_name=conversation_name,
+        )
+        local_ocr = _call_local_ocr_codex_ui(
+            vision_screenshot,
+            action=action,
+            project_name=project_name,
+            conversation_name=conversation_name,
+        )
+        if (
+            action == "locate_latest_reply_copy"
+            and local_ocr.get("detail")
+            == "codex_transient_feedback_dialog_obstructing_reply"
+        ):
+            self.io.press("esc", wait=0.5)
+            if callable(screenshot_region):
+                dismissed_screenshot = screenshot_region(
+                    self.out_dir,
+                    f"{_safe_label(label)}_dialog_dismissed",
+                    left=left,
+                    top=top,
+                    width=width,
+                    height=height,
+                )
+            else:
+                dismissed_screenshot = self.io.screenshot_active_window(
+                    self.out_dir,
+                    f"{_safe_label(label)}_dialog_dismissed",
+                )
+            dismissed_ocr = _call_local_ocr_codex_ui(
+                dismissed_screenshot,
+                action=action,
+                project_name=project_name,
+                conversation_name=conversation_name,
+            )
+            transient_dialog_guard = {
+                "detected": True,
+                "dialog": "feedback",
+                "action": "press_escape",
+                "before": screenshot,
+                "after": dismissed_screenshot,
+                "dismissed": (
+                    dismissed_ocr.get("detail")
+                    != "codex_transient_feedback_dialog_obstructing_reply"
+                ),
+            }
+            screenshot = dismissed_screenshot
+            vision_screenshot = dismissed_screenshot
+            local_ocr = dismissed_ocr
+        located = local_ocr
+        if not local_ocr.get("ok"):
+            located = _call_qwen_vision_codex_ui(
+                vision_screenshot,
+                action=action,
+                project_name=project_name,
+                conversation_name=conversation_name,
+                accessibility=accessibility,
+            )
+            located["local_ocr_fallback"] = local_ocr
+        result = located.get("result") if isinstance(located.get("result"), dict) else {}
+        if not located.get("ok"):
+            return {
+                "ok": False,
+                "detail": str(located.get("detail") or "codex_visual_target_not_found"),
+                "action": action,
+                "focus_guard": focus_guard,
+                "active_rect": {
+                    "title": title,
+                    "left": left,
+                    "top": top,
+                    "width": width,
+                    "height": height,
+                },
+                "screenshot": screenshot,
+                "vision_crop": vision_crop,
+                "vision": located,
+                "accessibility": accessibility,
+                "transient_dialog_guard": transient_dialog_guard,
+            }
+        center_x = result.get("center_x")
+        center_y = result.get("center_y")
+        if not isinstance(center_x, (int, float)) or not isinstance(center_y, (int, float)):
+            return {
+                "ok": False,
+                "detail": "codex_visual_target_coordinates_missing",
+                "action": action,
+                "screenshot": screenshot,
+                "vision_crop": vision_crop,
+                "vision": located,
+                "accessibility": accessibility,
+                "transient_dialog_guard": transient_dialog_guard,
+            }
+        local_x = int(round(float(center_x)))
+        local_y = int(round(float(center_y)))
+        if not (0 <= local_x < width and 0 <= local_y < height):
+            return {
+                "ok": False,
+                "detail": "codex_visual_target_coordinates_out_of_bounds",
+                "action": action,
+                "screenshot": screenshot,
+                "vision_crop": vision_crop,
+                "vision": located,
+                "active_size": {"width": width, "height": height},
+                "accessibility": accessibility,
+                "transient_dialog_guard": transient_dialog_guard,
+            }
+        screen_x = left + local_x
+        screen_y = top + local_y
+        self.io.click(screen_x, screen_y, wait=0.45)
+        after_focus = self._ensure_codex_foreground(timeout=1.5)
+        if callable(screenshot_region):
+            after = screenshot_region(
+                self.out_dir,
+                f"{_safe_label(label)}_after",
+                left=left,
+                top=top,
+                width=width,
+                height=height,
+            )
+        else:
+            after = self.io.screenshot_active_window(
+                self.out_dir,
+                f"{_safe_label(label)}_after",
+            )
+        if not after_focus.get("ok"):
+            return {
+                "ok": False,
+                "detail": "codex_focus_lost_after_visual_click",
+                "action": action,
+                "focus_guard": focus_guard,
+                "after_focus_guard": after_focus,
+                "screenshot_before": screenshot,
+                "screenshot_after": after,
+                "vision": located,
+                "accessibility": accessibility,
+                "transient_dialog_guard": transient_dialog_guard,
+            }
+        return {
+            "ok": True,
+            "detail": "codex_visual_target_clicked",
+            "action": action,
+            "focus_guard": focus_guard,
+            "active_rect": {
+                "title": title,
+                "left": left,
+                "top": top,
+                "width": width,
+                "height": height,
+            },
+            "local_point": {"x": local_x, "y": local_y},
+            "screen_point": {"x": screen_x, "y": screen_y},
+            "screenshot_before": screenshot,
+            "screenshot_after": after,
+            "vision_crop": vision_crop,
+            "vision": located,
+            "accessibility": accessibility,
+            "after_focus_guard": after_focus,
+            "transient_dialog_guard": transient_dialog_guard,
+        }
+
+    def _codex_verify_work_plan_context(
+        self,
+        *,
+        project_name: str,
+        conversation_name: str,
+        label: str,
+        samples: int = 2,
+        sample_delay: float = 0.35,
+        allow_remote_fallback: bool = True,
+    ) -> dict[str, Any]:
+        rows: list[dict[str, Any]] = []
+        signatures: list[str] = []
+        required_samples = max(1, min(int(samples or 2), 3))
+        for index in range(required_samples):
+            focus_guard = self._ensure_codex_foreground(timeout=3.0)
+            if not focus_guard.get("ok"):
+                rows.append(
+                    {
+                        "ok": False,
+                        "detail": "codex_focus_lost_before_context_verification",
+                        "focus_guard": focus_guard,
+                    }
+                )
+                break
+            screenshot = self.io.screenshot_active_window(
+                self.out_dir,
+                f"{_safe_label(label)}_verify_{index + 1}",
+            )
+            accessibility = self._codex_accessibility_snapshot(
+                project_name=project_name,
+                conversation_name=conversation_name,
+            )
+            verified = _call_local_ocr_codex_ui(
+                screenshot,
+                action="verify_context",
+                project_name=project_name,
+                conversation_name=conversation_name,
+            )
+            if not verified.get("ok") and allow_remote_fallback:
+                qwen_verified = _call_qwen_vision_codex_ui(
+                    screenshot,
+                    action="verify_context",
+                    project_name=project_name,
+                    conversation_name=conversation_name,
+                    accessibility=accessibility,
+                )
+                qwen_verified["local_ocr_fallback"] = verified
+                verified = qwen_verified
+            result = (
+                verified.get("result")
+                if isinstance(verified.get("result"), dict)
+                else {}
+            )
+            visible_project = str(result.get("visible_project") or "").strip()
+            visible_conversation = str(
+                result.get("visible_conversation") or ""
+            ).strip()
+            names_match = bool(
+                visible_project
+                and visible_conversation
+                and _codex_ui_label_match(project_name, visible_project)
+                and _codex_ui_label_match(conversation_name, visible_conversation)
+            )
+            signature = "|".join(
+                (
+                    _normalize_codex_ui_label(visible_project or project_name),
+                    _normalize_codex_ui_label(
+                        visible_conversation or conversation_name
+                    ),
+                    str(bool(result.get("selected_match"))),
+                    str(bool(result.get("composer_visible"))),
+                )
+            )
+            row_ok = bool(
+                verified.get("ok")
+                and names_match
+                and bool(result.get("selected_match"))
+                and bool(result.get("composer_visible"))
+                and self._codex_active_title_ok(
+                    str(focus_guard.get("after") or self.win.active_title())
+                )
+            )
+            rows.append(
+                {
+                    "ok": row_ok,
+                    "detail": str(
+                        verified.get("detail") or "codex_context_not_verified"
+                    ),
+                    "focus_guard": focus_guard,
+                    "screenshot": screenshot,
+                    "vision": verified,
+                    "accessibility": accessibility,
+                    "names_match": names_match,
+                    "signature": signature,
+                }
+            )
+            signatures.append(signature)
+            if not row_ok:
+                break
+            if index + 1 < required_samples:
+                time.sleep(max(0.0, float(sample_delay or 0)))
+        stable = bool(
+            len(rows) == required_samples
+            and all(row.get("ok") for row in rows)
+            and len(set(signatures)) == 1
+        )
+        return {
+            "ok": stable,
+            "detail": (
+                "codex_context_verified_stable"
+                if stable
+                else "codex_context_not_stable"
+            ),
+            "required_samples": required_samples,
+            "verified_samples": sum(1 for row in rows if row.get("ok")),
+            "signatures": signatures,
+            "samples": rows,
+        }
+
+    def _codex_navigate_work_plan_context(
+        self,
+        *,
+        project_name: str,
+        conversation_name: str,
+        label: str,
+        strategy: str = "adaptive",
+    ) -> dict[str, Any]:
+        """Execute one declared navigation path, or the legacy adaptive sequence."""
+
+        attempts: list[dict[str, Any]] = []
+
+        def locate(action: str, suffix: str) -> dict[str, Any]:
+            row = self._codex_visual_click_target(
+                action=action,
+                project_name=project_name,
+                conversation_name=conversation_name,
+                label=f"{label}_{suffix}",
+            )
+            attempts.append(
+                {
+                    "path": suffix,
+                    "action": action,
+                    "ok": bool(row.get("ok")),
+                    "detail": str(row.get("detail") or ""),
+                    "result": row,
+                }
+            )
+            return row
+
+        if strategy in {"adaptive", "direct_conversation"}:
+            direct = locate("locate_conversation", "direct_conversation")
+            if direct.get("ok"):
+                return {
+                    "ok": True,
+                    "detail": "codex_conversation_selected_directly",
+                    "selected_path": "direct_conversation",
+                    "attempts": attempts,
+                }
+            if strategy == "direct_conversation":
+                return {
+                    "ok": False,
+                    "detail": "codex_direct_conversation_not_found",
+                    "selected_path": "direct_conversation",
+                    "attempts": attempts,
+                }
+
+        if strategy in {"adaptive", "expand_project_then_conversation"}:
+            project = locate("locate_project", "expand_project")
+            if project.get("ok"):
+                expanded = locate(
+                    "locate_conversation",
+                    "conversation_after_project_expand",
+                )
+                if expanded.get("ok"):
+                    return {
+                        "ok": True,
+                        "detail": "codex_conversation_selected_after_project_expand",
+                        "selected_path": "project_expand",
+                        "attempts": attempts,
+                    }
+            if strategy == "expand_project_then_conversation":
+                return {
+                    "ok": False,
+                    "detail": "codex_conversation_not_found_after_project_expand",
+                    "selected_path": "project_expand",
+                    "attempts": attempts,
+                }
+
+        if strategy in {"adaptive", "sidebar_search_conversation"}:
+            search = locate("locate_search", "sidebar_search")
+            if search.get("ok"):
+                query = str(conversation_name or "").strip()
+                self.io.hotkey("ctrl", "a", wait=0.1)
+                self.io.paste(query, wait=0.45)
+                searched = locate(
+                    "locate_conversation",
+                    "conversation_from_search",
+                )
+                if searched.get("ok"):
+                    return {
+                        "ok": True,
+                        "detail": "codex_conversation_selected_from_search",
+                        "selected_path": "sidebar_search",
+                        "search_query": query,
+                        "attempts": attempts,
+                    }
+                self.io.press("esc", wait=0.15)
+
+        return {
+            "ok": False,
+            "detail": "codex_work_plan_navigation_exhausted",
+            "selected_path": strategy,
+            "attempts": attempts,
+        }
+
+    def codex_work_plan_query(
+        self,
+        *,
+        project_name: str,
+        project_path: str,
+        prompt: str,
+        conversation_name: str = "工作计划",
+        wait_seconds: int = 120,
+        prompt_hash: str = "",
+        invocation_id: str = "",
+        session_id: str = "",
+        request_key: str = "",
+        context_digest: str = "",
+        context_stats: dict[str, Any] | None = None,
+    ) -> TaskResult:
+        """Run a Codex query and convert the mouse safety gesture into evidence."""
+
+        _, safe_invocation_id, _ = _prepare_codex_invocation_prompt(
+            str(prompt or "").strip(),
+            invocation_id,
+        )
+        try:
+            return self._codex_work_plan_query_impl(
+                project_name=project_name,
+                project_path=project_path,
+                prompt=prompt,
+                conversation_name=conversation_name,
+                wait_seconds=wait_seconds,
+                prompt_hash=prompt_hash,
+                invocation_id=safe_invocation_id,
+                session_id=session_id,
+                request_key=request_key,
+                context_digest=context_digest,
+                context_stats=context_stats,
+            )
+        except MouseFailSafeInterrupt as exc:
+            from l3_node.codex_invocation_manager import (
+                get_codex_invocation_manager,
+            )
+
+            manager = get_codex_invocation_manager()
+            current = manager.get(safe_invocation_id)
+            stage = str(current.get("stage") or exc.action or "mouse_failsafe")
+            if str(current.get("status") or "") not in {
+                "succeeded",
+                "failed",
+                "cancelled",
+            }:
+                current = manager.release(
+                    safe_invocation_id,
+                    status="cancelled",
+                    stage=stage,
+                    detail="mouse_failsafe_triggered",
+                )
+            evidence_path = (
+                self.out_dir
+                / f"codex_work_plan_{_safe_label(project_name)}_{now_tag()}_mouse_failsafe.evidence.json"
+            )
+            evidence = {
+                "task": "windows_codex_work_plan_query",
+                "project_name": str(project_name or "").strip(),
+                "workspace_project": Path(
+                    str(project_path or "").strip()
+                ).name,
+                "project_path": str(project_path or "").strip(),
+                "conversation_name": str(
+                    conversation_name or "工作计划"
+                ).strip(),
+                "invocation_id": safe_invocation_id,
+                "detail": "mouse_failsafe_triggered",
+                "mouse_failsafe": exc.to_evidence(),
+                "side_effect_status": "interrupted_by_user_safety_corner",
+                "invocation_manager_final": current,
+                "timeline": [
+                    {
+                        "at": row.get("at"),
+                        "stage": row.get("stage"),
+                        "status": row.get("status"),
+                        "detail": row.get("detail"),
+                    }
+                    for row in current.get("history") or []
+                    if isinstance(row, dict)
+                ],
+                "metrics": {
+                    "final_ok": False,
+                    "failure_stage": stage,
+                    "attempt_count": 0,
+                },
+            }
+            evidence_path.write_text(
+                json.dumps(evidence, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            evidence["evidence_path"] = str(evidence_path)
+            return TaskResult(
+                "windows_codex_work_plan_query",
+                False,
+                "mouse_failsafe_triggered",
+                evidence,
+            )
+
+    def _codex_work_plan_query_impl(
+        self,
+        *,
+        project_name: str,
+        project_path: str,
+        prompt: str,
+        conversation_name: str = "工作计划",
+        wait_seconds: int = 120,
+        prompt_hash: str = "",
+        invocation_id: str = "",
+        session_id: str = "",
+        request_key: str = "",
+        context_digest: str = "",
+        context_stats: dict[str, Any] | None = None,
+    ) -> TaskResult:
+        """Ask the conventional Codex work-plan conversation and capture evidence."""
+
+        clean_project = str(project_name or "").strip()
+        clean_path = str(project_path or "").strip()
+        clean_prompt = str(prompt or "").strip()
+        clean_conversation = str(conversation_name or "").strip() or "工作计划"
+        workspace_project = Path(clean_path).name.strip() or clean_project
+        if not clean_project or not clean_path or not clean_prompt:
+            return TaskResult(
+                "windows_codex_work_plan_query",
+                False,
+                "project_name_project_path_prompt_required",
+                {
+                    "project_name": clean_project,
+                    "project_path": clean_path,
+                    "conversation_name": clean_conversation,
+                },
+            )
+
+        execution_prompt, clean_invocation_id, invocation_marker = (
+            _prepare_codex_invocation_prompt(clean_prompt, invocation_id)
+        )
+        reply_schema = _codex_reply_schema_for_prompt(clean_prompt)
+        invocation_started_monotonic = time.monotonic()
+        label = f"codex_work_plan_{_safe_label(clean_project)}_{now_tag()}"
+        evidence_path = self.out_dir / f"{label}.evidence.json"
+        report_path = self.out_dir / f"{label}.md"
+        evidence: dict[str, Any] = {
+            "task": "windows_codex_work_plan_query",
+            "project_name": clean_project,
+            "workspace_project": workspace_project,
+            "project_path": clean_path,
+            "conversation_name": clean_conversation,
+            "prompt": execution_prompt,
+            "reply_schema": reply_schema,
+            "prompt_hash": str(prompt_hash or ""),
+            "invocation_id": clean_invocation_id,
+            "invocation_marker": invocation_marker,
+            "session_id": str(session_id or ""),
+            "request_key": str(request_key or ""),
+            "context_pack": {
+                "digest": str(context_digest or ""),
+                "stats": dict(context_stats or {}),
+            },
+            "timeline": [],
+            "screenshots": {},
+            "recovery": {},
+        }
+        recovery_planner = CodexStageRecoveryPlanner(
+            journal_path=self.out_dir / "codex_recovery_learned.jsonl",
+        )
+        from l3_node.codex_invocation_manager import (
+            CodexInvocationLeaseGuard,
+            get_codex_invocation_manager,
+        )
+
+        invocation_manager = get_codex_invocation_manager()
+        lease_result = invocation_manager.acquire(
+            clean_invocation_id,
+            metadata={
+                "task": "windows_codex_work_plan_query",
+                "project_name": clean_project,
+                "workspace_project": workspace_project,
+                "project_path": clean_path,
+                "conversation_name": clean_conversation,
+                "prompt_hash": str(prompt_hash or ""),
+                "session_id": str(session_id or ""),
+                "request_key": str(request_key or ""),
+                "context_digest": str(context_digest or ""),
+                "context_stats": dict(context_stats or {}),
+            },
+            timeout_seconds=max(
+                1,
+                int(os.environ.get("JACHIN_CODEX_QUEUE_TIMEOUT_SECONDS") or "120"),
+            ),
+        )
+        evidence["invocation_manager_acquire"] = lease_result
+        if not lease_result.get("ok"):
+            detail = (
+                "codex_invocation_cancelled"
+                if lease_result.get("cancelled")
+                else "codex_invocation_queue_timeout"
+            )
+            evidence["metrics"] = {
+                "duration_ms": round(
+                    (time.monotonic() - invocation_started_monotonic) * 1000
+                ),
+                "attempt_count": 0,
+                "final_ok": False,
+                "failure_stage": "queue",
+            }
+            evidence_path.write_text(
+                json.dumps(evidence, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return TaskResult(
+                "windows_codex_work_plan_query",
+                False,
+                detail,
+                {
+                    **evidence,
+                    "evidence_path": str(evidence_path),
+                },
+            )
+        lease_guard = CodexInvocationLeaseGuard(
+            invocation_manager,
+            clean_invocation_id,
+        )
+
+        def finish_invocation(
+            *,
+            ok: bool,
+            detail: str,
+            stage: str,
+            status: str | None = None,
+        ) -> TaskResult:
+            terminal_status = status or ("succeeded" if ok else "failed")
+            if not ok and recovery_planner.attempts:
+                evidence["recovery_terminal"] = (
+                    recovery_planner.record_terminal_failure(final_reason=detail)
+                )
+            evidence["recovery"] = recovery_planner.snapshot()
+            evidence["metrics"] = {
+                "duration_ms": round(
+                    (time.monotonic() - invocation_started_monotonic) * 1000
+                ),
+                "attempt_count": len(recovery_planner.attempts),
+                "final_ok": ok,
+                "failure_stage": "" if ok else stage,
+            }
+            evidence["invocation_manager_final"] = lease_guard.finish(
+                terminal_status,
+                stage=stage,
+                detail=detail,
+            )
+            evidence_path.write_text(
+                json.dumps(evidence, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return TaskResult(
+                "windows_codex_work_plan_query",
+                ok,
+                detail,
+                {
+                    **evidence,
+                    "evidence_path": str(evidence_path),
+                    "report_path": str(report_path),
+                },
+            )
+
+        def choose_recovery(
+            *,
+            stage: str,
+            failure_reason: str,
+            attempted_strategy: str,
+            details: dict[str, Any] | None = None,
+            elapsed_ms: float | None = None,
+        ) -> dict[str, Any] | None:
+            decision = recovery_planner.observe_failure(
+                stage=stage,
+                failure_reason=failure_reason,
+                attempted_strategy=attempted_strategy,
+                evidence=details,
+                elapsed_ms=elapsed_ms,
+            )
+            evidence["recovery"] = recovery_planner.snapshot()
+            decision_payload = decision.to_dict() if decision else None
+            _append_evidence_timeline(
+                evidence,
+                evidence_path,
+                f"recover_codex_{stage}",
+                "planned" if decision else "exhausted",
+                (
+                    f"selected={decision.strategy}"
+                    if decision
+                    else f"no eligible recovery path for {failure_reason}"
+                ),
+                {
+                    "failure_reason": failure_reason,
+                    "attempted_strategy": attempted_strategy,
+                    "decision": decision_payload,
+                    "recovery_snapshot": recovery_planner.snapshot(),
+                },
+            )
+            return decision_payload
+
+        def cancellation_result(stage: str) -> TaskResult | None:
+            if not lease_guard.cancel_requested():
+                return None
+            _append_evidence_timeline(
+                evidence,
+                evidence_path,
+                stage,
+                "cancelled",
+                "Codex invocation cancelled by user",
+                {"invocation_id": clean_invocation_id},
+            )
+            return finish_invocation(
+                ok=False,
+                detail="codex_invocation_cancelled",
+                stage=stage,
+                status="cancelled",
+            )
+
+        _append_evidence_timeline(
+            evidence,
+            evidence_path,
+            "prepare_codex_work_plan_query",
+            "done",
+            "prepared dynamic evidence-gap prompt",
+            {
+                "project_name": clean_project,
+                "workspace_project": workspace_project,
+                "conversation_name": clean_conversation,
+                "prompt_length": len(clean_prompt),
+                "prompt_hash": str(prompt_hash or ""),
+                "invocation_id": clean_invocation_id,
+            },
+        )
+
+        cancelled = cancellation_result("before_open_codex")
+        if cancelled:
+            return cancelled
+        lease_guard.heartbeat("open_codex", detail="opening Codex application")
+        opened = self.ensure_app("codex", timeout=5.0)
+        evidence["codex_open"] = asdict(opened)
+        _append_evidence_timeline(
+            evidence,
+            evidence_path,
+            "open_codex",
+            "done" if opened.ok else "failed",
+            opened.detail,
+            {"result": asdict(opened)},
+        )
+        if not opened.ok:
+            decision = choose_recovery(
+                stage="open",
+                failure_reason=f"open_codex:{opened.detail}",
+                attempted_strategy="initial_open",
+                details={"result": asdict(opened)},
+            )
+            if decision and decision.get("strategy") == "retry_open_codex":
+                opened = self.ensure_app("codex", timeout=8.0)
+                evidence["codex_open_recovery"] = asdict(opened)
+                _append_evidence_timeline(
+                    evidence,
+                    evidence_path,
+                    "recover_open_codex",
+                    "done" if opened.ok else "failed",
+                    opened.detail,
+                    {"strategy": decision.get("strategy"), "result": asdict(opened)},
+                )
+                if opened.ok:
+                    evidence["recovery_success"] = recovery_planner.record_success(
+                        stage="open",
+                        strategy=str(decision.get("strategy") or ""),
+                        evidence={"detail": opened.detail},
+                    )
+            if not opened.ok:
+                return finish_invocation(
+                    ok=False,
+                    detail="codex_open_failed",
+                    stage="open_codex",
+                )
+
+        cancelled = cancellation_result("before_navigate_conversation")
+        if cancelled:
+            return cancelled
+        lease_guard.heartbeat(
+            "navigate_conversation",
+            detail="locating Codex project and work-plan conversation",
+        )
+        navigation_strategy = "direct_conversation"
+        navigation = self._codex_navigate_work_plan_context(
+            project_name=workspace_project,
+            conversation_name=clean_conversation,
+            label=f"{label}_navigation",
+            strategy=navigation_strategy,
+        )
+        evidence["navigation"] = navigation
+        _append_evidence_timeline(
+            evidence,
+            evidence_path,
+            "navigate_codex_work_plan_context",
+            "done" if navigation.get("ok") else "failed",
+            str(navigation.get("detail") or ""),
+            navigation,
+        )
+        while not navigation.get("ok"):
+            decision = choose_recovery(
+                stage="navigate",
+                failure_reason=(
+                    "navigate_conversation:"
+                    + str(navigation.get("detail") or "conversation_not_found")
+                ),
+                attempted_strategy=navigation_strategy,
+                details=navigation,
+            )
+            if not decision:
+                break
+            navigation_strategy = str(
+                (decision.get("action_patch") or {}).get("navigation_strategy")
+                or decision.get("strategy")
+                or ""
+            )
+            navigation = self._codex_navigate_work_plan_context(
+                project_name=workspace_project,
+                conversation_name=clean_conversation,
+                label=f"{label}_navigation_recovery_{len(recovery_planner.decisions)}",
+                strategy=navigation_strategy,
+            )
+            evidence.setdefault("navigation_recovery_attempts", []).append(
+                {
+                    "decision": decision,
+                    "result": navigation,
+                }
+            )
+            _append_evidence_timeline(
+                evidence,
+                evidence_path,
+                "recover_codex_navigation",
+                "done" if navigation.get("ok") else "failed",
+                str(navigation.get("detail") or ""),
+                {"decision": decision, "result": navigation},
+            )
+            if navigation.get("ok"):
+                evidence["recovery_success"] = recovery_planner.record_success(
+                    stage="navigate",
+                    strategy=str(decision.get("strategy") or ""),
+                    evidence={
+                        "selected_path": navigation.get("selected_path"),
+                        "detail": navigation.get("detail"),
+                    },
+                )
+                break
+        evidence["navigation"] = navigation
+        if not navigation.get("ok"):
+            return finish_invocation(
+                ok=False,
+                detail="codex_work_plan_conversation_not_found",
+                stage="navigate_conversation",
+            )
+
+        cancelled = cancellation_result("before_verify_context")
+        if cancelled:
+            return cancelled
+        lease_guard.heartbeat(
+            "verify_context",
+            detail="verifying Codex project and conversation",
+        )
+        context = self._codex_verify_work_plan_context(
+            project_name=workspace_project,
+            conversation_name=clean_conversation,
+            label=label,
+        )
+        evidence["context_verification"] = context
+        _append_evidence_timeline(
+            evidence,
+            evidence_path,
+            "verify_codex_work_plan_context",
+            "done" if context.get("ok") else "failed",
+            str(context.get("detail") or ""),
+            context,
+        )
+        if not context.get("ok"):
+            verify_strategy = "initial_context_verification"
+            while not context.get("ok"):
+                lease_guard.heartbeat(
+                    "recover_navigation",
+                    detail="context mismatch; selecting next manifest recovery path",
+                )
+                decision = choose_recovery(
+                    stage="verify",
+                    failure_reason=(
+                        "verify_context:"
+                        + str(context.get("detail") or "context_mismatch")
+                    ),
+                    attempted_strategy=verify_strategy,
+                    details=context,
+                )
+                if not decision:
+                    break
+                verify_strategy = str(decision.get("strategy") or "")
+                patch = (
+                    decision.get("action_patch")
+                    if isinstance(decision.get("action_patch"), dict)
+                    else {}
+                )
+                if verify_strategy == "recheck_context_after_settle":
+                    time.sleep(max(0.0, min(float(patch.get("settle_seconds") or 0.8), 3.0)))
+                elif verify_strategy == "renavigate_and_recheck_context":
+                    recovery_navigation = self._codex_navigate_work_plan_context(
+                        project_name=workspace_project,
+                        conversation_name=clean_conversation,
+                        label=f"{label}_verify_renavigation",
+                        strategy=str(
+                            patch.get("navigation_strategy")
+                            or "sidebar_search_conversation"
+                        ),
+                    )
+                    evidence.setdefault("context_recovery_navigation", []).append(
+                        {
+                            "decision": decision,
+                            "result": recovery_navigation,
+                        }
+                    )
+                    if not recovery_navigation.get("ok"):
+                        context = {
+                            "ok": False,
+                            "detail": str(
+                                recovery_navigation.get("detail")
+                                or "context_recovery_navigation_failed"
+                            ),
+                        }
+                        continue
+                context = self._codex_verify_work_plan_context(
+                    project_name=workspace_project,
+                    conversation_name=clean_conversation,
+                    label=f"{label}_recovered_{len(recovery_planner.decisions)}",
+                )
+                evidence.setdefault("context_verification_recovery_attempts", []).append(
+                    {
+                        "decision": decision,
+                        "result": context,
+                    }
+                )
+                _append_evidence_timeline(
+                    evidence,
+                    evidence_path,
+                    "verify_recovered_codex_context",
+                    "done" if context.get("ok") else "failed",
+                    str(context.get("detail") or ""),
+                    {"decision": decision, "result": context},
+                )
+                if context.get("ok"):
+                    evidence["recovery_success"] = recovery_planner.record_success(
+                        stage="verify",
+                        strategy=verify_strategy,
+                        evidence={"detail": context.get("detail")},
+                    )
+                    break
+            if not context.get("ok"):
+                return finish_invocation(
+                    ok=False,
+                    detail="codex_work_plan_context_mismatch",
+                    stage="verify_context",
+                )
+
+        cancelled = cancellation_result("before_locate_composer")
+        if cancelled:
+            return cancelled
+        lease_guard.heartbeat(
+            "locate_composer",
+            detail="locating Codex prompt composer",
+        )
+        composer_click = self._codex_visual_click_target(
+            action="locate_composer",
+            project_name=clean_project,
+            conversation_name=clean_conversation,
+            label=f"{label}_composer",
+        )
+        evidence["composer_click"] = composer_click
+        _append_evidence_timeline(
+            evidence,
+            evidence_path,
+            "locate_codex_composer",
+            "done" if composer_click.get("ok") else "failed",
+            str(composer_click.get("detail") or ""),
+            composer_click,
+        )
+        if not composer_click.get("ok"):
+            decision = choose_recovery(
+                stage="input",
+                failure_reason=(
+                    "input:composer_not_found:"
+                    + str(composer_click.get("detail") or "")
+                ),
+                attempted_strategy="visual_locate_composer",
+                details=composer_click,
+            )
+            if decision and decision.get("strategy") == "refocus_and_relocate_composer":
+                self._ensure_codex_foreground(timeout=4.0)
+                composer_click = self._codex_visual_click_target(
+                    action="locate_composer",
+                    project_name=clean_project,
+                    conversation_name=clean_conversation,
+                    label=f"{label}_composer_recovery",
+                )
+                evidence["composer_click_recovery"] = {
+                    "decision": decision,
+                    "result": composer_click,
+                }
+                _append_evidence_timeline(
+                    evidence,
+                    evidence_path,
+                    "recover_codex_composer",
+                    "done" if composer_click.get("ok") else "failed",
+                    str(composer_click.get("detail") or ""),
+                    {"decision": decision, "result": composer_click},
+                )
+                if composer_click.get("ok"):
+                    evidence["recovery_success"] = recovery_planner.record_success(
+                        stage="input",
+                        strategy=str(decision.get("strategy") or ""),
+                        evidence={"detail": composer_click.get("detail")},
+                    )
+            if not composer_click.get("ok"):
+                return finish_invocation(
+                    ok=False,
+                    detail="codex_composer_not_found",
+                    stage="locate_composer",
+                )
+
+        cancelled = cancellation_result("before_paste_prompt")
+        if cancelled:
+            return cancelled
+        lease_guard.heartbeat(
+            "paste_prompt",
+            detail="pasting correlated Codex prompt",
+        )
+        self.io.hotkey("ctrl", "a", wait=0.1)
+        self.io.press("backspace", wait=0.15)
+        self.io.paste(execution_prompt, wait=0.4)
+        typed = self.io.screenshot_active_window(self.out_dir, f"{label}_typed")
+        evidence["screenshots"]["typed"] = typed
+        _append_evidence_timeline(
+            evidence,
+            evidence_path,
+            "paste_codex_work_plan_prompt",
+            "done",
+            "dynamic prompt pasted",
+            {
+                "screenshot": typed,
+                "prompt_length": len(execution_prompt),
+                "invocation_id": clean_invocation_id,
+            },
+        )
+        cancelled = cancellation_result("before_submit_prompt")
+        if cancelled:
+            return cancelled
+        lease_guard.heartbeat(
+            "verify_context_before_submit",
+            detail="rechecking project and conversation before prompt submission",
+        )
+        pre_submit_context = self._codex_verify_work_plan_context(
+            project_name=workspace_project,
+            conversation_name=clean_conversation,
+            label=f"{label}_pre_submit",
+            samples=1,
+            sample_delay=0.0,
+            allow_remote_fallback=False,
+        )
+        evidence["pre_submit_context_verification"] = pre_submit_context
+        _append_evidence_timeline(
+            evidence,
+            evidence_path,
+            "verify_codex_context_before_submit",
+            "done" if pre_submit_context.get("ok") else "failed",
+            str(pre_submit_context.get("detail") or ""),
+            pre_submit_context,
+        )
+        if not pre_submit_context.get("ok"):
+            self.io.hotkey("ctrl", "a", wait=0.1)
+            self.io.press("backspace", wait=0.15)
+            decision = choose_recovery(
+                stage="submit",
+                failure_reason="submit:context_changed_before_submit",
+                attempted_strategy="pre_submit_context_guard",
+                details=pre_submit_context,
+            )
+            if (
+                decision
+                and decision.get("strategy") == "renavigate_repaste_before_submit"
+            ):
+                patch = (
+                    decision.get("action_patch")
+                    if isinstance(decision.get("action_patch"), dict)
+                    else {}
+                )
+                restored_navigation = self._codex_navigate_work_plan_context(
+                    project_name=workspace_project,
+                    conversation_name=clean_conversation,
+                    label=f"{label}_pre_submit_restore",
+                    strategy=str(
+                        patch.get("navigation_strategy")
+                        or "sidebar_search_conversation"
+                    ),
+                )
+                restored_context = (
+                    self._codex_verify_work_plan_context(
+                        project_name=workspace_project,
+                        conversation_name=clean_conversation,
+                        label=f"{label}_pre_submit_restored",
+                        samples=1,
+                        sample_delay=0.0,
+                        allow_remote_fallback=False,
+                    )
+                    if restored_navigation.get("ok")
+                    else {
+                        "ok": False,
+                        "detail": "pre_submit_restore_navigation_failed",
+                    }
+                )
+                restored_composer = (
+                    self._codex_visual_click_target(
+                        action="locate_composer",
+                        project_name=workspace_project,
+                        conversation_name=clean_conversation,
+                        label=f"{label}_pre_submit_composer_restored",
+                    )
+                    if restored_context.get("ok")
+                    else {
+                        "ok": False,
+                        "detail": "pre_submit_restore_context_failed",
+                    }
+                )
+                if restored_composer.get("ok"):
+                    self.io.paste(execution_prompt, wait=0.4)
+                    pre_submit_context = self._codex_verify_work_plan_context(
+                        project_name=workspace_project,
+                        conversation_name=clean_conversation,
+                        label=f"{label}_pre_submit_final_guard",
+                        samples=1,
+                        sample_delay=0.0,
+                        allow_remote_fallback=False,
+                    )
+                else:
+                    pre_submit_context = {
+                        "ok": False,
+                        "detail": str(
+                            restored_composer.get("detail")
+                            or "pre_submit_restore_composer_failed"
+                        ),
+                    }
+                evidence["pre_submit_recovery"] = {
+                    "decision": decision,
+                    "navigation": restored_navigation,
+                    "context": restored_context,
+                    "composer": restored_composer,
+                    "final_context": pre_submit_context,
+                }
+                _append_evidence_timeline(
+                    evidence,
+                    evidence_path,
+                    "recover_codex_context_before_submit",
+                    "done" if pre_submit_context.get("ok") else "failed",
+                    str(pre_submit_context.get("detail") or ""),
+                    evidence["pre_submit_recovery"],
+                )
+                if pre_submit_context.get("ok"):
+                    evidence["recovery_success"] = recovery_planner.record_success(
+                        stage="submit",
+                        strategy=str(decision.get("strategy") or ""),
+                        evidence={"detail": pre_submit_context.get("detail")},
+                    )
+            if not pre_submit_context.get("ok"):
+                return finish_invocation(
+                    ok=False,
+                    detail="codex_context_changed_before_submit",
+                    stage="verify_context_before_submit",
+                )
+        submit_focus_guard = self._ensure_codex_foreground(timeout=1.0)
+        evidence["submit_focus_guard"] = submit_focus_guard
+        if not submit_focus_guard.get("ok"):
+            _append_evidence_timeline(
+                evidence,
+                evidence_path,
+                "guard_codex_foreground_before_submit",
+                "failed",
+                str(submit_focus_guard.get("detail") or "codex_focus_lost"),
+                submit_focus_guard,
+            )
+            return finish_invocation(
+                ok=False,
+                detail="codex_focus_lost_before_submit",
+                stage="guard_foreground_before_submit",
+            )
+        self.io.press("enter", wait=1.0)
+        lease_guard.heartbeat(
+            "wait_reply",
+            status="waiting",
+            detail="waiting for correlated Codex reply",
+        )
+        _append_evidence_timeline(
+            evidence,
+            evidence_path,
+            "submit_codex_work_plan_prompt",
+            "done",
+            "prompt submitted",
+            {},
+        )
+
+        wait_limit = max(10, min(int(wait_seconds or 120), 600))
+        deadline = time.time() + wait_limit
+        wait_started = time.time()
+        wait_state: dict[str, Any] = {}
+        captures: list[dict[str, Any]] = []
+        marker_missing_streak = 0
+        focus_loss_attempts = 0
+        max_focus_loss_attempts = 5
+
+        def recover_wait_context(stage: str) -> bool:
+            nonlocal wait_state, marker_missing_streak
+            context_probe = self._codex_verify_work_plan_context(
+                project_name=clean_project,
+                conversation_name=clean_conversation,
+                label=f"{label}_{stage}_context_probe",
+                samples=2,
+                sample_delay=0.15,
+            )
+            if context_probe.get("ok"):
+                return False
+            navigation = self._codex_navigate_work_plan_context(
+                project_name=clean_project,
+                conversation_name=clean_conversation,
+                label=f"{label}_{stage}_context_recovery",
+                strategy="adaptive",
+            )
+            verified = (
+                self._codex_verify_work_plan_context(
+                    project_name=clean_project,
+                    conversation_name=clean_conversation,
+                    label=f"{label}_{stage}_context_recovered",
+                    samples=2,
+                    sample_delay=0.15,
+                )
+                if navigation.get("ok")
+                else {"ok": False, "detail": "navigation_failed"}
+            )
+            recovered = bool(navigation.get("ok") and verified.get("ok"))
+            evidence.setdefault("wait_context_recoveries", []).append(
+                {
+                    "stage": stage,
+                    "context_probe": context_probe,
+                    "navigation": navigation,
+                    "verified": verified,
+                    "ok": recovered,
+                }
+            )
+            _append_evidence_timeline(
+                evidence,
+                evidence_path,
+                "recover_codex_wait_context",
+                "done" if recovered else "failed",
+                (
+                    "target_conversation_restored_without_resubmit"
+                    if recovered
+                    else "target_conversation_recovery_failed"
+                ),
+                {
+                    "stage": stage,
+                    "context_probe": context_probe,
+                    "navigation": navigation,
+                    "verified": verified,
+                    "prompt_resubmitted": False,
+                },
+            )
+            if recovered:
+                wait_state = {}
+                marker_missing_streak = 0
+            return recovered
+
+        while time.time() < deadline:
+            cancelled = cancellation_result("wait_reply_cancelled")
+            if cancelled:
+                return cancelled
+            time.sleep(4.0)
+            lease_guard.heartbeat(
+                "wait_reply",
+                status="waiting",
+                detail=f"waiting capture {len(captures) + 1}",
+            )
+            focus = self._ensure_codex_foreground(timeout=2.0)
+            if not focus.get("ok"):
+                focus_loss_attempts += 1
+                captures.append({"focus_guard": focus, "active": False})
+                decision = choose_recovery(
+                    stage="wait",
+                    failure_reason=(
+                        "wait:focus_lost:"
+                        + str(focus.get("detail") or "foreground_missing")
+                    ),
+                    attempted_strategy="wait_with_foreground_guard",
+                    details=focus,
+                    elapsed_ms=(time.time() - wait_started) * 1000,
+                )
+                if (
+                    decision
+                    and decision.get("strategy") == "refocus_and_continue_wait"
+                ):
+                    recovered_focus = self._ensure_codex_foreground(timeout=4.0)
+                    evidence.setdefault("wait_focus_recoveries", []).append(
+                        {
+                            "decision": decision,
+                            "result": recovered_focus,
+                        }
+                    )
+                    _append_evidence_timeline(
+                        evidence,
+                        evidence_path,
+                        "recover_codex_wait_focus",
+                        "done" if recovered_focus.get("ok") else "failed",
+                        str(recovered_focus.get("detail") or ""),
+                        {"decision": decision, "result": recovered_focus},
+                    )
+                    if recovered_focus.get("ok"):
+                        focus_loss_attempts = 0
+                        evidence["recovery_success"] = (
+                            recovery_planner.record_success(
+                                stage="wait",
+                                strategy=str(decision.get("strategy") or ""),
+                                evidence={"detail": recovered_focus.get("detail")},
+                            )
+                        )
+                        continue
+                wait_state = {
+                    **wait_state,
+                    "complete": False,
+                    "status": "focus_recovery_pending",
+                    "detail": str(focus.get("detail") or "foreground_missing"),
+                    "focus_loss_attempts": focus_loss_attempts,
+                    "max_focus_loss_attempts": max_focus_loss_attempts,
+                }
+                _append_evidence_timeline(
+                    evidence,
+                    evidence_path,
+                    "recover_codex_wait_focus",
+                    (
+                        "failed"
+                        if focus_loss_attempts >= max_focus_loss_attempts
+                        else "retrying"
+                    ),
+                    (
+                        f"attempt={focus_loss_attempts}/"
+                        f"{max_focus_loss_attempts} "
+                        f"detail={wait_state.get('detail')}"
+                    ),
+                    {
+                        "prompt_resubmitted": False,
+                        "focus_guard": focus,
+                        "decision": decision,
+                    },
+                )
+                if focus_loss_attempts >= max_focus_loss_attempts:
+                    wait_state["status"] = "focus_lost"
+                    break
+                continue
+            focus_loss_attempts = 0
+            shot = self.io.screenshot_active_window(
+                self.out_dir,
+                f"{label}_wait_{len(captures) + 1}",
+            )
+            visual = ocr_image_state(shot)
+            ocr_text = str(visual.get("ocr_text") or "")
+            elapsed = round(time.time() - wait_started, 1)
+            accessibility = self._codex_accessibility_snapshot(
+                project_name=clean_project,
+                conversation_name=clean_conversation,
+            )
+            wait_state = advance_wait_state(
+                wait_state,
+                ocr_text=ocr_text,
+                controls=accessibility.get("controls") or [],
+                invocation_marker=invocation_marker,
+                elapsed_seconds=elapsed,
+                allow_deferred_marker_completion=True,
+            )
+            if wait_state.get("marker_found"):
+                marker_missing_streak = 0
+            else:
+                marker_missing_streak += 1
+            capture = {
+                "screenshot": shot,
+                "visual": visual,
+                "accessibility": {
+                    "ok": accessibility.get("ok"),
+                    "detail": accessibility.get("detail"),
+                    "active_title": accessibility.get("active_title"),
+                    "control_count": accessibility.get("control_count"),
+                },
+                "generation_state": wait_state,
+                "elapsed_seconds": elapsed,
+            }
+            captures.append(capture)
+            _append_evidence_timeline(
+                evidence,
+                evidence_path,
+                "wait_codex_work_plan_reply",
+                (
+                    "done"
+                    if wait_state.get("complete")
+                    else (
+                        "failed"
+                        if wait_state.get("status") == "generation_error"
+                        else (
+                            "waiting_user"
+                            if wait_state.get("status") == "permission_required"
+                            else "running"
+                        )
+                    )
+                ),
+                (
+                    f"capture={len(captures)} "
+                    f"status={wait_state.get('status')} "
+                    f"stable={wait_state.get('stable_samples')}"
+                ),
+                {
+                    "screenshot": shot,
+                    "generation_state": wait_state,
+                    "elapsed_seconds": elapsed,
+                },
+            )
+            if wait_state.get("complete"):
+                break
+            if (
+                marker_missing_streak >= 2
+                and not wait_state.get("active")
+                and recover_wait_context("bounded_wait")
+            ):
+                continue
+            if wait_state.get("status") in {
+                "generation_error",
+            }:
+                break
+        if (
+            not wait_state.get("complete")
+            and str(wait_state.get("status") or "")
+            not in {"permission_required", "generation_error", "focus_lost"}
+        ):
+            decision = choose_recovery(
+                stage="wait",
+                failure_reason=(
+                    "wait:timeout:"
+                    + str(wait_state.get("status") or "still_generating")
+                ),
+                attempted_strategy="bounded_wait",
+                details={
+                    "capture_count": len(captures),
+                    "wait_state": wait_state,
+                },
+                elapsed_ms=(time.time() - wait_started) * 1000,
+            )
+            if decision and decision.get("strategy") == "extend_wait_window":
+                patch = (
+                    decision.get("action_patch")
+                    if isinstance(decision.get("action_patch"), dict)
+                    else {}
+                )
+                extension = max(
+                    5,
+                    min(int(patch.get("extend_seconds") or 30), 90),
+                )
+                extension_deadline = time.time() + extension
+                while time.time() < extension_deadline:
+                    cancelled = cancellation_result("wait_reply_extension_cancelled")
+                    if cancelled:
+                        return cancelled
+                    time.sleep(4.0)
+                    focus = self._ensure_codex_foreground(timeout=2.0)
+                    if not focus.get("ok"):
+                        wait_state = {
+                            **wait_state,
+                            "complete": False,
+                            "status": "focus_lost",
+                            "detail": str(
+                                focus.get("detail") or "foreground_missing"
+                            ),
+                        }
+                        break
+                    shot = self.io.screenshot_active_window(
+                        self.out_dir,
+                        f"{label}_wait_extension_{len(captures) + 1}",
+                    )
+                    visual = ocr_image_state(shot)
+                    accessibility = self._codex_accessibility_snapshot(
+                        project_name=clean_project,
+                        conversation_name=clean_conversation,
+                    )
+                    elapsed = round(time.time() - wait_started, 1)
+                    wait_state = advance_wait_state(
+                        wait_state,
+                        ocr_text=str(visual.get("ocr_text") or ""),
+                        controls=accessibility.get("controls") or [],
+                        invocation_marker=invocation_marker,
+                        elapsed_seconds=elapsed,
+                        allow_deferred_marker_completion=True,
+                    )
+                    if wait_state.get("marker_found"):
+                        marker_missing_streak = 0
+                    else:
+                        marker_missing_streak += 1
+                    capture = {
+                        "screenshot": shot,
+                        "visual": visual,
+                        "accessibility": {
+                            "ok": accessibility.get("ok"),
+                            "detail": accessibility.get("detail"),
+                            "active_title": accessibility.get("active_title"),
+                            "control_count": accessibility.get("control_count"),
+                        },
+                        "generation_state": wait_state,
+                        "elapsed_seconds": elapsed,
+                        "recovery_strategy": decision.get("strategy"),
+                    }
+                    captures.append(capture)
+                    _append_evidence_timeline(
+                        evidence,
+                        evidence_path,
+                        "extend_codex_reply_wait",
+                        "done" if wait_state.get("complete") else "running",
+                        (
+                            f"capture={len(captures)} "
+                            f"status={wait_state.get('status')} "
+                            f"stable={wait_state.get('stable_samples')}"
+                        ),
+                        {
+                            "decision": decision,
+                            "screenshot": shot,
+                            "generation_state": wait_state,
+                        },
+                    )
+                    if wait_state.get("complete") or wait_state.get(
+                        "status"
+                    ) == "generation_error":
+                        break
+                    if (
+                        marker_missing_streak >= 2
+                        and not wait_state.get("active")
+                        and recover_wait_context("extended_wait")
+                    ):
+                        continue
+                if wait_state.get("complete"):
+                    evidence["recovery_success"] = (
+                        recovery_planner.record_success(
+                            stage="wait",
+                            strategy=str(decision.get("strategy") or ""),
+                            evidence={
+                                "capture_count": len(captures),
+                                "status": wait_state.get("status"),
+                            },
+                        )
+                    )
+        evidence["wait_captures"] = captures
+        evidence["completion_state"] = wait_state
+
+        if not wait_state.get("complete"):
+            status = str(wait_state.get("status") or "timeout")
+            if status == "permission_required":
+                detail = "codex_reply_permission_required"
+            elif status == "generation_error":
+                detail = "codex_reply_generation_error"
+            else:
+                status = "timeout"
+                detail = "codex_reply_completion_timeout"
+            _append_evidence_timeline(
+                evidence,
+                evidence_path,
+                "wait_codex_work_plan_reply",
+                "failed",
+                detail,
+                {
+                    "completion_state": wait_state,
+                    "last_screenshot": (
+                        captures[-1].get("screenshot") if captures else ""
+                    ),
+                    "capture_count": len(captures),
+                },
+            )
+            return finish_invocation(
+                ok=False,
+                detail=detail,
+                stage=f"wait_reply.{status}",
+            )
+
+        cancelled = cancellation_result("before_extract_reply")
+        if cancelled:
+            return cancelled
+        lease_guard.heartbeat(
+            "extract_reply",
+            detail="extracting and validating correlated Codex reply",
+        )
+        final_focus = self._ensure_codex_foreground(timeout=3.0)
+        final_shot = self.io.screenshot_active_window(self.out_dir, f"{label}_final")
+        final_visual = ocr_image_state(final_shot)
+        evidence["screenshots"]["final"] = final_shot
+        evidence["final_focus_guard"] = final_focus
+        evidence["final_visual"] = final_visual
+        if not final_focus.get("ok"):
+            _append_evidence_timeline(
+                evidence,
+                evidence_path,
+                "extract_codex_work_plan_reply",
+                "failed",
+                "codex_focus_lost_before_reply_extraction",
+                {"focus_guard": final_focus, "screenshot": final_shot},
+            )
+            return finish_invocation(
+                ok=False,
+                detail="codex_focus_lost_before_reply_extraction",
+                stage="extract_reply.focus",
+            )
+        copied = self._codex_copy_latest_response(
+            clean_project,
+            feature_query=f"工作计划 {invocation_marker}",
+            required_marker=invocation_marker,
+            conversation_name=clean_conversation,
+        )
+        copied_text = str(copied.get("text") or "").strip()
+        _append_evidence_timeline(
+            evidence,
+            evidence_path,
+            "copy_codex_work_plan_reply",
+            "done" if copied.get("ok") else "check",
+            str(copied.get("detail") or ""),
+            {
+                "copied_length": len(copied_text),
+                "required_marker": invocation_marker,
+                "attempts": copied.get("attempts") or [],
+            },
+        )
+        extracted = (
+            {
+                "ok": False,
+                "detail": "vision_extract_skipped_native_copy_ready",
+                "content": "",
+            }
+            if copied.get("ok")
+            else _call_qwen_vision_codex_extract(
+                final_shot,
+                clean_project,
+                feature_query=(
+                    "工作计划会话中的完整最新回复，必须保留回复第一行的"
+                    f"关联标记 {invocation_marker}"
+                ),
+            )
+        )
+        vision_text = str(extracted.get("content") or "").strip()
+        reply_selection = select_reply(
+            [
+                {"source": "clipboard", "text": copied_text},
+                {"source": "qwen_vision", "text": vision_text},
+                {
+                    "source": "ocr_fallback",
+                    "text": str(final_visual.get("ocr_text") or ""),
+                },
+            ],
+            prompt=execution_prompt,
+            invocation_marker=invocation_marker,
+            schema=reply_schema,
+        )
+        answer = str(reply_selection.get("answer") or "").strip()
+        validation = dict(reply_selection.get("validation") or {})
+        invocation_match = _match_codex_invocation_answer(
+            f"{invocation_marker}\n{answer}" if answer else "",
+            clean_invocation_id,
+        )
+        if not validation.get("ok"):
+            extraction_reason = "extract:reply_unverified"
+            if reply_selection.get("conflicts"):
+                extraction_reason = "extract:source_conflict"
+            elif not invocation_match.get("ok"):
+                extraction_reason = "extract:invocation_marker_mismatch"
+            decision = choose_recovery(
+                stage="extract",
+                failure_reason=extraction_reason,
+                attempted_strategy=str(
+                    reply_selection.get("source") or "initial_source_fusion"
+                ),
+                details={
+                    "validation": validation,
+                    "conflicts": reply_selection.get("conflicts") or [],
+                    "invocation_match": {
+                        key: value
+                        for key, value in invocation_match.items()
+                        if key != "clean_answer"
+                    },
+                },
+            )
+            if decision and decision.get("strategy") == "refocus_recapture_reply":
+                patch = (
+                    decision.get("action_patch")
+                    if isinstance(decision.get("action_patch"), dict)
+                    else {}
+                )
+                self._ensure_codex_foreground(timeout=4.0)
+                time.sleep(
+                    max(
+                        0.0,
+                        min(float(patch.get("settle_seconds") or 0.8), 3.0),
+                    )
+                )
+                final_shot = self.io.screenshot_active_window(
+                    self.out_dir,
+                    f"{label}_final_recovery",
+                )
+                final_visual = ocr_image_state(final_shot)
+                copied = self._codex_copy_latest_response(
+                    clean_project,
+                    feature_query=f"工作计划 {invocation_marker}",
+                    required_marker=invocation_marker,
+                    conversation_name=clean_conversation,
+                )
+                copied_text = str(copied.get("text") or "").strip()
+                extracted = (
+                    {
+                        "ok": False,
+                        "detail": "vision_extract_skipped_native_copy_ready",
+                        "content": "",
+                    }
+                    if copied.get("ok")
+                    else _call_qwen_vision_codex_extract(
+                        final_shot,
+                        clean_project,
+                        feature_query=(
+                            "工作计划会话中的完整最新回复，必须保留回复第一行的"
+                            f"关联标记 {invocation_marker}"
+                        ),
+                    )
+                )
+                vision_text = str(extracted.get("content") or "").strip()
+                reply_selection = select_reply(
+                    [
+                        {"source": "clipboard", "text": copied_text},
+                        {"source": "qwen_vision", "text": vision_text},
+                        {
+                            "source": "ocr_fallback",
+                            "text": str(final_visual.get("ocr_text") or ""),
+                        },
+                    ],
+                    prompt=execution_prompt,
+                    invocation_marker=invocation_marker,
+                    schema=reply_schema,
+                )
+                answer = str(reply_selection.get("answer") or "").strip()
+                validation = dict(reply_selection.get("validation") or {})
+                invocation_match = _match_codex_invocation_answer(
+                    f"{invocation_marker}\n{answer}" if answer else "",
+                    clean_invocation_id,
+                )
+                evidence.setdefault("reply_extraction_recovery_attempts", []).append(
+                    {
+                        "decision": decision,
+                        "screenshot": final_shot,
+                        "copy_result": {
+                            key: value
+                            for key, value in copied.items()
+                            if key != "text"
+                        },
+                        "vision_extract": {
+                            key: value
+                            for key, value in extracted.items()
+                            if key != "content"
+                        },
+                        "reply_selection": reply_selection,
+                        "invocation_match": {
+                            key: value
+                            for key, value in invocation_match.items()
+                            if key != "clean_answer"
+                        },
+                    }
+                )
+                _append_evidence_timeline(
+                    evidence,
+                    evidence_path,
+                    "recover_codex_reply_extraction",
+                    "done" if validation.get("ok") else "failed",
+                    (
+                        f"source={reply_selection.get('source')} "
+                        f"length={len(answer)} "
+                        f"conflicts={len(reply_selection.get('conflicts') or [])}"
+                    ),
+                    evidence["reply_extraction_recovery_attempts"][-1],
+                )
+                if validation.get("ok") and invocation_match.get("ok"):
+                    evidence["recovery_success"] = (
+                        recovery_planner.record_success(
+                            stage="extract",
+                            strategy=str(decision.get("strategy") or ""),
+                            evidence={
+                                "source": reply_selection.get("source"),
+                                "answer_length": len(answer),
+                            },
+                        )
+                    )
+        if not validation.get("ok") and reply_selection.get("conflicts"):
+            fusion_decision = choose_recovery(
+                stage="fuse",
+                failure_reason="fuse:source_conflict",
+                attempted_strategy="reply_source_fusion",
+                details={
+                    "conflicts": reply_selection.get("conflicts") or [],
+                    "validation": validation,
+                },
+            )
+            if fusion_decision:
+                evidence["recovery_pending_user_confirmation"] = {
+                    "required": bool(
+                        (fusion_decision.get("action_patch") or {}).get(
+                            "requires_user_confirmation"
+                        )
+                    ),
+                    "decision": fusion_decision,
+                }
+        evidence.update(
+            {
+                "vision_extract": {k: v for k, v in extracted.items() if k != "content"},
+                "copy_result": {k: v for k, v in copied.items() if k != "text"},
+                "answer": answer,
+                "answer_source": str(reply_selection.get("source") or ""),
+                "answer_validation": validation,
+                "reply_selection": reply_selection,
+                "invocation_match": {
+                    key: value
+                    for key, value in invocation_match.items()
+                    if key != "clean_answer"
+                },
+                "report_path": str(report_path),
+            }
+        )
+        report_path.write_text(answer + ("\n" if answer else ""), encoding="utf-8")
+        _append_evidence_timeline(
+            evidence,
+            evidence_path,
+            "validate_codex_work_plan_reply",
+            "done" if validation.get("ok") else "failed",
+            (
+                f"source={reply_selection.get('source')} "
+                f"length={len(answer)} "
+                f"conflicts={len(reply_selection.get('conflicts') or [])}"
+            ),
+            {
+                "validation": validation,
+                "reply_selection": reply_selection,
+                "report_path": str(report_path),
+                "screenshot": final_shot,
+            },
+        )
+        ok = bool(validation.get("ok") and answer)
+        detail = "codex_work_plan_reply_ready" if ok else "codex_work_plan_reply_unverified"
+        if not ok and recovery_planner.attempts:
+            evidence["recovery_terminal"] = recovery_planner.record_terminal_failure(
+                final_reason=detail,
+            )
+        evidence["recovery"] = recovery_planner.snapshot()
+        evidence["metrics"] = {
+            "duration_ms": round(
+                (time.monotonic() - invocation_started_monotonic) * 1000
+            ),
+            "attempt_count": len(recovery_planner.attempts),
+            "final_ok": ok,
+            "failure_stage": "" if ok else "fuse",
+        }
+        evidence["invocation_manager_final"] = lease_guard.finish(
+            "succeeded" if ok else "failed",
+            stage="reply_validated",
+            detail=detail,
+        )
+        panel_path = _write_evidence_panel(
+            self.out_dir,
+            title=f"Codex 工作计划协作 · {clean_project}",
+            task="windows_codex_work_plan_query",
+            ok=ok,
+            detail=detail,
+            evidence=evidence,
+        )
+        evidence["evidence_panel_path"] = panel_path
+        evidence_path.write_text(
+            json.dumps(evidence, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return TaskResult(
+            "windows_codex_work_plan_query",
+            ok,
+            detail,
+            {
+                **evidence,
+                "evidence_path": str(evidence_path),
+                "evidence_panel_path": panel_path,
+                "report_path": str(report_path),
+            },
+        )
+
+    def _codex_copy_latest_response(
+        self,
+        project_name: str = "",
+        feature_query: str = "",
+        required_marker: str = "",
+        conversation_name: str = "",
+    ) -> dict[str, Any]:
         try:
             import pyperclip  # type: ignore
         except Exception as e:
@@ -3680,6 +6824,100 @@ class WindowsOSAutomation:
         attempts.append({"method": "codex_focus_guard", **focus_guard})
         if not focus_guard.get("ok"):
             return {"ok": False, "detail": "codex_focus_lost_before_copy", "text": "", "attempts": attempts, "focus_guard": focus_guard}
+        if project_name and conversation_name:
+            context_guard = self._codex_verify_work_plan_context(
+                project_name=project_name,
+                conversation_name=conversation_name,
+                label=f"copy_context_{_safe_label(required_marker or conversation_name)}",
+                samples=1,
+                allow_remote_fallback=False,
+            )
+            attempts.append(
+                {
+                    "method": "copy_context_guard",
+                    "ok": bool(context_guard.get("ok")),
+                    "detail": str(context_guard.get("detail") or ""),
+                    "context": context_guard,
+                }
+            )
+            screenshot_active_window = getattr(
+                self.io,
+                "screenshot_active_window",
+                None,
+            )
+            if (
+                not context_guard.get("ok")
+                and required_marker
+                and callable(screenshot_active_window)
+            ):
+                marker_screenshot = screenshot_active_window(
+                    self.out_dir,
+                    f"copy_marker_context_{_safe_label(required_marker)}",
+                )
+                marker_guard = _call_local_ocr_codex_ui(
+                    marker_screenshot,
+                    action="verify_reply_context",
+                    project_name=project_name,
+                    conversation_name=required_marker,
+                )
+                attempts.append(
+                    {
+                        "method": "copy_invocation_marker_context_guard",
+                        "ok": bool(marker_guard.get("ok")),
+                        "detail": str(marker_guard.get("detail") or ""),
+                        "screenshot": marker_screenshot,
+                        "context": marker_guard,
+                    }
+                )
+                if marker_guard.get("ok"):
+                    context_guard = {
+                        "ok": True,
+                        "detail": (
+                            "codex_reply_context_verified_by_invocation_marker"
+                        ),
+                        "marker_guard": marker_guard,
+                    }
+            if not context_guard.get("ok"):
+                navigation = self._codex_navigate_work_plan_context(
+                    project_name=project_name,
+                    conversation_name=conversation_name,
+                    label=f"copy_context_recovery_{_safe_label(required_marker or conversation_name)}",
+                    strategy="direct_conversation",
+                )
+                attempts.append(
+                    {
+                        "method": "copy_context_recovery_navigation",
+                        "ok": bool(navigation.get("ok")),
+                        "detail": str(navigation.get("detail") or ""),
+                        "navigation": navigation,
+                    }
+                )
+                if navigation.get("ok"):
+                    time.sleep(0.8)
+                    context_guard = self._codex_verify_work_plan_context(
+                        project_name=project_name,
+                        conversation_name=conversation_name,
+                        label=f"copy_context_recovered_{_safe_label(required_marker or conversation_name)}",
+                        samples=1,
+                        allow_remote_fallback=False,
+                    )
+                    attempts.append(
+                        {
+                            "method": "copy_context_recovery_verify",
+                            "ok": bool(context_guard.get("ok")),
+                            "detail": str(context_guard.get("detail") or ""),
+                            "context": context_guard,
+                        }
+                    )
+                if not context_guard.get("ok"):
+                    return {
+                        "ok": False,
+                        "detail": "codex_copy_context_not_recovered",
+                        "text": "",
+                        "attempts": attempts,
+                        "focus_guard": focus_guard,
+                        "context_guard": context_guard,
+                    }
 
         def read_clipboard() -> str:
             try:
@@ -3697,9 +6935,37 @@ class WindowsOSAutomation:
             content = str(text or "").strip()
             if len(content) < 80:
                 return False
+            if required_marker and required_marker not in content:
+                return False
             return not _looks_like_codex_project_prompt_echo(content)
 
         best_text = ""
+
+        def try_shortcut_copy(label: str) -> dict[str, Any]:
+            nonlocal best_text
+            reset_clipboard()
+            shortcut_focus = self._ensure_codex_foreground(timeout=3.0)
+            if not shortcut_focus.get("ok"):
+                attempt = {
+                    "method": label,
+                    "ok": False,
+                    "error": "codex_focus_lost",
+                    "focus_guard": shortcut_focus,
+                }
+                attempts.append(attempt)
+                return attempt
+            self.io.hotkey("ctrl", "shift", "c", wait=0.45)
+            copied = read_clipboard()
+            best_text = copied if len(copied) > len(best_text) else best_text
+            attempt = {
+                "method": label,
+                "ok": acceptable(copied),
+                "copied_len": len(copied),
+                "focus_guard": shortcut_focus,
+            }
+            attempts.append(attempt)
+            return {**attempt, "text": copied}
+
         auto, uia_err = _import_uia()
         if auto is not None:
             try:
@@ -3775,6 +7041,51 @@ class WindowsOSAutomation:
         else:
             attempts.append({"method": "uia_scan_copy_buttons", "ok": False, "error": uia_err})
 
+        native_shortcut = try_shortcut_copy("ctrl_shift_c_primary")
+        if native_shortcut.get("ok"):
+            return {
+                "ok": True,
+                "detail": "copied_by_native_shortcut",
+                "text": str(native_shortcut.get("text") or ""),
+                "attempts": attempts,
+            }
+
+        if required_marker:
+            reset_clipboard()
+            try:
+                visual_copy = self._codex_visual_click_target(
+                    action="locate_latest_reply_copy",
+                    project_name=project_name,
+                    conversation_name=required_marker,
+                    label=f"codex_copy_{_safe_label(required_marker)}",
+                )
+                got = read_clipboard()
+                best_text = got if len(got) > len(best_text) else best_text
+                ok = bool(visual_copy.get("ok") and acceptable(got))
+                attempts.append(
+                    {
+                        "method": "vision_locate_latest_reply_copy",
+                        "ok": ok,
+                        "copied_len": len(got),
+                        "target": visual_copy,
+                    }
+                )
+                if ok:
+                    return {
+                        "ok": True,
+                        "detail": "copied_by_vision_located_latest_reply_button",
+                        "text": got,
+                        "attempts": attempts,
+                    }
+            except Exception as exc:
+                attempts.append(
+                    {
+                        "method": "vision_locate_latest_reply_copy",
+                        "ok": False,
+                        "error": repr(exc),
+                    }
+                )
+
         if _truthy(os.environ.get("JACHIN_CODEX_COPY_ALLOW_VISUAL_COORDINATE")):
             focus_guard = self._ensure_codex_foreground(timeout=1.0)
             active_rect = self.win.active_rect() if focus_guard.get("ok") else None
@@ -3804,17 +7115,14 @@ class WindowsOSAutomation:
         else:
             attempts.append({"method": "visual_coordinate_copy_button", "ok": False, "skipped": "disabled_by_default"})
 
-        reset_clipboard()
-        focus_guard = self._ensure_codex_foreground(timeout=1.0)
-        if not focus_guard.get("ok"):
-            attempts.append({"method": "ctrl_shift_c", "ok": False, "error": "codex_focus_lost", "focus_guard": focus_guard})
-            return {"ok": False, "detail": "codex_focus_lost_before_shortcut_copy", "text": best_text, "attempts": attempts, "focus_guard": focus_guard}
-        self.io.hotkey("ctrl", "shift", "c", wait=0.35)
-        alt = read_clipboard()
-        best_text = alt if len(alt) > len(best_text) else best_text
-        attempts.append({"method": "ctrl_shift_c", "ok": acceptable(alt), "copied_len": len(alt)})
-        if acceptable(alt):
-            return {"ok": True, "detail": "copied_by_alt_shortcut", "text": alt, "attempts": attempts}
+        native_shortcut = try_shortcut_copy("ctrl_shift_c_recovery")
+        if native_shortcut.get("ok"):
+            return {
+                "ok": True,
+                "detail": "copied_by_native_shortcut_after_recovery",
+                "text": str(native_shortcut.get("text") or ""),
+                "attempts": attempts,
+            }
 
         if _truthy(os.environ.get("JACHIN_CODEX_COPY_ALLOW_SELECT_ALL")):
             # Last resort only: this often copies the composer/prompt, so it is opt-in.
@@ -4714,13 +8022,65 @@ class WindowsOSAutomation:
                 "candidate_paths": (f"{app_key}.exe",),
             }
         keywords = tuple(str(x) for x in profile.get("keywords", ()) if str(x).strip()) or (app_key,)
+        process_path_markers = tuple(
+            str(x)
+            for x in profile.get("process_path_markers", ())
+            if str(x).strip()
+        )
         contract = self._execution_contract(app_key, goal=f"focus_or_raise:{app_key}")
+        existing_focused = self.win.focus_by_keywords(
+            keywords,
+            timeout=min(float(timeout or 6.0), 2.0),
+            required_process_path_markers=process_path_markers,
+        )
+        existing_guard = self._verify_environment(
+            contract,
+            stage=stage,
+            action="verify_existing_foreground",
+        )
+        if existing_focused and existing_guard.ok:
+            screenshot = self.io.screenshot_active_window(
+                self.out_dir,
+                f"focus_or_raise_{app_key}_existing",
+            )
+            return TaskResult(
+                "focus_or_raise_app",
+                True,
+                "existing_window_focused_and_verified",
+                {
+                    "app": app_name,
+                    "app_key": app_key,
+                    "path_source": "existing_window",
+                    "keywords": list(keywords),
+                    "attempts": [
+                        {
+                            "attempt": 0,
+                            "launched": False,
+                            "focused": True,
+                            "ok": True,
+                            "detail": existing_guard.detail,
+                            "active": existing_guard.active,
+                            "environment_guard": existing_guard.to_dict(),
+                            "screenshot": screenshot,
+                        }
+                    ],
+                    "execution_contract": contract.to_dict(),
+                    "environment_guard": existing_guard.to_dict(),
+                    "screenshot": screenshot,
+                },
+            )
         if app_key == "browser":
             browser = _find_browser()
             exe, source = (browser, "detected_browser") if browser else ("", "not_found")
         else:
             exe, source = _find_app_executable(profile)
-        if launch_if_missing and not exe:
+        protocol_uri = str(profile.get("protocol_uri") or "").strip()
+        launch_target = exe
+        launch_source = source
+        if protocol_uri and source not in {str(profile.get("env") or "")}:
+            launch_target = protocol_uri
+            launch_source = "protocol_uri"
+        if launch_if_missing and not launch_target:
             return TaskResult(
                 "focus_or_raise_app",
                 False,
@@ -4740,8 +8100,14 @@ class WindowsOSAutomation:
         for attempt in range(1, max(1, int(max_attempts or 1)) + 1):
             launch_result: dict[str, Any] | None = None
             launched = False
-            if launch_if_missing and exe and attempt == 1:
-                launch_result = self.io.launch_result(exe, keywords, args=args or [], wait=1.0)
+            if launch_if_missing and launch_target and attempt == 1:
+                launch_result = self.io.launch_result(
+                    launch_target,
+                    keywords,
+                    args=args or [],
+                    wait=1.0,
+                    required_process_path_markers=process_path_markers,
+                )
                 launched = bool(launch_result.get("focused"))
                 if not launch_result.get("ok"):
                     detail = str(launch_result.get("detail") or "app_launch_failed")
@@ -4762,15 +8128,19 @@ class WindowsOSAutomation:
                         {
                             "app": app_name,
                             "app_key": app_key,
-                            "exe": exe,
-                            "path_source": source,
+                            "exe": launch_target,
+                            "path_source": launch_source,
                             "keywords": list(keywords),
                             "attempts": attempts,
                             "launch_result": launch_result,
                             "execution_contract": contract.to_dict(),
                         },
                     )
-            focused = self.win.focus_by_keywords(keywords, timeout=float(timeout or 6.0))
+            focused = self.win.focus_by_keywords(
+                keywords,
+                timeout=float(timeout or 6.0),
+                required_process_path_markers=process_path_markers,
+            )
             guard = self._verify_environment(contract, stage=stage, action=f"verify_foreground_attempt_{attempt}")
             final_guard = guard
             screenshot = self.io.screenshot_active_window(self.out_dir, f"focus_or_raise_{app_key}_attempt_{attempt}")
@@ -4795,8 +8165,8 @@ class WindowsOSAutomation:
                     {
                         "app": app_name,
                         "app_key": app_key,
-                        "exe": exe,
-                        "path_source": source,
+                        "exe": launch_target,
+                        "path_source": launch_source,
                         "keywords": list(keywords),
                         "attempts": attempts,
                         "execution_contract": contract.to_dict(),
@@ -4814,8 +8184,8 @@ class WindowsOSAutomation:
             {
                 "app": app_name,
                 "app_key": app_key,
-                "exe": exe,
-                "path_source": source,
+                "exe": launch_target,
+                "path_source": launch_source,
                 "keywords": list(keywords),
                 "attempts": attempts,
                 "execution_contract": contract.to_dict(),
@@ -4839,27 +8209,42 @@ class WindowsOSAutomation:
         app_key = normalize_app_name(app_name)
         profile = APP_PROFILES.get(app_key, {"keywords": (app_key,)})
         keywords = tuple(str(x) for x in profile.get("keywords", ()) if str(x).strip()) or (app_key,)
+        process_path_markers = tuple(
+            str(x)
+            for x in profile.get("process_path_markers", ())
+            if str(x).strip()
+        )
         before = self.win.active_title()
-        focused_existing = self.win.focus_by_keywords(keywords, timeout=float(timeout or 4.0))
+        focused_existing = self.win.focus_by_keywords(
+            keywords,
+            timeout=float(timeout or 4.0),
+            required_process_path_markers=process_path_markers,
+        )
         if focused_existing:
             screenshot = self.io.screenshot_active_window(self.out_dir, f"ensure_app_{app_key}_existing")
             contract = self._execution_contract(app_key, goal=f"ensure_app:{app_key}")
             guard = self._verify_environment(contract, stage="ensure_app", action="verify_existing_foreground")
-            return TaskResult(
-                "windows_ensure_app",
-                bool(guard.ok),
-                "existing_window_focused" if guard.ok else "app_focus_failed",
-                {
-                    "app": app_name,
-                    "app_key": app_key,
-                    "before": before,
-                    "active_title": self.win.active_title(),
-                    "started_new": False,
-                    "keywords": list(keywords),
-                    "environment_guard": guard.to_dict(),
-                    "launch_result": launch_result,
-                    "screenshot": screenshot,
-                },
+            if guard.ok:
+                return TaskResult(
+                    "windows_ensure_app",
+                    True,
+                    "existing_window_focused",
+                    {
+                        "app": app_name,
+                        "app_key": app_key,
+                        "before": before,
+                        "active_title": self.win.active_title(),
+                        "started_new": False,
+                        "keywords": list(keywords),
+                        "environment_guard": guard.to_dict(),
+                        "screenshot": screenshot,
+                    },
+                )
+            logger.info(
+                "[ensure_app] found app window but foreground verification failed; "
+                "continuing through launch recovery app=%s detail=%s",
+                app_key,
+                guard.detail,
             )
         opened = self.open_app(app_name, args=args or [])
         ev = dict(opened.evidence)

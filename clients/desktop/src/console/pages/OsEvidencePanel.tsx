@@ -13,12 +13,16 @@ import {
   MonitorCheck,
   Play,
   RefreshCw,
+  RotateCcw,
+  Route,
   Search,
   Send,
+  ShieldAlert,
   Square,
   SquareStack,
   Timer,
   Users,
+  Workflow,
 } from "lucide-react";
 import { cn } from "../../utils/cn";
 
@@ -154,6 +158,7 @@ type EvidenceEntry = {
   failure_learning_records?: Array<Record<string, unknown>>;
   memory_trust_events?: Array<Record<string, unknown>>;
   memory_write_events?: Array<Record<string, unknown>>;
+  codex_invocation?: Record<string, unknown> | null;
   timeline: Array<{
     ts: string;
     stage: string;
@@ -288,6 +293,64 @@ type EvidenceGovernanceIndex = {
     summary: BackendGovernanceSummary;
   }>;
   health?: BackendCapabilityHealth[];
+};
+
+type CodexObservabilityWindow = {
+  days: number;
+  invocation_count: number;
+  passed: number;
+  failed: number;
+  success_rate: number;
+  recovered: number;
+  recovery_rate: number;
+  manual_interventions: number;
+  stale_reply_blocks: number;
+  truncated_reply_blocks: number;
+  avg_duration_ms: number;
+  p95_duration_ms: number;
+  failure_stage_top: Array<[string, number]>;
+  recovery_strategy_top: Array<[string, number]>;
+};
+
+type CodexObservabilityIndex = {
+  generated_at: number;
+  source_limit: number;
+  total_invocations: number;
+  index_path: string;
+  windows: CodexObservabilityWindow[];
+  release_gate?: CodexReleaseGate | null;
+};
+
+type CodexReleaseGateCheck = {
+  name: string;
+  ok: boolean;
+  detail: string;
+};
+
+type CodexReleaseGateScenario = {
+  scenario: string;
+  ok: boolean;
+  expected: string;
+  observed: string;
+  invocation_id?: string;
+  evidence_path?: string;
+  checks: CodexReleaseGateCheck[];
+};
+
+type CodexReleaseGate = {
+  generated_at: string;
+  status: "ready" | "blocked";
+  release_ready: boolean;
+  report_kind?: "live" | "contract";
+  report_source?: string;
+  scenario_count: number;
+  passed_scenarios: number;
+  failed_scenarios: string[];
+  missing_scenarios: string[];
+  invariants: Record<string, number>;
+  invariants_ok: boolean;
+  scenarios: CodexReleaseGateScenario[];
+  report_path?: string;
 };
 
 type WebResearchSourceRow = {
@@ -483,6 +546,111 @@ function topRows(map: Map<string, number>, limit = 5): Array<[string, number]> {
     .slice(0, limit);
 }
 
+function codexInvocationStatus(item: EvidenceEntry) {
+  const invocation = item.codex_invocation;
+  const finalState = isRecord(invocation?.invocation_manager_final) ? invocation.invocation_manager_final : {};
+  return String(finalState.status || invocation?.status || (item.ok ? "succeeded" : "failed"));
+}
+
+function codexInvocationDuration(item: EvidenceEntry) {
+  const invocation = item.codex_invocation;
+  const metrics = isRecord(invocation?.metrics) ? invocation.metrics : {};
+  const finalState = isRecord(invocation?.invocation_manager_final) ? invocation.invocation_manager_final : {};
+  const value = Number(metrics.duration_ms ?? finalState.duration_ms ?? item.metrics?.duration_ms ?? 0);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function codexRecoveryStrategies(item: EvidenceEntry) {
+  const invocation = item.codex_invocation;
+  const recovery = isRecord(invocation?.recovery) ? invocation.recovery : {};
+  const decisions = Array.isArray(recovery.decisions) ? recovery.decisions : [];
+  const strategies = new Set<string>();
+  for (const decision of decisions) {
+    if (!isRecord(decision)) continue;
+    const strategy = String(decision.strategy || "").trim();
+    if (strategy) strategies.add(strategy);
+  }
+  const success = isRecord(invocation?.recovery_success) ? invocation.recovery_success : {};
+  const successStrategy = String(success.strategy || "").trim();
+  if (successStrategy) strategies.add(successStrategy);
+  return [...strategies];
+}
+
+function codexFailureStage(item: EvidenceEntry) {
+  const invocation = item.codex_invocation;
+  const finalState = isRecord(invocation?.invocation_manager_final) ? invocation.invocation_manager_final : {};
+  const terminal = isRecord(invocation?.recovery_terminal) ? invocation.recovery_terminal : {};
+  const raw = String(finalState.stage || terminal.final_reason || invocation?.detail || item.detail || "unknown");
+  return raw.split(/[:.]/, 1)[0] || "unknown";
+}
+
+function buildCodexObservabilityWindow(
+  items: EvidenceEntry[],
+  days: GovernanceWindow,
+  nowMs: number,
+): CodexObservabilityWindow {
+  const deduped = new Map<string, EvidenceEntry>();
+  for (const item of items) {
+    const invocationId = String(item.codex_invocation?.invocation_id || "").trim();
+    if (!invocationId || !isWithinDays(item, days, nowMs)) continue;
+    const previous = deduped.get(invocationId);
+    if (!previous || previous.generated_at < item.generated_at) deduped.set(invocationId, item);
+  }
+  const rows = [...deduped.values()];
+  const failureStages = new Map<string, number>();
+  const recoveryStrategies = new Map<string, number>();
+  const durations: number[] = [];
+  let passed = 0;
+  let recovered = 0;
+  let manualInterventions = 0;
+  let staleReplyBlocks = 0;
+  let truncatedReplyBlocks = 0;
+  for (const item of rows) {
+    const status = codexInvocationStatus(item);
+    const ok = status === "succeeded" || (item.ok && status !== "failed");
+    if (ok) passed += 1;
+    else increment(failureStages, codexFailureStage(item));
+    const strategies = codexRecoveryStrategies(item);
+    if (ok && strategies.length > 0) recovered += 1;
+    strategies.forEach((strategy) => increment(recoveryStrategies, strategy));
+    const text = JSON.stringify(item.codex_invocation || {}).toLowerCase();
+    const pending = isRecord(item.codex_invocation?.recovery_pending_user_confirmation)
+      ? item.codex_invocation.recovery_pending_user_confirmation
+      : {};
+    if (Object.keys(pending).length || text.includes("permission_required") || text.includes("requires_confirmation")) {
+      manualInterventions += 1;
+    }
+    if (text.includes("stale_reply") || text.includes("invocation_marker_mismatch")) staleReplyBlocks += 1;
+    if (text.includes("truncated") || text.includes("incomplete_reply") || text.includes("unclosed_code")) {
+      truncatedReplyBlocks += 1;
+    }
+    const duration = codexInvocationDuration(item);
+    if (duration > 0) durations.push(duration);
+  }
+  durations.sort((a, b) => a - b);
+  const average = durations.length ? durations.reduce((sum, value) => sum + value, 0) / durations.length : 0;
+  const p95Index = durations.length
+    ? Math.min(durations.length - 1, Math.max(0, Math.ceil(durations.length * 0.95) - 1))
+    : 0;
+  const invocationCount = rows.length;
+  return {
+    days,
+    invocation_count: invocationCount,
+    passed,
+    failed: invocationCount - passed,
+    success_rate: invocationCount ? passed / invocationCount : 0,
+    recovered,
+    recovery_rate: invocationCount ? recovered / invocationCount : 0,
+    manual_interventions: manualInterventions,
+    stale_reply_blocks: staleReplyBlocks,
+    truncated_reply_blocks: truncatedReplyBlocks,
+    avg_duration_ms: Math.round(average),
+    p95_duration_ms: durations[p95Index] ?? 0,
+    failure_stage_top: topRows(failureStages, 8),
+    recovery_strategy_top: topRows(recoveryStrategies, 8),
+  };
+}
+
 function buildGovernanceSummary(items: EvidenceEntry[]): GovernanceSummary {
   const toolQuality = new Map<string, number>();
   const qualityIssues = new Map<string, number>();
@@ -612,9 +780,11 @@ export function OsEvidencePanel() {
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [stats, setStats] = useState<EvidenceStats | null>(null);
   const [governanceIndex, setGovernanceIndex] = useState<EvidenceGovernanceIndex | null>(null);
+  const [codexObservability, setCodexObservability] = useState<CodexObservabilityIndex | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [governanceWindow, setGovernanceWindow] = useState<GovernanceWindow>(30);
   const [governanceCapability, setGovernanceCapability] = useState("all");
+  const [codexWindow, setCodexWindow] = useState<GovernanceWindow>(30);
 
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -629,11 +799,15 @@ export function OsEvidencePanel() {
       void invoke<EvidenceGovernanceIndex>("os_evidence_governance_index", { limit: 300 })
         .then(setGovernanceIndex)
         .catch(() => setGovernanceIndex(null));
+      void invoke<CodexObservabilityIndex>("os_evidence_codex_observability_index", { limit: 300 })
+        .then(setCodexObservability)
+        .catch(() => setCodexObservability(null));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setItems([]);
       setSelectedId("");
       setGovernanceIndex(null);
+      setCodexObservability(null);
     } finally {
       if (!quiet) setLoading(false);
     }
@@ -864,6 +1038,19 @@ export function OsEvidencePanel() {
     indexedGovernanceEvidenceCount(governanceIndex, governanceWindow, governanceCapability) ?? governanceItems.length;
   const governanceHealth = indexedGovernanceHealth(governanceIndex, governanceWindow, governanceCapability);
   const lowestGovernanceHealth = indexedLowestGovernanceHealth(governanceIndex, governanceWindow);
+  const codexTrends = useMemo(
+    () =>
+      ([7, 14, 30] as GovernanceWindow[]).map(
+        (days) =>
+          codexObservability?.windows.find((row) => row.days === days) ??
+          buildCodexObservabilityWindow(items, days, nowMs),
+      ),
+    [codexObservability, items, nowMs],
+  );
+  const selectedCodexTrend =
+    codexTrends.find((row) => row.days === codexWindow) ??
+    buildCodexObservabilityWindow(items, codexWindow, nowMs);
+  const codexReleaseGate = codexObservability?.release_gate ?? null;
 
   return (
     <div className="flex min-h-full flex-col gap-4 p-6 text-slate-100">
@@ -913,6 +1100,147 @@ export function OsEvidencePanel() {
         </div>
         <StatsList title="失败原因 Top" rows={stats?.failure_top ?? []} empty="暂无失败记录" />
         <StatsList title="Workflow 通过率" rows={(stats?.workflow_pass_rate ?? []).map(([name, total, pass, rate]) => [`${name} ${pass}/${total}`, Math.round(rate * 100)])} empty="暂无 workflow 统计" suffix="%" />
+      </section>
+
+      <section className="rounded-lg border border-sky-400/15 bg-slate-950/45 p-4">
+        <div className="flex flex-col gap-3 border-b border-sky-400/10 pb-4 xl:flex-row xl:items-center xl:justify-between">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-medium text-sky-50">
+              <Workflow className="h-4 w-4 text-sky-300" />
+              Codex Invocation 可观察性
+            </div>
+            <div className="mt-1 text-xs text-slate-500">
+              回放项目定位、上下文核验、提交、等待、回复提取和恢复决策。
+              {codexObservability?.index_path ? ` 索引：${shortPath(codexObservability.index_path)}` : " 当前使用 Evidence 临时聚合。"}
+            </div>
+          </div>
+          <div className="flex gap-2">
+            {([7, 14, 30] as GovernanceWindow[]).map((days) => (
+              <button
+                key={days}
+                type="button"
+                onClick={() => setCodexWindow(days)}
+                className={cn(
+                  "rounded-md border px-3 py-1.5 text-xs transition",
+                  codexWindow === days
+                    ? "border-sky-400/40 bg-sky-400/15 text-sky-100"
+                    : "border-slate-800 bg-slate-900/60 text-slate-400 hover:border-sky-400/25",
+                )}
+              >
+                {days} 天
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid gap-3 py-4 md:grid-cols-3 xl:grid-cols-6">
+          <CodexMetric icon={Route} label="调用" value={String(selectedCodexTrend.invocation_count)} />
+          <CodexMetric icon={CheckCircle2} label="成功率" value={`${Math.round(selectedCodexTrend.success_rate * 100)}%`} tone="success" />
+          <CodexMetric icon={RotateCcw} label="恢复成功" value={String(selectedCodexTrend.recovered)} tone="recovery" />
+          <CodexMetric icon={ShieldAlert} label="人工介入" value={String(selectedCodexTrend.manual_interventions)} tone="warning" />
+          <CodexMetric icon={Timer} label="平均耗时" value={msText(selectedCodexTrend.avg_duration_ms)} />
+          <CodexMetric icon={Timer} label="P95 耗时" value={msText(selectedCodexTrend.p95_duration_ms)} />
+        </div>
+
+        <div className="grid gap-3 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,0.75fr)_minmax(0,0.75fr)]">
+          <CodexTrendStrip rows={codexTrends} activeDays={codexWindow} />
+          <StatsList title="失败阶段 Top" rows={selectedCodexTrend.failure_stage_top} empty="暂无 Codex 阶段失败" />
+          <StatsList title="恢复路径 Top" rows={selectedCodexTrend.recovery_strategy_top} empty="暂无 Codex 恢复记录" />
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+          <span className="rounded bg-slate-900 px-2 py-1 text-slate-400">
+            旧回复拦截 {selectedCodexTrend.stale_reply_blocks}
+          </span>
+          <span className="rounded bg-slate-900 px-2 py-1 text-slate-400">
+            截断回复拦截 {selectedCodexTrend.truncated_reply_blocks}
+          </span>
+          <span className="rounded bg-slate-900 px-2 py-1 text-slate-400">
+            恢复率 {Math.round(selectedCodexTrend.recovery_rate * 100)}%
+          </span>
+        </div>
+      </section>
+
+      <section
+        className={cn(
+          "rounded-lg border bg-slate-950/45 p-4",
+          codexReleaseGate?.release_ready
+            ? "border-emerald-400/20"
+            : "border-amber-400/20",
+        )}
+      >
+        <div className="flex flex-col gap-3 border-b border-slate-800 pb-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-medium text-slate-100">
+              {codexReleaseGate?.release_ready ? (
+                <CheckCircle2 className="h-4 w-4 text-emerald-300" />
+              ) : (
+                <ShieldAlert className="h-4 w-4 text-amber-300" />
+              )}
+              Codex Release Gate
+            </div>
+            <div className="mt-1 text-xs text-slate-500">
+              Desktop collaboration must pass context, queue, recovery, reply correlation, and fact-fusion contracts before release.
+            </div>
+          </div>
+          <div
+            className={cn(
+              "rounded-md border px-3 py-1.5 text-xs font-semibold",
+              codexReleaseGate?.release_ready
+                ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
+                : "border-amber-400/30 bg-amber-400/10 text-amber-200",
+            )}
+          >
+            {codexReleaseGate
+              ? `${codexReleaseGate.report_kind?.toUpperCase() ?? "REPORT"} · ${codexReleaseGate.status.toUpperCase()} · ${codexReleaseGate.passed_scenarios}/${codexReleaseGate.scenario_count}`
+              : "NOT RUN"}
+          </div>
+        </div>
+
+        {codexReleaseGate ? (
+          <>
+            <div className="pt-3 text-[11px] text-slate-500">
+              {codexReleaseGate.report_kind === "live"
+                ? "Real desktop execution report"
+                : "Contract-only validation report"}
+              {codexReleaseGate.report_source ? ` · ${shortPath(codexReleaseGate.report_source)}` : ""}
+            </div>
+            <div className="grid gap-2 py-4 md:grid-cols-2 xl:grid-cols-4">
+              {Object.entries(codexReleaseGate.invariants).map(([name, value]) => (
+                <div key={name} className="rounded-md border border-slate-800 bg-slate-900/55 p-3">
+                  <div className="text-[11px] text-slate-500">{name.split("_").join(" ")}</div>
+                  <div className={cn("mt-1 text-lg font-semibold", value === 0 ? "text-emerald-300" : "text-rose-300")}>
+                    {value}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="grid gap-2 xl:grid-cols-2">
+              {codexReleaseGate.scenarios.map((scenario) => {
+                const failedChecks = scenario.checks.filter((check) => !check.ok);
+                return (
+                  <div key={scenario.scenario} className="rounded-md border border-slate-800 bg-slate-900/45 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm font-medium text-slate-200">{scenario.scenario.split("_").join(" ")}</div>
+                      <span className={cn("text-xs", scenario.ok ? "text-emerald-300" : "text-rose-300")}>
+                        {scenario.ok ? "PASS" : "BLOCKED"}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-xs text-slate-500">{scenario.expected}</div>
+                    {failedChecks.length > 0 && (
+                      <div className="mt-2 text-xs text-rose-300">
+                        {failedChecks.map((check) => `${check.name}: ${check.detail}`).join(" · ")}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        ) : (
+          <div className="py-5 text-sm text-slate-500">
+            Run <span className="font-mono text-slate-300">python scripts/codex_live_release_gate.py</span> to create the first release decision.
+          </div>
+        )}
       </section>
 
       <section className="rounded-lg border border-fuchsia-400/15 bg-slate-950/45 p-4">
@@ -1343,6 +1671,242 @@ function Metric({
   );
 }
 
+function CodexMetric({
+  label,
+  value,
+  icon: Icon,
+  tone = "default",
+}: {
+  label: string;
+  value: string;
+  icon: ComponentType<{ className?: string }>;
+  tone?: "default" | "success" | "recovery" | "warning";
+}) {
+  const toneClass = {
+    default: "border-sky-400/20 bg-sky-400/10 text-sky-200",
+    success: "border-emerald-400/20 bg-emerald-400/10 text-emerald-200",
+    recovery: "border-violet-400/20 bg-violet-400/10 text-violet-200",
+    warning: "border-amber-400/20 bg-amber-400/10 text-amber-200",
+  }[tone];
+  return (
+    <div className="rounded-md border border-slate-800 bg-slate-950/55 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs text-slate-500">{label}</span>
+        <span className={cn("rounded border p-1.5", toneClass)}>
+          <Icon className="h-3.5 w-3.5" />
+        </span>
+      </div>
+      <div className="mt-2 text-lg font-semibold text-slate-100">{value}</div>
+    </div>
+  );
+}
+
+function CodexTrendStrip({
+  rows,
+  activeDays,
+}: {
+  rows: CodexObservabilityWindow[];
+  activeDays: GovernanceWindow;
+}) {
+  return (
+    <div className="grid gap-3 sm:grid-cols-3">
+      {([7, 14, 30] as GovernanceWindow[]).map((days) => {
+        const row = rows.find((item) => item.days === days);
+        if (!row) return null;
+        return (
+          <div
+            key={days}
+            className={cn(
+              "rounded-md border p-3",
+              activeDays === days
+                ? "border-sky-400/30 bg-sky-400/[0.08]"
+                : "border-slate-800 bg-slate-950/45",
+            )}
+          >
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-medium text-slate-300">{days} 天</span>
+              <span className="text-slate-500">{row.passed}/{row.invocation_count}</span>
+            </div>
+            <div className="mt-3 h-1.5 overflow-hidden rounded bg-slate-800">
+              <div
+                className="h-full rounded bg-emerald-400"
+                style={{ width: `${Math.round(row.success_rate * 100)}%` }}
+              />
+            </div>
+            <div className="mt-2 flex justify-between text-[11px] text-slate-500">
+              <span>成功 {Math.round(row.success_rate * 100)}%</span>
+              <span>恢复 {row.recovered}</span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+type CodexReplayRow = {
+  id: string;
+  stage: string;
+  status: string;
+  detail: string;
+  kind: "manager" | "evidence" | "attempt" | "decision" | "validation";
+};
+
+function replayRows(
+  invocation: Record<string, unknown>,
+  evidenceTimeline: EvidenceEntry["timeline"],
+): CodexReplayRow[] {
+  const rows: CodexReplayRow[] = [];
+  const manager = isRecord(invocation.invocation_manager_final) ? invocation.invocation_manager_final : {};
+  const history = Array.isArray(manager.history) ? manager.history : [];
+  history.forEach((raw, index) => {
+    if (!isRecord(raw)) return;
+    rows.push({
+      id: `manager-${index}`,
+      stage: String(raw.stage || raw.event || "manager"),
+      status: String(raw.status || "done"),
+      detail: String(raw.detail || raw.reason || raw.at || ""),
+      kind: "manager",
+    });
+  });
+  evidenceTimeline.forEach((row, index) => {
+    rows.push({
+      id: `evidence-${index}`,
+      stage: row.stage,
+      status: row.status,
+      detail: row.detail,
+      kind: "evidence",
+    });
+  });
+  const recovery = isRecord(invocation.recovery) ? invocation.recovery : {};
+  const attempts = Array.isArray(recovery.attempts) ? recovery.attempts : [];
+  attempts.forEach((raw, index) => {
+    if (!isRecord(raw)) return;
+    rows.push({
+      id: `attempt-${index}`,
+      stage: String(raw.stage || `attempt_${Number(raw.attempt_no ?? index + 1)}`),
+      status: raw.ok === true ? "done" : "failed",
+      detail: String(raw.failure_reason || raw.detail || ""),
+      kind: "attempt",
+    });
+  });
+  const decisions = Array.isArray(recovery.decisions) ? recovery.decisions : [];
+  decisions.forEach((raw, index) => {
+    if (!isRecord(raw)) return;
+    rows.push({
+      id: `decision-${index}`,
+      stage: String(raw.strategy || "recovery_decision"),
+      status: "planned",
+      detail: String(raw.rationale || raw.reason || ""),
+      kind: "decision",
+    });
+  });
+  const completion = isRecord(invocation.completion_state) ? invocation.completion_state : {};
+  if (Object.keys(completion).length > 0) {
+    rows.push({
+      id: "completion",
+      stage: "completion_state",
+      status: completion.ok === false ? "failed" : "done",
+      detail: String(completion.reason || completion.status || completion.detail || ""),
+      kind: "validation",
+    });
+  }
+  const reply = isRecord(invocation.reply_selection) ? invocation.reply_selection : {};
+  if (Object.keys(reply).length > 0) {
+    rows.push({
+      id: "reply-selection",
+      stage: "reply_validation",
+      status: reply.ok === false || reply.valid === false ? "failed" : "done",
+      detail: String(reply.reason || reply.status || reply.source || ""),
+      kind: "validation",
+    });
+  }
+  return rows;
+}
+
+function CodexInvocationReplayBlock({
+  invocation,
+  evidenceTimeline,
+}: {
+  invocation: Record<string, unknown>;
+  evidenceTimeline: EvidenceEntry["timeline"];
+}) {
+  const finalState = isRecord(invocation.invocation_manager_final) ? invocation.invocation_manager_final : {};
+  const terminal = isRecord(invocation.recovery_terminal) ? invocation.recovery_terminal : {};
+  const pending = isRecord(invocation.recovery_pending_user_confirmation)
+    ? invocation.recovery_pending_user_confirmation
+    : {};
+  const metrics = isRecord(invocation.metrics) ? invocation.metrics : {};
+  const rows = replayRows(invocation, evidenceTimeline);
+  const status = String(finalState.status || invocation.status || "unknown");
+  const invocationId = String(invocation.invocation_id || "-");
+  const duration = Number(metrics.duration_ms ?? finalState.duration_ms ?? 0);
+  const attemptCount = Number(metrics.attempt_count ?? finalState.attempt_count ?? 0);
+  const nextSteps = stringArray(terminal.recommended_next_steps);
+
+  return (
+    <section className="rounded-lg border border-sky-400/15 bg-slate-900/45 p-4">
+      <div className="flex flex-col gap-3 border-b border-sky-400/10 pb-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm font-medium text-sky-50">
+            <Workflow className="h-4 w-4 text-sky-300" />
+            Codex Invocation 回放
+          </div>
+          <div className="mt-2 truncate font-mono text-xs text-slate-500" title={invocationId}>
+            {invocationId}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2 text-[11px]">
+          <span className={cn(
+            "rounded border px-2 py-1",
+            status === "succeeded"
+              ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-200"
+              : "border-rose-400/25 bg-rose-400/10 text-rose-200",
+          )}>
+            {status}
+          </span>
+          <span className="rounded bg-slate-950 px-2 py-1 text-slate-400">耗时 {msText(duration)}</span>
+          <span className="rounded bg-slate-950 px-2 py-1 text-slate-400">尝试 {attemptCount || "-"}</span>
+        </div>
+      </div>
+
+      <div className="mt-4 space-y-2">
+        {rows.length === 0 ? <div className="text-sm text-slate-500">暂无阶段记录</div> : null}
+        {rows.map((row) => (
+          <div key={row.id} className="grid grid-cols-[110px_90px_minmax(0,1fr)] gap-3 rounded-md border border-slate-800 bg-slate-950/45 px-3 py-2 text-xs">
+            <span className="truncate font-medium text-slate-300" title={row.stage}>{row.stage}</span>
+            <span className={cn(
+              "w-fit rounded px-2 py-0.5",
+              row.status === "failed"
+                ? "bg-rose-400/10 text-rose-200"
+                : row.status === "planned"
+                  ? "bg-violet-400/10 text-violet-200"
+                  : "bg-emerald-400/10 text-emerald-200",
+            )}>
+              {row.status}
+            </span>
+            <span className="min-w-0 break-words text-slate-500">{row.detail || row.kind}</span>
+          </div>
+        ))}
+      </div>
+
+      {Object.keys(pending).length > 0 ? (
+        <div className="mt-3 rounded-md border border-amber-400/20 bg-amber-400/[0.06] p-3 text-xs text-amber-100">
+          等待人工确认：{String(pending.reason || pending.question || pending.status || "需要用户确认后继续")}
+        </div>
+      ) : null}
+      {nextSteps.length > 0 ? (
+        <div className="mt-3 rounded-md border border-rose-400/15 bg-rose-400/[0.05] p-3">
+          <div className="text-xs font-medium text-rose-100">失败后的建议动作</div>
+          <div className="mt-2 space-y-1 text-xs text-slate-400">
+            {nextSteps.map((step) => <div key={step}>{step}</div>)}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function EvidenceDetail({ item }: { item: EvidenceEntry }) {
   const webResearchReplay = buildWebResearchReplay(item);
   const actions = [
@@ -1408,6 +1972,12 @@ function EvidenceDetail({ item }: { item: EvidenceEntry }) {
       {item.plan_preview ? (
         <div className="px-5 pb-5">
           <PlanPreviewBlock item={item} />
+        </div>
+      ) : null}
+
+      {item.codex_invocation ? (
+        <div className="px-5 pb-5">
+          <CodexInvocationReplayBlock invocation={item.codex_invocation} evidenceTimeline={item.timeline ?? []} />
         </div>
       ) : null}
 

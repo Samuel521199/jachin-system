@@ -1039,8 +1039,14 @@ def test_codex_copy_prefers_visible_copy_button(monkeypatch) -> None:
     auto.win = types.SimpleNamespace(
         active_title=lambda: "Codex",
         active_rect=lambda: ("Codex", 0, 0, 900, 700),
+        active_snapshot=lambda: {
+            "title": "Codex",
+            "process": "ChatGPT.exe",
+            "process_path": r"C:\Program Files\WindowsApps\OpenAI.Codex_1.0.0.0_x64__8wekyb3d8bbwe\ChatGPT.exe",
+        },
         focus_by_keywords=lambda *args, **kwargs: True,
     )
+    auto.env = os_tasks.EnvironmentVerifier(auto.win)
     auto.io = types.SimpleNamespace(
         click=lambda *args, **kwargs: None,
         hotkey=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("hotkey fallback should not run")),
@@ -1073,8 +1079,14 @@ def test_codex_copy_refuses_when_codex_not_foreground(monkeypatch) -> None:
     auto.win = types.SimpleNamespace(
         active_title=lambda: "新建 文本文档 (11).txt - Notepad",
         active_rect=lambda: ("新建 文本文档 (11).txt - Notepad", 100, 100, 900, 700),
+        active_snapshot=lambda: {
+            "title": "新建 文本文档 (11).txt - Notepad",
+            "process": "notepad.exe",
+            "process_path": r"C:\Windows\System32\notepad.exe",
+        },
         focus_by_keywords=lambda *args, **kwargs: False,
     )
+    auto.env = os_tasks.EnvironmentVerifier(auto.win)
     auto.io = types.SimpleNamespace(
         click=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not click outside Codex")),
         hotkey=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not hotkey outside Codex")),
@@ -1419,6 +1431,83 @@ def test_desktop_io_launch_result_captures_missing_executable(monkeypatch) -> No
     assert result["ok"] is False
     assert result["detail"] == "app_executable_not_found"
     assert result["error_type"] == "FileNotFoundError"
+
+
+def test_desktop_io_launch_result_supports_protocol_and_identity_guard(monkeypatch) -> None:
+    from l3_client.local_mcps.windows_uia_mcp import os_tasks
+
+    calls: dict[str, object] = {}
+
+    class FakeWindow:
+        def focus_by_keywords(self, keywords, **kwargs):
+            calls["keywords"] = keywords
+            calls["markers"] = kwargs.get("required_process_path_markers")
+            return True
+
+        def active_title(self):
+            return "Codex"
+
+    io = os_tasks.DesktopIO.__new__(os_tasks.DesktopIO)
+    io.win = FakeWindow()
+    monkeypatch.setattr(os_tasks.os, "startfile", lambda target: calls.setdefault("target", target))
+
+    result = io.launch_result(
+        "codex:",
+        ("codex", "chatgpt"),
+        wait=0,
+        required_process_path_markers=("\\openai.codex_",),
+    )
+
+    assert result["ok"] is True
+    assert result["focused"] is True
+    assert calls["target"] == "codex:"
+    assert calls["markers"] == ("\\openai.codex_",)
+
+
+def test_ensure_app_recovers_when_found_window_is_not_really_foreground(monkeypatch, tmp_path) -> None:
+    from l3_client.local_mcps.windows_uia_mcp import os_tasks
+
+    class FakeWindow:
+        def active_title(self):
+            return "Other App"
+
+        def focus_by_keywords(self, *_args, **_kwargs):
+            return True
+
+    class FakeIO:
+        def screenshot_active_window(self, *_args, **_kwargs):
+            return str(tmp_path / "wrong-foreground.png")
+
+    class FailedGuard:
+        ok = False
+        detail = "foreground_process_identity_mismatch"
+
+        def to_dict(self):
+            return {"ok": False, "detail": self.detail}
+
+    automation = os_tasks.WindowsOSAutomation.__new__(os_tasks.WindowsOSAutomation)
+    automation.out_dir = tmp_path
+    automation.win = FakeWindow()
+    automation.io = FakeIO()
+    monkeypatch.setattr(automation, "_execution_contract", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(automation, "_verify_environment", lambda *_args, **_kwargs: FailedGuard())
+    monkeypatch.setattr(
+        automation,
+        "open_app",
+        lambda app_name, args=None: os_tasks.TaskResult(
+            "open_app",
+            True,
+            "app_opened_and_window_verified",
+            {"app": app_name, "path_source": "protocol_uri"},
+        ),
+    )
+
+    result = automation.ensure_app("codex")
+
+    assert result.ok is True
+    assert result.evidence["path_source"] == "protocol_uri"
+    assert result.evidence["started_new"] is True
+
 
 def test_calculator_visual_state_detects_wrong_display(monkeypatch, tmp_path) -> None:
     from l3_client.local_mcps.gameqa_mcp.core import ocr_engine

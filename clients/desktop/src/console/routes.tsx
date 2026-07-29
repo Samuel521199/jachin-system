@@ -23,6 +23,7 @@ import { CapabilityPublish } from "./pages/CapabilityPublish";
 import { CapabilityInstallCenter } from "./pages/CapabilityInstallCenter";
 import { EnglishVocabPanel } from "./pages/EnglishVocabPanel";
 import { MemoryGrowthPanel } from "./pages/MemoryGrowthPanel";
+import { WorkLedgerPanel } from "./pages/WorkLedgerPanel";
 
 export const consoleRoutes = [
   {
@@ -32,6 +33,7 @@ export const consoleRoutes = [
       { index: true, element: <Navigate to="/dashboard" replace /> },
       { path: "dashboard", element: <Dashboard /> },
       { path: "brain", element: <NeuralNexus /> },
+      { path: "work-ledger", element: <WorkLedgerPanel /> },
       { path: "memory-growth", element: <MemoryGrowthPanel /> },
       { path: "safety-lock", element: <SafetyLockApproval /> },
       { path: "calendar", element: <Calendar /> },

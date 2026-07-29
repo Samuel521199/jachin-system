@@ -77,6 +77,8 @@ commands.allow = [
   "os_evidence_open_path",
   "os_evidence_preflight",
   "os_evidence_stats",
+  "os_evidence_governance_index",
+  "os_evidence_codex_observability_index",
   "os_evidence_start_smoke_matrix",
   "os_evidence_start_standard_demo",
   "os_evidence_start_template",

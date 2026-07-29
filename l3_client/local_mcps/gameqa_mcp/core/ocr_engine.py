@@ -71,31 +71,37 @@ def _parse_rapid_result(result: Any) -> str:
     return ""
 
 
-def _polygon_centroid_xy(box: Any) -> tuple[float, float] | None:
-    """box: [[x,y]*4] / ndarray(4,2) / xyxy — 返回中心点。"""
+def _polygon_geometry(
+    box: Any,
+) -> tuple[float, float, float, float, float, float] | None:
+    """Return center and bounds for polygon or flat xyxy OCR boxes."""
     try:
         import numpy as np
 
         arr = np.asarray(box, dtype=float)
         if arr.size < 4:
             return None
-        # 4x2 polygon
         if arr.ndim == 2 and arr.shape[0] >= 2 and arr.shape[1] >= 2:
             xs = arr[:, 0]
             ys = arr[:, 1]
-            return float(xs.mean()), float(ys.mean())
-        # flat xyxy
+            x1, x2 = float(xs.min()), float(xs.max())
+            y1, y2 = float(ys.min()), float(ys.max())
+            return float(xs.mean()), float(ys.mean()), x1, y1, x2, y2
         if arr.ndim == 1 and arr.shape[0] >= 4:
             x1, y1, x2, y2 = float(arr[0]), float(arr[1]), float(arr[2]), float(arr[3])
-            return (x1 + x2) / 2.0, (y1 + y2) / 2.0
+            return (x1 + x2) / 2.0, (y1 + y2) / 2.0, x1, y1, x2, y2
     except Exception:
         return None
     return None
 
 
-def _rapid_boxes_list(result: Any) -> list[tuple[str, float, float, float]]:
-    """(text, cx, cy, score) from RapidOCR raw result。"""
-    rows: list[tuple[str, float, float, float]] = []
+def _rapid_boxes_list(
+    result: Any,
+) -> list[tuple[str, float, float, float, float, float, float, float]]:
+    """Return text, center, score and bounds from RapidOCR raw results."""
+    rows: list[
+        tuple[str, float, float, float, float, float, float, float]
+    ] = []
     if not result:
         return rows
 
@@ -103,10 +109,11 @@ def _rapid_boxes_list(result: Any) -> list[tuple[str, float, float, float]]:
         t = str(text or "").strip()
         if not t:
             return
-        c = _polygon_centroid_xy(box)
-        if c is None:
+        geometry = _polygon_geometry(box)
+        if geometry is None:
             return
-        rows.append((t, c[0], c[1], float(score)))
+        cx, cy, x1, y1, x2, y2 = geometry
+        rows.append((t, cx, cy, float(score), x1, y1, x2, y2))
 
     if isinstance(result, (list, tuple)):
         for item in result:
@@ -136,8 +143,12 @@ def _rapid_boxes_list(result: Any) -> list[tuple[str, float, float, float]]:
     return rows
 
 
-def _easy_boxes_list(img_np: Any) -> list[tuple[str, float, float, float]]:
-    rows: list[tuple[str, float, float, float]] = []
+def _easy_boxes_list(
+    img_np: Any,
+) -> list[tuple[str, float, float, float, float, float, float, float]]:
+    rows: list[
+        tuple[str, float, float, float, float, float, float, float]
+    ] = []
     try:
         reader = _get_easyocr_reader()
         raw = reader.readtext(img_np)
@@ -156,10 +167,11 @@ def _easy_boxes_list(img_np: Any) -> list[tuple[str, float, float, float]]:
         t = str(text or "").strip()
         if not t:
             continue
-        c = _polygon_centroid_xy(box)
-        if c is None:
+        geometry = _polygon_geometry(box)
+        if geometry is None:
             continue
-        rows.append((t, c[0], c[1], sc))
+        cx, cy, x1, y1, x2, y2 = geometry
+        rows.append((t, cx, cy, sc, x1, y1, x2, y2))
     return rows
 
 
@@ -202,12 +214,25 @@ def ocr_line_boxes_from_png(png: bytes) -> tuple[list[dict[str, Any]], str]:
 
 
 def _rows_to_line_dicts(
-    rows: list[tuple[str, float, float, float]],
+    rows: list[
+        tuple[str, float, float, float, float, float, float, float]
+    ],
     source: str,
     notes: str,
 ) -> tuple[list[dict[str, Any]], str]:
     out: list[dict[str, Any]] = [
-        {"text": t, "cx": cx, "cy": cy, "score": sc, "source": source} for t, cx, cy, sc in rows
+        {
+            "text": text,
+            "cx": cx,
+            "cy": cy,
+            "score": score,
+            "x1": x1,
+            "y1": y1,
+            "x2": x2,
+            "y2": y2,
+            "source": source,
+        }
+        for text, cx, cy, score, x1, y1, x2, y2 in rows
     ]
     if not out:
         return [], f"no_line_boxes:{notes}"
